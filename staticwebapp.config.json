@@ -4,6 +4,19 @@
   },
   "routes": [
     {
+      "route": "/signed-out.html",
+      "allowedRoles": [
+        "anonymous"
+      ]
+    },
+    {
+      "route": "/signed-out",
+      "redirect": "/signed-out.html",
+      "allowedRoles": [
+        "anonymous"
+      ]
+    },
+    {
       "route": "/api/*",
       "allowedRoles": [
         "authenticated"

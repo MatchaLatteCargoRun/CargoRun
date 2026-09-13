@@ -605,7 +605,7 @@ async function loadEntraIdentity(){
   return false;
  }
 }
-function signOutCargoRun(){location.href='/.auth/logout'}
+function signOutCargoRun(){location.href='/.auth/logout?post_logout_redirect_uri=/signed-out.html'}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function slug(s){return s.toLowerCase().replace(/\s+/g,'-')}
 function normalizeULD(s=''){return String(s).toUpperCase().replace(/[^A-Z0-9]/g,'')}

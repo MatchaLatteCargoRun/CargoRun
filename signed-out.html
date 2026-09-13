@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Signed out | CargoRun</title>
+  <style>
+    :root{--bg:#0d557b;--deep:#063f61;--panel:#08466a;--text:#f7fbff;--muted:#b9d2df;--line:rgba(255,255,255,.14);--blue:#1284b3}
+    *{box-sizing:border-box}
+    html,body{margin:0;min-height:100%;font-family:Inter,Segoe UI,Arial,sans-serif;background:linear-gradient(160deg,var(--bg),var(--deep));color:var(--text)}
+    body{min-height:100vh;display:grid;place-items:center;padding:22px}
+    .card{width:min(520px,100%);padding:30px;border:1px solid var(--line);border-radius:22px;background:rgba(4,58,87,.92);box-shadow:0 24px 70px rgba(0,0,0,.28);text-align:center}
+    .mark{width:58px;height:58px;margin:0 auto 16px;border-radius:18px;background:rgba(255,255,255,.08);display:grid;place-items:center;font-size:28px;font-weight:900}
+    h1{margin:0 0 8px;font-size:30px}p{margin:0 auto 22px;max-width:390px;color:var(--muted);line-height:1.5}
+    a{display:inline-block;text-decoration:none;color:#fff;background:#0b6d96;border:1px solid var(--blue);border-radius:12px;padding:11px 16px;font-weight:800}
+    small{display:block;margin-top:18px;color:rgba(255,255,255,.5)}
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="mark">✓</div>
+    <h1>Signed out of CargoRun</h1>
+    <p>Your CargoRun session has ended. Sign in again when you are ready to continue.</p>
+    <a href="/.auth/login/aad?post_login_redirect_uri=/">Sign in to CargoRun</a>
+    <small>CargoRun • MEL prototype</small>
+  </main>
+</body>
+</html>
