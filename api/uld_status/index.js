@@ -1,5 +1,35 @@
 const sql = require('mssql');
 
+
+function getHeader(req, name) {
+  const headers = req?.headers || {};
+  if (typeof headers.get === 'function') return headers.get(name);
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || null;
+}
+
+function getClientPrincipal(req) {
+  try {
+    const raw = getHeader(req, 'x-ms-client-principal');
+    if (!raw) return null;
+    const json = Buffer.from(raw, 'base64').toString('utf8');
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function getActor(req) {
+  const principal = getClientPrincipal(req);
+  if (!principal) return null;
+  const roles = Array.isArray(principal.userRoles) ? principal.userRoles : [];
+  if (!roles.includes('authenticated')) return null;
+  return {
+    displayName: String(principal.userDetails || 'Authenticated user').slice(0, 150),
+    reference: String(principal.userId || '').slice(0, 150),
+    roles,
+    identityProvider: principal.identityProvider || 'aad'
+  };
+}
 function sendJson(context, status, body) {
   context.res = {
     status,
@@ -73,14 +103,20 @@ module.exports = async function (context, req) {
       return;
     }
 
+    const actor = getActor(req);
+    if (!actor) {
+      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
+      return;
+    }
+
     const body = req.body || {};
     const uldId = String(body.uldId || '').trim();
     const requestedNext = canonicalStatus(body.nextStatus);
     const expectedCurrent = body.expectedCurrentStatus
       ? canonicalStatus(body.expectedCurrentStatus)
       : null;
-    const actorDisplayName = cleanText(body.actorDisplayName, 150) || 'Prototype Operator';
-    const actorReference = cleanText(body.actorReference, 150);
+    const actorDisplayName = actor.displayName;
+    const actorReference = actor.reference;
     const notes = cleanText(body.notes, 500);
 
     if (!/^\d+$/.test(uldId)) {
@@ -190,19 +226,23 @@ module.exports = async function (context, req) {
     const timestampMap = {
       'IMPORT:ARRIVED': {
         time: ['AcceptedAtUtc', 'AcceptedAt'],
-        user: ['AcceptedByDisplayName', 'AcceptedByName']
+        user: ['AcceptedByDisplayName', 'AcceptedByName'],
+        userId: ['AcceptedByObjectId', 'AcceptedById']
       },
       'IMPORT:RECEIVED': {
         time: ['ReceivedAtUtc', 'ReceivedAt'],
-        user: ['ReceivedByDisplayName', 'ReceivedByName']
+        user: ['ReceivedByDisplayName', 'ReceivedByName'],
+        userId: ['ReceivedByObjectId', 'ReceivedById']
       },
       'EXPORT:TRANSIT': {
         time: ['WarehouseDepartedAtUtc', 'WarehouseDepartedAt', 'DepartedWarehouseAtUtc'],
-        user: ['WarehouseDepartedByDisplayName', 'WarehouseDepartedByName', 'DepartedWarehouseByDisplayName']
+        user: ['WarehouseDepartedByDisplayName', 'WarehouseDepartedByName', 'DepartedWarehouseByDisplayName'],
+        userId: ['WarehouseDepartedByObjectId', 'WarehouseDepartedById', 'DepartedWarehouseByObjectId']
       },
       'EXPORT:AT_AIRCRAFT': {
         time: ['AtAircraftAtUtc', 'AtAircraftAt'],
-        user: ['AtAircraftByDisplayName', 'AtAircraftByName', 'DeliveredByDisplayName']
+        user: ['AtAircraftByDisplayName', 'AtAircraftByName', 'DeliveredByDisplayName'],
+        userId: ['AtAircraftByObjectId', 'AtAircraftById', 'DeliveredByObjectId']
       }
     };
 
@@ -210,8 +250,10 @@ module.exports = async function (context, req) {
     if (stamp) {
       const timeCol = pick(uldColumns, stamp.time);
       const userCol = pick(uldColumns, stamp.user);
+      const userIdCol = pick(uldColumns, stamp.userId || []);
       if (timeCol) sets.push(`${quoteName(timeCol)} = @Now`);
       if (userCol) sets.push(`${quoteName(userCol)} = @ActorDisplayName`);
+      if (userIdCol) sets.push(`${quoteName(userIdCol)} = @ActorReference`);
     }
 
     const updateSql = `
@@ -250,6 +292,7 @@ module.exports = async function (context, req) {
         add(['ToStatus'], 'MoveToStatus', requestedNext, sql.VarChar(30));
         add(['OccurredAtUtc', 'OccurredAt'], 'MoveOccurredAt', occurredAtUtc, sql.DateTime2(3));
         add(['ActorDisplayName', 'ActorName'], 'MoveActorName', actorDisplayName, sql.NVarChar(150));
+        add(['ActorObjectId', 'ActorId', 'ActorReference'], 'MoveActorReference', actorReference, sql.NVarChar(150));
         add(['Source', 'SourceType'], 'MoveSource', 'CARGORUN_UI', sql.NVarChar(50));
         add(['Notes', 'Detail'], 'MoveNotes', notes || `CargoRun status change by ${actorDisplayName}`, sql.NVarChar(500));
 

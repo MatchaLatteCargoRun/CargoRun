@@ -1,5 +1,35 @@
 const sql = require('mssql');
 
+
+function getHeader(req, name) {
+  const headers = req?.headers || {};
+  if (typeof headers.get === 'function') return headers.get(name);
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || null;
+}
+
+function getClientPrincipal(req) {
+  try {
+    const raw = getHeader(req, 'x-ms-client-principal');
+    if (!raw) return null;
+    const json = Buffer.from(raw, 'base64').toString('utf8');
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function getActor(req) {
+  const principal = getClientPrincipal(req);
+  if (!principal) return null;
+  const roles = Array.isArray(principal.userRoles) ? principal.userRoles : [];
+  if (!roles.includes('authenticated')) return null;
+  return {
+    displayName: String(principal.userDetails || 'Authenticated user').slice(0, 150),
+    reference: String(principal.userId || '').slice(0, 150),
+    roles,
+    identityProvider: principal.identityProvider || 'aad'
+  };
+}
 function sendJson(context, status, body) {
   context.res = { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, body: JSON.stringify(body) };
 }
@@ -39,6 +69,8 @@ module.exports = async function(context, req) {
   try {
     const connectionString = process.env.DATABASE_CONNECTION_STRING;
     if (!connectionString) { sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'}); return; }
+    const actor = getActor(req);
+    if (!actor) { sendJson(context,401,{ok:false,error:'Microsoft Entra sign-in is required'}); return; }
     pool = await new sql.ConnectionPool(connectionString).connect();
     const columns = await columnsFor(pool.request(),'AuditEvents');
     if (!columns.length) { sendJson(context,500,{ok:false,error:'dbo.AuditEvents table was not found'}); return; }
@@ -54,8 +86,8 @@ module.exports = async function(context, req) {
 
     const b = req.body || {};
     const payload = {
-      type: clean(b.type,50) || 'Activity', action: clean(b.action,150) || 'Activity', user: clean(b.user,150) || 'Prototype Operator',
-      actorReference: clean(b.actorReference,150), flight: clean(b.flight,20), uld: clean(b.uld,30), from: clean(b.from,40), to: clean(b.to,40),
+      type: clean(b.type,50) || 'Activity', action: clean(b.action,150) || 'Activity', user: actor.displayName,
+      actorReference: actor.reference, flight: clean(b.flight,20), uld: clean(b.uld,30), from: clean(b.from,40), to: clean(b.to,40),
       detail: clean(b.detail,1000), entityType: clean(b.entityType,50), entityId: clean(b.entityId,100), details: b.details || null
     };
     const detailsJson = JSON.stringify({ type:payload.type, action:payload.action, user:payload.user, flight:payload.flight, uld:payload.uld, from:payload.from, to:payload.to, detail:payload.detail, ...(payload.details||{}) });

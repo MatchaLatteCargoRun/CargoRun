@@ -16,6 +16,33 @@ function clean(value) {
   return String(value).trim().toUpperCase();
 }
 
+function getHeader(req, name) {
+  const headers = req?.headers || {};
+  if (typeof headers.get === 'function') return headers.get(name);
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || null;
+}
+
+function getClientPrincipal(req) {
+  try {
+    const raw = getHeader(req, 'x-ms-client-principal');
+    if (!raw) return null;
+    return JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
+  } catch {
+    return null;
+  }
+}
+
+function getActor(req) {
+  const principal = getClientPrincipal(req);
+  if (!principal) return null;
+  const roles = Array.isArray(principal.userRoles) ? principal.userRoles : [];
+  if (!roles.includes('authenticated')) return null;
+  return {
+    displayName: String(principal.userDetails || 'Authenticated user').slice(0, 150),
+    reference: String(principal.userId || '').slice(0, 150)
+  };
+}
+
 module.exports = async function (context, req) {
   let pool;
   let transaction;
@@ -27,6 +54,15 @@ module.exports = async function (context, req) {
       sendJson(context, 503, {
         ok: false,
         error: 'DATABASE_CONNECTION_STRING is not configured'
+      });
+      return;
+    }
+
+    const actor = getActor(req);
+    if (!actor) {
+      sendJson(context, 401, {
+        ok: false,
+        error: 'Microsoft Entra sign-in is required'
       });
       return;
     }
@@ -45,37 +81,25 @@ module.exports = async function (context, req) {
     const sourceFileName =
       flight.sourceFileName
         ? String(flight.sourceFileName).trim()
-        : 'Prototype upload';
+        : 'CargoRun Excel Upload';
 
     if (!flightNumber) {
-      sendJson(context, 400, {
-        ok: false,
-        error: 'flight.flightNumber is required'
-      });
+      sendJson(context, 400, { ok: false, error: 'flight.flightNumber is required' });
       return;
     }
 
     if (!/^\d{4}-\d{2}-\d{2}$/.test(operatingDate)) {
-      sendJson(context, 400, {
-        ok: false,
-        error: 'flight.operatingDate must be YYYY-MM-DD'
-      });
+      sendJson(context, 400, { ok: false, error: 'flight.operatingDate must be YYYY-MM-DD' });
       return;
     }
 
     if (!['IMPORT', 'EXPORT'].includes(direction)) {
-      sendJson(context, 400, {
-        ok: false,
-        error: 'flight.direction must be IMPORT or EXPORT'
-      });
+      sendJson(context, 400, { ok: false, error: 'flight.direction must be IMPORT or EXPORT' });
       return;
     }
 
     if (!ulds.length) {
-      sendJson(context, 400, {
-        ok: false,
-        error: 'At least one ULD is required'
-      });
+      sendJson(context, 400, { ok: false, error: 'At least one ULD is required' });
       return;
     }
 
@@ -103,17 +127,11 @@ module.exports = async function (context, req) {
 
     for (const uld of normalisedUlds) {
       if (!uld.uldNumber) {
-        sendJson(context, 400, {
-          ok: false,
-          error: 'Every ULD requires uldNumber'
-        });
+        sendJson(context, 400, { ok: false, error: 'Every ULD requires uldNumber' });
         return;
       }
 
-      if (
-        uld.handlingType &&
-        !['INTACT', 'BREAKDOWN'].includes(uld.handlingType)
-      ) {
+      if (uld.handlingType && !['INTACT', 'BREAKDOWN'].includes(uld.handlingType)) {
         sendJson(context, 400, {
           ok: false,
           error: `${uld.uldNumber}: handlingType must be INTACT or BREAKDOWN`
@@ -134,7 +152,6 @@ module.exports = async function (context, req) {
     }
 
     const duplicateCheck = new Set();
-
     for (const uld of normalisedUlds) {
       if (duplicateCheck.has(uld.uldNumber)) {
         sendJson(context, 400, {
@@ -143,13 +160,11 @@ module.exports = async function (context, req) {
         });
         return;
       }
-
       duplicateCheck.add(uld.uldNumber);
     }
 
     pool = await new sql.ConnectionPool(connectionString).connect();
     transaction = new sql.Transaction(pool);
-
     await transaction.begin();
 
     const existingFlight = await new sql.Request(transaction)
@@ -167,13 +182,11 @@ module.exports = async function (context, req) {
     if (existingFlight.recordset.length) {
       await transaction.rollback();
       transaction = null;
-
       sendJson(context, 409, {
         ok: false,
         error: 'Flight already exists',
         flightId: existingFlight.recordset[0].FlightId
       });
-
       return;
     }
 
@@ -186,11 +199,7 @@ module.exports = async function (context, req) {
       .input('DestinationAirport', sql.NVarChar(4), destinationAirport)
       .input('SourceFileName', sql.NVarChar(260), sourceFileName)
       .input('SourceType', sql.NVarChar(50), 'CARGORUN_UPLOAD')
-      .input(
-        'CreatedByDisplayName',
-        sql.NVarChar(150),
-        'Prototype Upload'
-      )
+      .input('CreatedByDisplayName', sql.NVarChar(150), actor.displayName)
       .query(`
         INSERT INTO dbo.Flights
         (
@@ -231,11 +240,7 @@ module.exports = async function (context, req) {
       .input('FlightId', sql.BigInt, flightId)
       .input('FileName', sql.NVarChar(260), sourceFileName)
       .input('UploadType', sql.NVarChar(50), direction)
-      .input(
-        'UploadedByDisplayName',
-        sql.NVarChar(150),
-        'Prototype Upload'
-      )
+      .input('UploadedByDisplayName', sql.NVarChar(150), actor.displayName)
       .query(`
         INSERT INTO dbo.FlightUploads
         (
@@ -303,16 +308,8 @@ module.exports = async function (context, req) {
           .input('UldId', sql.BigInt, createdUld.UldId)
           .input('Code', sql.NVarChar(10), code)
           .query(`
-            INSERT INTO dbo.UldSpecialHandlingCodes
-            (
-              UldId,
-              Code
-            )
-            VALUES
-            (
-              @UldId,
-              @Code
-            );
+            INSERT INTO dbo.UldSpecialHandlingCodes (UldId, Code)
+            VALUES (@UldId, @Code);
           `);
       }
 
@@ -327,6 +324,7 @@ module.exports = async function (context, req) {
 
     sendJson(context, 201, {
       ok: true,
+      uploadedBy: actor.displayName,
       flight: createdFlight,
       uldCount: createdUlds.length,
       ulds: createdUlds
@@ -334,9 +332,7 @@ module.exports = async function (context, req) {
 
   } catch (err) {
     if (transaction) {
-      try {
-        await transaction.rollback();
-      } catch {}
+      try { await transaction.rollback(); } catch {}
     }
 
     context.log.error('Manifest upload failed', err);
@@ -348,8 +344,6 @@ module.exports = async function (context, req) {
     });
 
   } finally {
-    try {
-      await pool?.close();
-    } catch {}
+    try { await pool?.close(); } catch {}
   }
 };

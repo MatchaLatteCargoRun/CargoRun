@@ -1,5 +1,35 @@
 const sql = require('mssql');
 
+
+function getHeader(req, name) {
+  const headers = req?.headers || {};
+  if (typeof headers.get === 'function') return headers.get(name);
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || null;
+}
+
+function getClientPrincipal(req) {
+  try {
+    const raw = getHeader(req, 'x-ms-client-principal');
+    if (!raw) return null;
+    const json = Buffer.from(raw, 'base64').toString('utf8');
+    return JSON.parse(json);
+  } catch {
+    return null;
+  }
+}
+
+function getActor(req) {
+  const principal = getClientPrincipal(req);
+  if (!principal) return null;
+  const roles = Array.isArray(principal.userRoles) ? principal.userRoles : [];
+  if (!roles.includes('authenticated')) return null;
+  return {
+    displayName: String(principal.userDetails || 'Authenticated user').slice(0, 150),
+    reference: String(principal.userId || '').slice(0, 150),
+    roles,
+    identityProvider: principal.identityProvider || 'aad'
+  };
+}
 function sendJson(context, status, body) {
   context.res = {
     status,
@@ -88,6 +118,12 @@ module.exports = async function (context, req) {
       return;
     }
 
+    const identity = getActor(req);
+    if (!identity) {
+      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
+      return;
+    }
+
     pool = await new sql.ConnectionPool(connectionString).connect();
     const columns = await columnsFor(pool.request(), 'Offloads');
     if (!columns.length) {
@@ -110,8 +146,8 @@ module.exports = async function (context, req) {
     }
 
     const body = req.body || {};
-    const actorDisplayName = clean(body.actorDisplayName, 150) || 'Prototype Operator';
-    const actorReference = clean(body.actorReference, 150);
+    const actorDisplayName = identity.displayName;
+    const actorReference = identity.reference;
 
     if (req.method === 'POST') {
       const uldNumber = clean(body.uldNumber, 20)?.toUpperCase();
