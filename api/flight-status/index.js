@@ -1,3 +1,4 @@
+const sql = require('mssql');
 function toIso(value) {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000).toISOString();
@@ -43,6 +44,55 @@ function sendJson(context, status, payload, extraHeaders = {}) {
 module.exports = async function (context, req) {
   try {
     const query = req?.query || {};
+    if (String(query.dbhealth || '') === '1') {
+  let pool;
+
+  try {
+    const connectionString = process.env.DATABASE_CONNECTION_STRING;
+
+    if (!connectionString) {
+      sendJson(context, 503, {
+        ok: false,
+        error: 'DATABASE_CONNECTION_STRING is not configured'
+      });
+      return;
+    }
+
+    pool = await sql.connect(connectionString);
+
+    const result = await pool.request().query(`
+      SELECT
+        DB_NAME() AS DatabaseName,
+        COUNT(*) AS FlightCount
+      FROM dbo.Flights;
+    `);
+
+    sendJson(context, 200, {
+      ok: true,
+      database: result.recordset[0].DatabaseName,
+      flightCount: result.recordset[0].FlightCount,
+      serverTimeUtc: new Date().toISOString()
+    });
+
+    return;
+
+  } catch (err) {
+    context.log.error('Database health check failed', err);
+
+    sendJson(context, 500, {
+      ok: false,
+      error: 'Database connection failed',
+      detail: err.message
+    });
+
+    return;
+
+  } finally {
+    try {
+      await pool?.close();
+    } catch {}
+  }
+}
 
     if (String(query.health || '') === '1') {
       sendJson(
