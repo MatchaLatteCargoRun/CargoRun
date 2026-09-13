@@ -354,6 +354,190 @@ let historyFilter='All';
 let historySearch='';
 function loadState(){try{const s=JSON.parse(localStorage.getItem('cargorun-state'))||structuredClone(seed);if(!s.sessionUser)s.sessionUser={name:'Demo Operator',employeeId:'MEL-DEMO'};s.settings=s.settings||{};s.settings.flightStatus={...structuredClone(seed.settings.flightStatus),...(s.settings.flightStatus||{})};if(!Array.isArray(s.history))s.history=[];if(!Array.isArray(s.completedOffloads))s.completedOffloads=[];if(!Array.isArray(s.completedExports))s.completedExports=[];(s.imports||[]).forEach(f=>(f.ulds||[]).forEach(u=>{if(u.status!=='Unarrived'&&!u.acceptedAt){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.from==='Unarrived'&&e.to==='Arrived');if(evt){u.acceptedAt=evt.ts;u.acceptedBy=evt.user||''}}}));(s.exports||[]).forEach(f=>(f.ulds||[]).forEach(u=>{if((u.status==='Transit'||u.status==='At Aircraft')&&!u.departedWarehouseAt){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.from==='Warehouse'&&e.to==='Transit');if(evt){u.departedWarehouseAt=evt.ts;u.departedWarehouseBy=evt.user||''}}if(u.status==='At Aircraft'){if(!u.atAircraftAt){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.to==='At Aircraft');u.atAircraftAt=evt?.ts||Date.now()}if(!u.deliveredBy){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.to==='At Aircraft');u.deliveredBy=evt?.user||'Demo Operator';u.deliveredById=''}}}));(s.completedExports||[]).forEach(r=>{if(!r.finalizedAt&&r.signedAt)r.finalizedAt=r.signedAt;if(!r.finalizedBy&&r.signedBy)r.finalizedBy=r.signedBy;if(!r.finalizedById&&r.staffId)r.finalizedById=r.staffId;(r.ulds||[]).forEach(u=>{if(!u.deliveredBy)u.deliveredBy=r.signedBy||'Recorded operator';if(!u.deliveredById)u.deliveredById='';if(!('departedWarehouseAt' in u))u.departedWarehouseAt=null;});});return s}catch(e){return structuredClone(seed)}}
 function save(){localStorage.setItem('cargorun-state',JSON.stringify(state))}
+
+/* =========================================================
+   AZURE CENTRAL DATA SYNC
+   Step 4D: load active Flights + ULDs from Azure SQL
+   ========================================================= */
+function canUseCargoRunApi(){
+  return location.protocol==='http:'||location.protocol==='https:';
+}
+
+function azureDateOnly(value=''){
+  const raw=String(value||'').trim();
+  const m=raw.match(/^(\d{4}-\d{2}-\d{2})/);
+  return m?m[1]:'';
+}
+
+function azureDisplayDate(value=''){
+  const iso=azureDateOnly(value);
+  if(!iso)return '';
+  const [y,m,d]=iso.split('-');
+  const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return `${Number(d)} ${months[Math.max(0,Number(m)-1)]||m} ${y}`;
+}
+
+function azureStatusToUi(status,direction){
+  const s=String(status||'').trim().toUpperCase().replace(/[_-]+/g,' ');
+  const map={
+    'UNARRIVED':'Unarrived',
+    'ARRIVED':'Arrived',
+    'TRANSIT':'Transit',
+    'RECEIVED':'Received',
+    'WAREHOUSE':'Warehouse',
+    'AT AIRCRAFT':'At Aircraft',
+    'REQUESTED':'Requested',
+    'COMPLETE':'Complete'
+  };
+  return map[s]||(String(direction||'').toUpperCase()==='EXPORT'?'Warehouse':'Unarrived');
+}
+
+function azureShcs(value){
+  if(Array.isArray(value))return value.map(x=>String(x).trim().toUpperCase()).filter(Boolean);
+  return String(value||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
+}
+
+function sameAzureFlight(localFlight,apiFlight){
+  if(!localFlight||!apiFlight)return false;
+  if(localFlight.azureFlightId!=null&&String(localFlight.azureFlightId)===String(apiFlight.FlightId))return true;
+  if(String(localFlight.flight||'').toUpperCase()!==String(apiFlight.FlightNumber||'').toUpperCase())return false;
+  const azureDate=azureDateOnly(apiFlight.OperatingDate);
+  if(!azureDate)return true;
+  const localRaw=String(localFlight.flightDate||'').trim();
+  if(!localRaw)return true;
+  try{return flightDateISO(localFlight)===azureDate}catch{return true}
+}
+
+function azureFlightStatus(existing,apiFlight){
+  const current={...(existing?.flightStatus||{})};
+  const fields=[
+    ['scheduledArrival','ScheduledArrivalUtc'],
+    ['estimatedArrival','EstimatedArrivalUtc'],
+    ['landedAt','LandedAtUtc'],
+    ['inBlockAt','InBlockAtUtc']
+  ];
+  let hasAzureArrival=false;
+  for(const [target,source] of fields){
+    if(apiFlight[source]){
+      current[target]=apiFlight[source];
+      hasAzureArrival=true;
+    }
+  }
+  if(hasAzureArrival){
+    current.provider='Azure SQL';
+    current.source='azure-sql';
+    current.lastChecked=Date.now();
+  }
+  return current;
+}
+
+function azureUldToUi(apiUld,direction,existingUld=null){
+  const status=azureStatusToUi(apiUld.CurrentStatus,direction);
+  const initial=String(direction||'').toUpperCase()==='EXPORT'?'Warehouse':'Unarrived';
+  return {
+    ...(existingUld||{}),
+    azureUldId:apiUld.UldId,
+    num:String(apiUld.UldNumber||'').trim().toUpperCase(),
+    shcs:azureShcs(apiUld.SHCs),
+    status,
+    handlingType:String(apiUld.HandlingType||'').trim().toUpperCase(),
+    rawHandling:String(apiUld.HandlingType||'').trim().toUpperCase(),
+    weight:apiUld.WeightKg==null?null:Number(apiUld.WeightKg),
+    remarks:apiUld.Remarks||'',
+    priority:apiUld.PriorityText||'',
+    identityVerified:status!==initial
+  };
+}
+
+async function fetchAzureUlds(flightId){
+  const res=await fetch(`/api/ulds?flightId=${encodeURIComponent(flightId)}`,{
+    method:'GET',
+    headers:{Accept:'application/json'},
+    cache:'no-store'
+  });
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok||data.ok===false){
+    throw new Error(data.error||`ULD API ${res.status}`);
+  }
+  return Array.isArray(data.ulds)?data.ulds:[];
+}
+
+async function syncAzureFlights(quiet=false){
+  if(!canUseCargoRunApi())return false;
+  try{
+    const res=await fetch('/api/flights',{
+      method:'GET',
+      headers:{Accept:'application/json'},
+      cache:'no-store'
+    });
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||data.ok===false){
+      throw new Error(data.error||`Flights API ${res.status}`);
+    }
+
+    const remoteFlights=(Array.isArray(data.flights)?data.flights:[])
+      .filter(f=>String(f.FlightStatus||'ACTIVE').toUpperCase()==='ACTIVE');
+
+    const hydrated=await Promise.all(remoteFlights.map(async apiFlight=>({
+      apiFlight,
+      apiUlds:await fetchAzureUlds(apiFlight.FlightId)
+    })));
+
+    for(const type of ['imports','exports']){
+      const direction=type==='imports'?'IMPORT':'EXPORT';
+      const oldList=Array.isArray(state[type])?state[type]:[];
+      const relevant=hydrated.filter(x=>String(x.apiFlight.Direction||'').toUpperCase()===direction);
+
+      const azureFlights=relevant.map(({apiFlight,apiUlds})=>{
+        const existing=oldList.find(f=>sameAzureFlight(f,apiFlight))||null;
+        const existingUlds=existing?.ulds||[];
+        const mappedUlds=apiUlds.map(apiUld=>{
+          const oldUld=existingUlds.find(u=>
+            String(u.azureUldId||'')===String(apiUld.UldId||'')||
+            String(u.num||'').toUpperCase()===String(apiUld.UldNumber||'').toUpperCase()
+          )||null;
+          return azureUldToUi(apiUld,direction,oldUld);
+        });
+        const shcs=[...new Set(mappedUlds.flatMap(u=>u.shcs||[]))];
+        return {
+          ...(existing||{}),
+          id:existing?.id||`az-${type==='imports'?'imp':'exp'}-${apiFlight.FlightId}`,
+          azureFlightId:apiFlight.FlightId,
+          flight:String(apiFlight.FlightNumber||'').toUpperCase(),
+          flightDate:azureDisplayDate(apiFlight.OperatingDate),
+          sourceFile:existing?.sourceFile||'',
+          sourceType:'Azure SQL',
+          uploadedAt:existing?.uploadedAt||(apiFlight.CreatedAtUtc?Date.parse(apiFlight.CreatedAtUtc):Date.now()),
+          shcs,
+          closed:false,
+          flightStatus:azureFlightStatus(existing,apiFlight),
+          ulds:mappedUlds
+        };
+      });
+
+      const localOnly=oldList.filter(local=>
+        !local.azureFlightId&&
+        !relevant.some(({apiFlight})=>sameAzureFlight(local,apiFlight))
+      );
+
+      state[type]=[...azureFlights,...localOnly];
+    }
+
+    state.azureSync={
+      lastSuccess:Date.now(),
+      flightCount:remoteFlights.length
+    };
+    save();
+    render();
+    if(!quiet)toast(`Azure synced — ${remoteFlights.length} active flight${remoteFlights.length===1?'':'s'}`);
+    return true;
+  }catch(err){
+    console.error('CargoRun Azure sync failed',err);
+    state.azureSync={...(state.azureSync||{}),lastError:err?.message||'Azure sync failed',lastAttempt:Date.now()};
+    if(!quiet)toast(`Azure sync unavailable: ${err?.message||'unknown error'}`);
+    return false;
+  }
+}
 function logEvent(type,action,data={}){if(!Array.isArray(state.history))state.history=[];state.history.unshift({id:'evt-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),ts:Date.now(),type,action,user:data.user||currentUser().name,flight:data.flight||'',uld:data.uld||'',from:data.from||'',to:data.to||'',detail:data.detail||''});state.history=state.history.slice(0,500)}
 function resetDemo(){localStorage.removeItem('cargorun-state');state=structuredClone(seed);route={screen:'home'};historyFilter='All';historySearch='';render();toast('Demo data reset')}
 function currentUser(){return state.sessionUser||{name:'Demo Operator',employeeId:'MEL-DEMO'}}
@@ -1900,6 +2084,8 @@ async function createUploadedFlight() {
 }
 function render(){let content='';if(route.screen==='home')content=home();else if(route.screen==='flights')content=flights(route.type);else if(route.screen==='flight')content=flightDetail(route.type,route.id);else if(route.screen==='offloads')content=offloads();else if(route.screen==='flightboard')content=flightBoardScreen();else if(route.screen==='priority')content=priorityCargoScreen();else if(route.screen==='supervisor')content=supervisorDashboard();else if(route.screen==='history')content=historyScreen();shell(content)}
 render();
+setTimeout(()=>syncAzureFlights(false),100);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncAzureFlights(true)});
 setInterval(()=>{if(document.visibilityState==='visible'&&canUseFlightStatusApi())syncAllFlightArrivals(true)},Math.max(1,Number(flightStatusSettings().pollMinutes||2))*60000);
 </script>
 </body>
