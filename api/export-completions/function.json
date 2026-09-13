@@ -5,8 +5,8 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get", "post", "patch"],
-      "route": "flights"
+      "methods": ["get", "post"],
+      "route": "export-completions"
     },
     {
       "type": "http",

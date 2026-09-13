@@ -311,49 +311,36 @@ const CARGORUN_MASCOT='data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAABEkAAAQ5CAY
 
 const IMPORT_STATUSES=['Unarrived','Arrived','Transit','Received'];
 const EXPORT_STATUSES=['Warehouse','Transit','At Aircraft'];
+const CARGORUN_STATE_VERSION=6;
 const seed={
- sessionUser:{name:'Demo Operator',employeeId:'MEL-DEMO'},
+ stateVersion:CARGORUN_STATE_VERSION,
+ sessionUser:{name:'Prototype Operator',employeeId:''},
  settings:{flightStatus:{endpoint:'/api/flight-status',arrivalAirport:'MEL',pollMinutes:2,landingGraceMinutes:10,standardWarnMinutes:20,standardLateMinutes:30,priorityWarnMinutes:10,priorityLateMinutes:20}},
- imports:[
-  {id:'imp-cx163',flight:'CX163',shcs:['PIL','PER','ICE'],closed:false,ulds:[
-   {num:'PMC12345R7',shcs:['PIL'],status:'Received',identityVerified:true},
-   {num:'AKE49846CX',shcs:['PER'],status:'Arrived',identityVerified:true},
-   {num:'AKE89745CX',shcs:['ICE'],status:'Transit',identityVerified:true},
-   {num:'ALF97456CX',shcs:['AVI'],status:'Unarrived',identityVerified:false},
-   {num:'PMC48456R7',shcs:[],status:'Received',identityVerified:true}]},
-  {id:'imp-mh129',flight:'MH129',shcs:['PER'],closed:false,ulds:[
-   {num:'AKE11111MH',shcs:['PER'],status:'Received',identityVerified:true},{num:'PMC22222MH',shcs:[],status:'Received',identityVerified:true},{num:'AKE33333MH',shcs:[],status:'Arrived',identityVerified:true}]},
-  {id:'imp-qr905',flight:'QR905',shcs:['AVI'],closed:false,ulds:[
-   {num:'AKE70001QR',shcs:['AVI'],status:'Arrived',identityVerified:true},{num:'PMC70002QR',shcs:[],status:'Unarrived',identityVerified:false}]},
-  {id:'imp-vn778',flight:'VN778',shcs:['PER'],closed:false,ulds:[{num:'AKE81001VN',shcs:['PER'],status:'Received',identityVerified:true}]},
-  {id:'imp-tg461',flight:'TG461',shcs:['DGR'],closed:false,ulds:[{num:'PMC90001TG',shcs:['DGR'],status:'Transit',identityVerified:true},{num:'AKE90002TG',shcs:[],status:'Arrived',identityVerified:true}]}
- ],
- exports:[
-  {id:'exp-cx178',flight:'CX178',shcs:['PIL'],closed:false,ulds:[
-   {num:'PMC52345R7',shcs:['PIL'],status:'Warehouse',identityVerified:false},{num:'AKE59846CX',shcs:[],status:'Transit',identityVerified:true},{num:'AKE59745CX',shcs:[],status:'At Aircraft',identityVerified:true}]},
-  {id:'exp-mh128',flight:'MH128',shcs:['PER'],closed:false,ulds:[{num:'AKE21111MH',shcs:['PER'],status:'Warehouse',identityVerified:false},{num:'PMC32222MH',shcs:[],status:'At Aircraft',identityVerified:true}]},
-  {id:'exp-qr989',flight:'QR989',shcs:['DGR'],closed:false,ulds:[{num:'PMC67002QR',shcs:['DGR'],status:'Transit',identityVerified:true}]}
- ],
- offloads:[
-  {id:'off-1',uld:'PMC77661CX',flight:'CX163',bay:'F25',status:'Requested',identityVerified:false,requestedAt:Date.now()-7*60000},
-  {id:'off-2',uld:'AKE55490QR',flight:'QR905',bay:'D18',status:'Transit',identityVerified:true,requestedAt:Date.now()-12*60000}
- ],
+ imports:[],
+ exports:[],
+ offloads:[],
  completedOffloads:[],
  completedExports:[],
- history:[
-  {id:'evt-1',ts:Date.now()-3*60000,type:'ULD',action:'Status changed',flight:'CX163',uld:'AKE89745CX',from:'Arrived',to:'Transit',detail:'ULD moved to Transit',user:'Cargo Operator'},
-  {id:'evt-2',ts:Date.now()-7*60000,type:'Offload',action:'Offload requested',flight:'CX163',uld:'PMC77661CX',detail:'Requested from bay F25',user:'Cargo Operator'},
-  {id:'evt-3',ts:Date.now()-12*60000,type:'ULD',action:'ULD accepted',flight:'QR905',uld:'AKE70001QR',from:'Unarrived',to:'Arrived',detail:'Identity verified on first acceptance',user:'Cargo Operator'},
-  {id:'evt-4',ts:Date.now()-21*60000,type:'ULD',action:'Status changed',flight:'TG461',uld:'PMC90001TG',from:'Arrived',to:'Transit',detail:'ULD moved to Transit',user:'Cargo Operator'},
-  {id:'evt-5',ts:Date.now()-35*60000,type:'FFM',action:'FFM injected',flight:'VN778',detail:'1 ULD loaded from FFM',user:'Cargo Operator'}
- ]
+ history:[]
 };
 let state=loadState();
 let route={screen:'home',type:null,id:null};
 let historyFilter='All';
 let historySearch='';
-function loadState(){try{const s=JSON.parse(localStorage.getItem('cargorun-state'))||structuredClone(seed);if(!s.sessionUser)s.sessionUser={name:'Demo Operator',employeeId:'MEL-DEMO'};s.settings=s.settings||{};s.settings.flightStatus={...structuredClone(seed.settings.flightStatus),...(s.settings.flightStatus||{})};if(!Array.isArray(s.history))s.history=[];if(!Array.isArray(s.completedOffloads))s.completedOffloads=[];if(!Array.isArray(s.completedExports))s.completedExports=[];(s.imports||[]).forEach(f=>(f.ulds||[]).forEach(u=>{if(u.status!=='Unarrived'&&!u.acceptedAt){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.from==='Unarrived'&&e.to==='Arrived');if(evt){u.acceptedAt=evt.ts;u.acceptedBy=evt.user||''}}}));(s.exports||[]).forEach(f=>(f.ulds||[]).forEach(u=>{if((u.status==='Transit'||u.status==='At Aircraft')&&!u.departedWarehouseAt){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.from==='Warehouse'&&e.to==='Transit');if(evt){u.departedWarehouseAt=evt.ts;u.departedWarehouseBy=evt.user||''}}if(u.status==='At Aircraft'){if(!u.atAircraftAt){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.to==='At Aircraft');u.atAircraftAt=evt?.ts||Date.now()}if(!u.deliveredBy){const evt=(s.history||[]).find(e=>e.flight===f.flight&&e.uld===u.num&&e.to==='At Aircraft');u.deliveredBy=evt?.user||'Demo Operator';u.deliveredById=''}}}));(s.completedExports||[]).forEach(r=>{if(!r.finalizedAt&&r.signedAt)r.finalizedAt=r.signedAt;if(!r.finalizedBy&&r.signedBy)r.finalizedBy=r.signedBy;if(!r.finalizedById&&r.staffId)r.finalizedById=r.staffId;(r.ulds||[]).forEach(u=>{if(!u.deliveredBy)u.deliveredBy=r.signedBy||'Recorded operator';if(!u.deliveredById)u.deliveredById='';if(!('departedWarehouseAt' in u))u.departedWarehouseAt=null;});});return s}catch(e){return structuredClone(seed)}}
-function save(){localStorage.setItem('cargorun-state',JSON.stringify(state))}
+function loadState(){
+ try{
+  const raw=JSON.parse(localStorage.getItem('cargorun-state')||'null');
+  if(!raw||raw.stateVersion!==CARGORUN_STATE_VERSION)return structuredClone(seed);
+  const s={...structuredClone(seed),...raw};
+  s.stateVersion=CARGORUN_STATE_VERSION;
+  if(!s.sessionUser)s.sessionUser={name:'Prototype Operator',employeeId:''};
+  s.settings=s.settings||{};
+  s.settings.flightStatus={...structuredClone(seed.settings.flightStatus),...(s.settings.flightStatus||{})};
+  for(const k of ['imports','exports','offloads','completedOffloads','completedExports','history'])if(!Array.isArray(s[k]))s[k]=[];
+  return s;
+ }catch(e){return structuredClone(seed)}
+}
+function save(){state.stateVersion=CARGORUN_STATE_VERSION;localStorage.setItem('cargorun-state',JSON.stringify(state))}
 
 /* =========================================================
    AZURE CENTRAL DATA SYNC
@@ -489,85 +476,87 @@ async function fetchAzureUlds(flightId){
   return Array.isArray(data.ulds)?data.ulds:[];
 }
 
-async function syncAzureFlights(quiet=false){
+async function syncAzureFlights(quiet=false,skipRender=false){
   if(!canUseCargoRunApi())return false;
   try{
-    const res=await fetch('/api/flights',{
-      method:'GET',
-      headers:{Accept:'application/json'},
-      cache:'no-store'
-    });
+    const res=await fetch('/api/flights',{method:'GET',headers:{Accept:'application/json'},cache:'no-store'});
     const data=await res.json().catch(()=>({}));
-    if(!res.ok||data.ok===false){
-      throw new Error(data.error||`Flights API ${res.status}`);
-    }
-
-    const remoteFlights=(Array.isArray(data.flights)?data.flights:[])
-      .filter(f=>String(f.FlightStatus||'ACTIVE').toUpperCase()==='ACTIVE');
-
-    const hydrated=await Promise.all(remoteFlights.map(async apiFlight=>({
-      apiFlight,
-      apiUlds:await fetchAzureUlds(apiFlight.FlightId)
-    })));
-
+    if(!res.ok||data.ok===false)throw new Error(data.error||`Flights API ${res.status}`);
+    const remoteFlights=(Array.isArray(data.flights)?data.flights:[]).filter(f=>String(f.FlightStatus||'ACTIVE').toUpperCase()==='ACTIVE');
+    const hydrated=await Promise.all(remoteFlights.map(async apiFlight=>({apiFlight,apiUlds:await fetchAzureUlds(apiFlight.FlightId)})));
     for(const type of ['imports','exports']){
       const direction=type==='imports'?'IMPORT':'EXPORT';
       const oldList=Array.isArray(state[type])?state[type]:[];
       const relevant=hydrated.filter(x=>String(x.apiFlight.Direction||'').toUpperCase()===direction);
-
-      const azureFlights=relevant.map(({apiFlight,apiUlds})=>{
+      state[type]=relevant.map(({apiFlight,apiUlds})=>{
         const existing=oldList.find(f=>sameAzureFlight(f,apiFlight))||null;
         const existingUlds=existing?.ulds||[];
         const mappedUlds=apiUlds.map(apiUld=>{
-          const oldUld=existingUlds.find(u=>
-            String(u.azureUldId||'')===String(apiUld.UldId||'')||
-            String(u.num||'').toUpperCase()===String(apiUld.UldNumber||'').toUpperCase()
-          )||null;
+          const oldUld=existingUlds.find(u=>String(u.azureUldId||'')===String(apiUld.UldId||'')||String(u.num||'').toUpperCase()===String(apiUld.UldNumber||'').toUpperCase())||null;
           return azureUldToUi(apiUld,direction,oldUld);
         });
-        const shcs=[...new Set(mappedUlds.flatMap(u=>u.shcs||[]))];
-        return {
-          ...(existing||{}),
-          id:existing?.id||`az-${type==='imports'?'imp':'exp'}-${apiFlight.FlightId}`,
-          azureFlightId:apiFlight.FlightId,
-          flight:String(apiFlight.FlightNumber||'').toUpperCase(),
-          flightDate:azureDisplayDate(apiFlight.OperatingDate),
-          sourceFile:existing?.sourceFile||'',
-          sourceType:'Azure SQL',
-          uploadedAt:existing?.uploadedAt||(apiFlight.CreatedAtUtc?Date.parse(apiFlight.CreatedAtUtc):Date.now()),
-          shcs,
-          closed:false,
-          flightStatus:azureFlightStatus(existing,apiFlight),
-          ulds:mappedUlds
-        };
+        return {...(existing||{}),id:existing?.id||`az-${type==='imports'?'imp':'exp'}-${apiFlight.FlightId}`,azureFlightId:apiFlight.FlightId,flight:String(apiFlight.FlightNumber||'').toUpperCase(),flightDate:azureDisplayDate(apiFlight.OperatingDate),sourceFile:existing?.sourceFile||'',sourceType:'Azure SQL',uploadedAt:existing?.uploadedAt||(apiFlight.CreatedAtUtc?Date.parse(apiFlight.CreatedAtUtc):Date.now()),shcs:[...new Set(mappedUlds.flatMap(u=>u.shcs||[]))],closed:false,flightStatus:azureFlightStatus(existing,apiFlight),ulds:mappedUlds};
       });
-
-      const localOnly=oldList.filter(local=>
-        !local.azureFlightId&&
-        !relevant.some(({apiFlight})=>sameAzureFlight(local,apiFlight))
-      );
-
-      state[type]=[...azureFlights,...localOnly];
     }
-
-    state.azureSync={
-      lastSuccess:Date.now(),
-      flightCount:remoteFlights.length
-    };
+    state.azureSync={...(state.azureSync||{}),lastSuccess:Date.now(),flightCount:remoteFlights.length};
     save();
-    render();
+    if(!skipRender)render();
     if(!quiet)toast(`Azure synced — ${remoteFlights.length} active flight${remoteFlights.length===1?'':'s'}`);
     return true;
   }catch(err){
-    console.error('CargoRun Azure sync failed',err);
+    console.error('CargoRun Azure flight sync failed',err);
     state.azureSync={...(state.azureSync||{}),lastError:err?.message||'Azure sync failed',lastAttempt:Date.now()};
     if(!quiet)toast(`Azure sync unavailable: ${err?.message||'unknown error'}`);
     return false;
   }
 }
-function logEvent(type,action,data={}){if(!Array.isArray(state.history))state.history=[];state.history.unshift({id:'evt-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),ts:Date.now(),type,action,user:data.user||currentUser().name,flight:data.flight||'',uld:data.uld||'',from:data.from||'',to:data.to||'',detail:data.detail||''});state.history=state.history.slice(0,500)}
-function resetDemo(){localStorage.removeItem('cargorun-state');state=structuredClone(seed);route={screen:'home'};historyFilter='All';historySearch='';render();toast('Demo data reset')}
-function currentUser(){return state.sessionUser||{name:'Demo Operator',employeeId:'MEL-DEMO'}}
+
+function azureOffloadToUi(o){
+ const status=azureStatusToUi(o.status||'REQUESTED','');
+ return {id:`az-off-${o.offloadId}`,azureOffloadId:o.offloadId,flight:String(o.flightNumber||'').toUpperCase(),uld:String(o.uldNumber||'').toUpperCase(),bay:String(o.parkingBay||'').toUpperCase(),status,identityVerified:status!=='Requested',requestedAt:toMs(o.requestedAtUtc)||Date.now(),requestedBy:o.requestedByDisplayName||'',collectedAt:toMs(o.collectedAtUtc),collectedBy:o.collectedByDisplayName||'',completedAt:toMs(o.deliveredAtUtc),deliveredBy:o.deliveredByDisplayName||'',location:o.deliveredLocation||''};
+}
+async function syncAzureOffloads(quiet=true,skipRender=false){
+ if(!canUseCargoRunApi())return false;
+ try{
+  const res=await fetch('/api/offloads',{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));
+  if(!res.ok||data.ok===false)throw new Error(data.error||`Offloads API ${res.status}`);
+  const all=(data.offloads||[]).map(azureOffloadToUi);
+  state.offloads=all.filter(o=>o.status!=='Complete');
+  state.completedOffloads=all.filter(o=>o.status==='Complete');
+  save();if(!skipRender)render();return true;
+ }catch(err){console.error('CargoRun offload sync failed',err);if(!quiet)toast(err?.message||'Offload sync unavailable');return false}
+}
+function remoteAuditToUi(e){return{id:`az-evt-${e.id||Math.random().toString(36).slice(2)}`,ts:toMs(e.ts)||Date.now(),type:e.type||'Activity',action:e.action||'Activity',user:e.user||'',flight:e.flight||'',uld:e.uld||'',from:azureStatusToUi(e.from||'',''),to:azureStatusToUi(e.to||'',''),detail:e.detail||''}}
+async function syncAzureHistory(quiet=true,skipRender=false){
+ if(!canUseCargoRunApi())return false;
+ try{const res=await fetch('/api/history',{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||`History API ${res.status}`);state.history=(data.events||[]).map(remoteAuditToUi);save();if(!skipRender)render();return true}catch(err){console.error('CargoRun history sync failed',err);if(!quiet)toast(err?.message||'History sync unavailable');return false}
+}
+function remoteCompletionToUi(r){return{id:`az-export-${r.id||r.verificationId}`,azureCompletionId:r.id||null,flight:r.flight||'',finalizedBy:r.finalizedBy||'',finalizedById:r.finalizedById||'',finalizedAt:toMs(r.finalizedAt)||Date.now(),verificationId:r.verificationId||r.recordHash?.slice?.(0,24)||'',recordHash:r.recordHash||'',ulds:Array.isArray(r.ulds)?r.ulds:[]}}
+async function syncAzureExportCompletions(quiet=true,skipRender=false){
+ if(!canUseCargoRunApi())return false;
+ try{const res=await fetch('/api/export-completions',{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||`Export completions API ${res.status}`);state.completedExports=(data.records||[]).map(remoteCompletionToUi);save();if(!skipRender)render();return true}catch(err){console.error('CargoRun export completion sync failed',err);if(!quiet)toast(err?.message||'Completion record sync unavailable');return false}
+}
+async function syncCentralData(quiet=true){
+ if(!canUseCargoRunApi())return false;
+ const results=await Promise.all([syncAzureFlights(true,true),syncAzureOffloads(true,true),syncAzureHistory(true,true),syncAzureExportCompletions(true,true)]);
+ save();render();
+ if(!quiet){const ok=results.filter(Boolean).length;toast(ok===results.length?'CargoRun central data synced':`CargoRun synced ${ok}/${results.length} data services`)}
+ return results.every(Boolean);
+}
+async function postAuditEvent(evt){
+ if(!canUseCargoRunApi())return false;
+ try{const res=await fetch('/api/history',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({type:evt.type,action:evt.action,user:evt.user,actorReference:currentUser().employeeId||'',flight:evt.flight,uld:evt.uld,from:evt.from,to:evt.to,detail:evt.detail})});return res.ok}catch{return false}
+}
+
+function logEvent(type,action,data={}){
+ if(!Array.isArray(state.history))state.history=[];
+ const evt={id:'evt-'+Date.now()+'-'+Math.random().toString(36).slice(2,7),ts:Date.now(),type,action,user:data.user||currentUser().name,flight:data.flight||'',uld:data.uld||'',from:data.from||'',to:data.to||'',detail:data.detail||''};
+ state.history.unshift(evt);state.history=state.history.slice(0,500);
+ postAuditEvent(evt).catch(()=>{});
+ return evt;
+}
+function clearLocalCargoRunCache(){localStorage.removeItem('cargorun-state');state=structuredClone(seed);save();render();syncCentralData(true)}
+function currentUser(){return state.sessionUser||{name:'Prototype Operator',employeeId:''}}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function slug(s){return s.toLowerCase().replace(/\s+/g,'-')}
 function normalizeULD(s=''){return String(s).toUpperCase().replace(/[^A-Z0-9]/g,'')}
@@ -679,7 +668,6 @@ function home(){
   <button class="menu-card good" onclick="openScreen('history')">${statusPill('Audit','green')}<div class="title">History</div><div class="sub">Audit ULD status changes, offloads, FFMs and flight actions.</div><div class="minor">Search, filter and export the activity trail.</div><div class="metric">${(state.history||[]).length}</div></button>
   <button class="menu-card warn" onclick="showRequestOffload()">${statusPill('Action','amber')}<div class="title">Request Offload</div><div class="sub">Create a request with ULD, flight and parking bay.</div><div class="minor">Outstanding offloads become visible immediately.</div><div class="metric">＋</div></button>
   <button class="menu-card warn" onclick="showUploadFlightData()">${statusPill('Input','amber')}<div class="title">Upload Flight Data</div><div class="sub">Upload the office Import ULD List or Export Unit List Excel file.</div><div class="minor">CargoRun auto-detects Import vs Export from the text at the top.</div><div class="metric">XLSX</div></button>
-  <button class="menu-card" onclick="resetDemo()">${statusPill('Reset','green')}<div class="title">Reset Demo</div><div class="sub">Restore the original prototype flights, history and ULD statuses.</div><div class="minor">Use this to restart the demo environment.</div><div class="metric">↺</div></button>
  </div>`
 }
 function flights(type){
@@ -838,7 +826,11 @@ function findAtAircraftTime(flight,uld){const f=state.exports.find(x=>x.flight==
 async function sha256(text){try{const buf=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));return [...new Uint8Array(buf)].map(b=>b.toString(16).padStart(2,'0')).join('').toUpperCase()}catch(e){return ('LOCAL-'+Date.now().toString(36)).toUpperCase()}}
 function exportDeliveryRows(f){return f.ulds.map(u=>`<div><strong>${esc(u.num)}</strong></div><div>${fmtDateTime(u.departedWarehouseAt||findWarehouseDepartureTime(f.flight,u.num))}</div><div>${esc(u.deliveredBy||'Recorded operator')}${u.deliveredById?` (${esc(u.deliveredById)})`:''}</div><div>${fmtDateTime(u.atAircraftAt)}</div>`).join('')}
 function showFinalizeExport(id){const f=state.exports.find(x=>x.id===id);if(!f||f.closed)return;if(!f.ulds.every(u=>u.status==='At Aircraft')){toast('All export ULDs must be at aircraft before finalising');return}modal(`${modalHead('Finalise Export Flight')}<p>All ULDs for <strong>${esc(f.flight)}</strong> are at aircraft. CargoRun has recorded when each ULD left the warehouse, who delivered it to the aircraft, and when it reached the aircraft. Finalising closes the flight and creates a permanent investigation-ready completion record.</p><div class="delivery-table"><div class="th">ULD</div><div class="th">Left warehouse</div><div class="th">Delivered by</div><div class="th">At aircraft</div>${exportDeliveryRows(f)}</div><div class="accept-note">In Azure, the operator name and employee identity will come from the signed-in Microsoft Entra account rather than manual entry.</div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="finalizeExport('${id}')">Finalise Flight</button></div>`)}
-async function finalizeExport(id){const f=state.exports.find(x=>x.id===id);if(!f||f.closed)return;if(!f.ulds.every(u=>u.status==='At Aircraft')){toast('All ULDs must be at aircraft');return}const operator=currentUser(),finalizedAt=Date.now();const ulds=f.ulds.map(u=>({num:u.num,shcs:u.shcs||[],departedWarehouseAt:u.departedWarehouseAt||findWarehouseDepartureTime(f.flight,u.num),departedWarehouseBy:u.departedWarehouseBy||'',departedWarehouseById:u.departedWarehouseById||'',atAircraftAt:findAtAircraftTime(f.flight,u.num),deliveredBy:u.deliveredBy||operator.name,deliveredById:u.deliveredById||''}));const base={flight:f.flight,finalizedBy:operator.name,finalizedById:operator.employeeId||'',finalizedAt,ulds};const hash=await sha256(JSON.stringify(base));const record={id:'export-'+Date.now(),...base,verificationId:hash.slice(0,24)};if(!Array.isArray(state.completedExports))state.completedExports=[];state.completedExports.unshift(record);f.closed=true;f.readyToFinalize=false;f.completedRecordId=record.id;logEvent('Flight','Export finalised',{flight:f.flight,detail:`Finalised by ${operator.name} at ${fmtDateTime(finalizedAt)} • Record ${record.verificationId}`,user:operator.name});save();closeModal();toast(`${f.flight} finalised and closed`);openScreen('history');setTimeout(()=>showCompletedExportRecord(record.id),80)}
+async function finalizeExport(id){
+ const f=state.exports.find(x=>x.id===id);if(!f||f.closed)return;if(!f.azureFlightId){toast('This flight is not linked to Azure');return}if(!f.ulds.every(u=>u.status==='At Aircraft')){toast('All ULDs must be at aircraft');return}
+ const operator=currentUser();const ulds=f.ulds.map(u=>({num:u.num,shcs:u.shcs||[],departedWarehouseAt:u.departedWarehouseAt||findWarehouseDepartureTime(f.flight,u.num),departedWarehouseBy:u.departedWarehouseBy||'',departedWarehouseById:u.departedWarehouseById||'',atAircraftAt:findAtAircraftTime(f.flight,u.num),deliveredBy:u.deliveredBy||operator.name,deliveredById:u.deliveredById||''}));
+ try{const res=await fetch('/api/export-completions',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,finalizedBy:operator.name,finalizedById:operator.employeeId||'',snapshot:{flight:f.flight,ulds}})});const data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Export completion API ${res.status}`);const record=remoteCompletionToUi(data.record);if(!Array.isArray(state.completedExports))state.completedExports=[];state.completedExports.unshift(record);logEvent('Flight','Export finalised',{flight:f.flight,detail:`Finalised by ${operator.name} • Record ${record.verificationId}`,user:operator.name});closeModal();toast(`${f.flight} finalised centrally`);await syncCentralData(true);openScreen('history');setTimeout(()=>showCompletedExportRecord(record.id),80)}catch(err){console.error(err);toast(err?.message||'Export could not be finalised')}
+}
 function completedExportsSection(){const records=(state.completedExports||[]).slice().sort((a,b)=>(b.finalizedAt||b.signedAt||0)-(a.finalizedAt||a.signedAt||0));return records.length?`<section class="completed-section"><div class="panel-title"><h3>Completed Export Flights</h3><span>${records.length} RECORD${records.length===1?'':'S'}</span></div><div class="completed-grid">${records.map(r=>{const when=r.finalizedAt||r.signedAt;const who=r.finalizedBy||r.signedBy||'Recorded operator';return `<div class="completed-card"><div class="completed-card-head"><div><h4>${esc(r.flight)}</h4><p>Finalised by ${esc(who)} • ${fmtDateTime(when)}<br>${(r.ulds||[]).length} ULD${(r.ulds||[]).length===1?'':'s'} • Record ${esc(r.verificationId||'—')}</p></div><span class="completed-mark">RECORDED</span></div><div class="completed-actions"><button class="secondary" onclick="showCompletedExportRecord('${r.id}')">View Record</button><button class="primary" onclick="downloadCompletedExport('${r.id}')">Download Copy</button><button class="secondary" onclick="printCompletedExport('${r.id}')">Print / PDF</button></div></div>`}).join('')}</div></section>`:''}
 function normaliseCompletedRecord(r){return {...r,finalizedAt:r.finalizedAt||r.signedAt,finalizedBy:r.finalizedBy||r.signedBy||'Recorded operator',finalizedById:r.finalizedById||r.staffId||'',ulds:(r.ulds||[]).map(u=>({...u,departedWarehouseAt:u.departedWarehouseAt||null,departedWarehouseBy:u.departedWarehouseBy||'',departedWarehouseById:u.departedWarehouseById||'',deliveredBy:u.deliveredBy||r.signedBy||'Recorded operator',deliveredById:u.deliveredById||''}))}}
 function showCompletedExportRecord(id){let r=(state.completedExports||[]).find(x=>x.id===id);if(!r)return;r=normaliseCompletedRecord(r);const rows=r.ulds.map(u=>`<div><strong>${esc(u.num)}</strong>${chips(u.shcs)}</div><div>${fmtDateTime(u.departedWarehouseAt)}</div><div>${esc(u.deliveredBy||'Recorded operator')}${u.deliveredById?` (${esc(u.deliveredById)})`:''}</div><div>${fmtDateTime(u.atAircraftAt)}</div>`).join('');modal(`${modalHead('Export Completion Record')}<p><strong>${esc(r.flight)}</strong> was finalised in CargoRun with warehouse-departure, operator-delivery and aircraft-arrival timestamps for investigation purposes.</p><div class="certificate-preview"><strong>${esc(r.flight)} — Export Flight Completion</strong><div class="timestamp-list"><span>Finalised by</span><span>${esc(r.finalizedBy)}${r.finalizedById?` (${esc(r.finalizedById)})`:''}</span><span>Finalised</span><span>${fmtDateTime(r.finalizedAt)}</span><span>Verification ID</span><span>${esc(r.verificationId||'—')}</span></div><div class="delivery-table"><div class="th">ULD</div><div class="th">Left warehouse</div><div class="th">Delivered by</div><div class="th">At aircraft</div>${rows}</div></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Close</button><button class="secondary" onclick="printCompletedExport('${r.id}')">Print / Save PDF</button><button class="primary" onclick="downloadCompletedExport('${r.id}')">Download Copy</button></div>`)}
@@ -847,12 +839,21 @@ function downloadCompletedExport(id){const r=(state.completedExports||[]).find(x
 function printCompletedExport(id){const r=(state.completedExports||[]).find(x=>x.id===id);if(!r)return;const w=window.open('','_blank');if(!w){toast('Allow pop-ups to print the completion record');return}w.document.open();w.document.write(completionRecordHtml(r));w.document.close();setTimeout(()=>w.print(),250)}
 
 function showCloseFlight(type,id){modal(`${modalHead('Close Flight – Confirm')}<p>Closing the flight removes it from the active import screen. Enter the supervisor passcode.</p><div class="field"><label>PASSCODE</label><input id="closePin" type="password" inputmode="numeric" placeholder="1234"></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="danger" onclick="closeFlight('${type}','${id}')">Close Flight</button></div>`)}
-function closeFlight(type,id){if(document.getElementById('closePin').value!=='1234'){toast('Incorrect passcode');return}const f=state[type].find(x=>x.id===id);f.closed=true;logEvent('Flight','Flight manually closed',{flight:f.flight,detail:'Closed with supervisor passcode',user:'Supervisor'});save();closeModal();toast(`${f.flight} closed`);openScreen('flights',type)}
+async function closeFlight(type,id){
+ if(document.getElementById('closePin').value!=='1234'){toast('Incorrect passcode');return}
+ const f=state[type].find(x=>x.id===id);if(!f)return;if(!f.azureFlightId){toast('This flight is not linked to Azure');return}
+ try{const res=await fetch('/api/flights',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,expectedStatus:'ACTIVE',nextStatus:'CLOSED',actorDisplayName:currentUser().name,actorReference:currentUser().employeeId||''})});const data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||`Flights API ${res.status}`);logEvent('Flight','Flight manually closed',{flight:f.flight,detail:'Closed with supervisor passcode',user:currentUser().name});closeModal();toast(`${f.flight} closed centrally`);await syncAzureFlights(true);openScreen('flights',type)}catch(err){console.error(err);toast(err?.message||'Flight could not be closed')}
+}
 function showOperator(){const u=currentUser();modal(`${modalHead('Prototype Operator')}<p>This simulates the identity that Microsoft Entra will provide when CargoRun moves to Azure. ULD deliveries to aircraft are stamped to this signed-in user.</p><div class="field"><label>OPERATOR NAME</label><input id="operatorName" value="${esc(u.name)}" placeholder="Full name"></div><div class="field"><label>EMPLOYEE ID</label><input id="operatorId" value="${esc(u.employeeId||'')}" placeholder="Employee ID"></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveOperator()">Use Operator</button></div>`)}
 function saveOperator(){const name=(document.getElementById('operatorName')?.value||'').trim(),employeeId=(document.getElementById('operatorId')?.value||'').trim();if(!name){toast('Enter an operator name');return}state.sessionUser={name,employeeId};save();closeModal();toast(`Signed in as ${name}`);render()}
 
 function showRequestOffload(){modal(`${modalHead('Request Offload')}<p>Create an offload request. It will immediately appear on the Offloads screen.</p><div class="field"><label>ULD NUMBER</label><input id="offUld" placeholder="PMC12345CX"></div><div class="field"><label>FLIGHT NUMBER</label><input id="offFlight" placeholder="CX163"></div><div class="field"><label>PARKING BAY</label><input id="offBay" placeholder="F25"></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="createOffload()">Confirm</button></div>`)}
-function createOffload(){const uld=document.getElementById('offUld').value.trim().toUpperCase(),flight=document.getElementById('offFlight').value.trim().toUpperCase(),bay=document.getElementById('offBay').value.trim().toUpperCase();if(!uld||!flight||!bay){toast('Complete all fields');return}state.offloads.push({id:'off-'+Date.now(),uld,flight,bay,status:'Requested',identityVerified:false,requestedAt:Date.now()});logEvent('Offload','Offload requested',{flight,uld,detail:`Requested from bay ${bay}`});save();closeModal();toast(`Offload requested: ${uld}`);openScreen('offloads')}
+async function createOffload(){
+ const uld=document.getElementById('offUld').value.trim().toUpperCase(),flight=document.getElementById('offFlight').value.trim().toUpperCase(),bay=document.getElementById('offBay').value.trim().toUpperCase();
+ if(!uld||!flight||!bay){toast('Complete all fields');return}
+ if(!canUseCargoRunApi()){toast('CargoRun must be online to create an offload');return}
+ try{const operator=currentUser();const res=await fetch('/api/offloads',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({uldNumber:uld,flightNumber:flight,parkingBay:bay,actorDisplayName:operator.name,actorReference:operator.employeeId||''})});const data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Offloads API ${res.status}`);logEvent('Offload','Offload requested',{flight,uld,detail:`Requested from bay ${bay}`,user:operator.name});closeModal();toast(`Offload requested: ${uld} • Azure`);await syncAzureOffloads(true);openScreen('offloads')}catch(err){console.error(err);toast(err?.message||'Offload could not be saved to Azure')}
+}
 function handleOffload(index){
  const o=state.offloads[index];
  if(o.status==='Requested'){
@@ -862,12 +863,16 @@ function handleOffload(index){
   modal(`${modalHead('ULD Location')}<p><strong>${esc(o.uld)}</strong> is already verified. Confirm where it has been delivered. Completing this removes it from the active Offloads screen.</p><div class="field"><label>ULD LOCATION</label><input id="offLocation" placeholder="Breakdown 2"></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="completeOffload(${index})">Confirm Location</button></div>`);
  }
 }
-function confirmOffloadTransit(index){
- const o=state.offloads[index],val=document.getElementById('offConfirm').value;
+async function confirmOffloadTransit(index){
+ const o=state.offloads[index],val=document.getElementById('offConfirm').value;if(!o)return;
  if(!matchesULDInput(o.uld,val)){toast(`ULD does not match ${o.uld}`);return}
- o.identityVerified=true;o.status='Transit';o.collectedAt=Date.now();logEvent('Offload','Offload collected',{flight:o.flight,uld:o.uld,from:'Requested',to:'Transit',detail:`Collected from bay ${o.bay}`});save();closeModal();toast(`${o.uld} verified and now in transit`);render();
+ if(!o.azureOffloadId){toast('Offload is not linked to Azure');return}
+ try{const operator=currentUser();const res=await fetch('/api/offloads',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({offloadId:o.azureOffloadId,expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT',actorDisplayName:operator.name,actorReference:operator.employeeId||''})});const data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false){if(res.status===409)await syncAzureOffloads(true);throw new Error(data.error||`Offloads API ${res.status}`)}logEvent('Offload','Offload collected',{flight:o.flight,uld:o.uld,from:'Requested',to:'Transit',detail:`Collected from bay ${o.bay}`,user:operator.name});closeModal();toast(`${o.uld} verified and now in transit • Azure`);await syncAzureOffloads(true)}catch(err){console.error(err);toast(err?.message||'Offload status could not be saved')}
 }
-function completeOffload(index){const loc=document.getElementById('offLocation').value.trim();if(!loc){toast('Enter the ULD location');return}const [o]=state.offloads.splice(index,1);o.status='Complete';o.location=loc;o.completedAt=Date.now();state.completedOffloads.push(o);logEvent('Offload','Offload delivered',{flight:o.flight,uld:o.uld,from:'Transit',to:'Complete',detail:`Delivered to ${loc}`});save();closeModal();toast(`${o.uld} delivered to ${loc}`);render()}
+async function completeOffload(index){
+ const o=state.offloads[index],loc=document.getElementById('offLocation').value.trim();if(!o)return;if(!loc){toast('Enter the ULD location');return}if(!o.azureOffloadId){toast('Offload is not linked to Azure');return}
+ try{const operator=currentUser();const res=await fetch('/api/offloads',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({offloadId:o.azureOffloadId,expectedCurrentStatus:'TRANSIT',nextStatus:'COMPLETE',deliveredLocation:loc,actorDisplayName:operator.name,actorReference:operator.employeeId||''})});const data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false){if(res.status===409)await syncAzureOffloads(true);throw new Error(data.error||`Offloads API ${res.status}`)}logEvent('Offload','Offload delivered',{flight:o.flight,uld:o.uld,from:'Transit',to:'Complete',detail:`Delivered to ${loc}`,user:operator.name});closeModal();toast(`${o.uld} delivered to ${loc} • Azure`);await syncAzureOffloads(true)}catch(err){console.error(err);toast(err?.message||'Offload completion could not be saved')}
+}
 
 function showScan(prefill=''){modal(`${modalHead('Scan ULD')}<p>Scan or type the full ULD number, or just the numeric serial. CargoRun will open the matching active import, export or offload.</p><div class="field"><label>ULD NUMBER OR NUMERIC SERIAL</label><input id="scanUld" placeholder="ALF12345CX or 12345" value="${esc(prefill)}"></div><div class="accept-note">CargoRun accepts the full ULD — for example <strong>ALF12345CX</strong> — or just the numeric serial <strong>12345</strong>.</div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="doQuickScan()">Open Item</button></div>`);setTimeout(()=>document.getElementById('scanUld')?.focus(),20)}
 function doQuickScan(){const val=document.getElementById('scanUld').value.trim().toUpperCase();if(!val){toast('Enter or scan a ULD');return}
@@ -2162,10 +2167,10 @@ async function createUploadedFlight() {
 }
 function render(){let content='';if(route.screen==='home')content=home();else if(route.screen==='flights')content=flights(route.type);else if(route.screen==='flight')content=flightDetail(route.type,route.id);else if(route.screen==='offloads')content=offloads();else if(route.screen==='flightboard')content=flightBoardScreen();else if(route.screen==='priority')content=priorityCargoScreen();else if(route.screen==='supervisor')content=supervisorDashboard();else if(route.screen==='history')content=historyScreen();shell(content)}
 render();
-setTimeout(()=>syncAzureFlights(false),100);
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncAzureFlights(true)});
+setTimeout(()=>syncCentralData(false),100);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncCentralData(true)});
 // Prototype multi-device polling. SignalR can replace this later for true push updates.
-setInterval(()=>{if(document.visibilityState==='visible'&&canUseCargoRunApi())syncAzureFlights(true)},5000);
+setInterval(()=>{if(document.visibilityState==='visible'&&canUseCargoRunApi())syncCentralData(true)},5000);
 setInterval(()=>{if(document.visibilityState==='visible'&&canUseFlightStatusApi())syncAllFlightArrivals(true)},Math.max(1,Number(flightStatusSettings().pollMinutes||2))*60000);
 </script>
 </body>
