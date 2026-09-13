@@ -1,0 +1,26 @@
+CargoRun v3.9 - Flight arrival integration
+
+The UI calls: /api/flight-status?flight=MH0147&arrivalAirport=MEL&date=2026-09-13
+
+Included Azure Function:
+  api/flight-status/index.js
+  api/flight-status/function.json
+
+Azure configuration required:
+1. Deploy the app + api folder to Azure Static Web Apps / Azure Functions.
+2. Add an application setting named FLIGHTAWARE_API_KEY containing your FlightAware AeroAPI key.
+3. Do NOT put the API key in index.html or JavaScript served to browsers.
+4. CargoRun will poll active import flights approximately every 2 minutes while the page is open.
+5. The Flight Board also has a manual Sync Arrivals button.
+
+Timer logic:
+- Prefer actual In Block / actual_in as the acceptance timer start.
+- If only touchdown / actual_on exists, CargoRun applies a configurable taxi/grace period (default 10 min).
+- Standard ULD defaults: warning 20 min, late 30 min.
+- Priority ULD defaults: warning 10 min, late 20 min.
+- Thresholds are editable in Arrival Settings.
+- A manual Set In Block function remains available as a fallback.
+
+CX Courier rule:
+- On IMPORT flights operated by CX only, XPS or Courier-marked ULDs are treated as HIGH PRIORITY, equivalent to AVI.
+- XPS on other airlines is not escalated by this Cathay-specific rule.
