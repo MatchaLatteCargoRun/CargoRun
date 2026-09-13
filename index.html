@@ -614,22 +614,1290 @@ function doQuickScan(){const val=document.getElementById('scanUld').value.trim()
  for(const type of ['imports','exports']){for(const f of activeFlights(type)){const idx=f.ulds.findIndex(u=>matchesULDInput(u.num,val));if(idx>=0){const u=f.ulds[idx];closeModal();toast(`Opened ${f.flight} • ${u.num}`);openScreen('flight',type,f.id);return}}}
  toast('No active import, export or offload matched that ULD')}
 
-let pendingFlightUpload=null;
-function showUploadFlightData(){pendingFlightUpload=null;modal(`${modalHead('Upload Flight Data')}<p>Upload the office Excel file. CargoRun reads the text at the top of the worksheet and automatically detects <strong>Import ULD List</strong> or <strong>Export Unit List</strong>.</p><div class="upload-drop"><div style="font-weight:900;margin-bottom:8px">Select Excel flight file</div><input id="flightDataFile" type="file" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" onchange="handleFlightWorkbook(event)"></div><div id="uploadPreview" class="upload-preview"><div style="color:var(--muted);font-size:12px">No file selected yet.</div></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button id="createFlightBtn" class="primary" onclick="createUploadedFlight()" disabled>Create Flight</button></div>`)}
-function xU16(v,o){return v.getUint16(o,true)}
-function xU32(v,o){return v.getUint32(o,true)}
-async function unzipXlsxEntries(arrayBuffer){const bytes=new Uint8Array(arrayBuffer),view=new DataView(arrayBuffer);let eocd=-1;for(let i=bytes.length-22;i>=Math.max(0,bytes.length-66000);i--){if(xU32(view,i)===0x06054b50){eocd=i;break}}if(eocd<0)throw new Error('This does not appear to be a valid .xlsx file.');const total=xU16(view,eocd+10),cdOffset=xU32(view,eocd+16),td=new TextDecoder('utf-8'),entries={};let p=cdOffset;for(let n=0;n<total;n++){if(xU32(view,p)!==0x02014b50)throw new Error('Invalid Excel file directory.');const method=xU16(view,p+10),compSize=xU32(view,p+20),uncompSize=xU32(view,p+24),fnLen=xU16(view,p+28),extraLen=xU16(view,p+30),commentLen=xU16(view,p+32),localOff=xU32(view,p+42),name=td.decode(bytes.slice(p+46,p+46+fnLen));entries[name]={method,compSize,uncompSize,localOff};p+=46+fnLen+extraLen+commentLen}async function read(name){const e=entries[name];if(!e)return null;const lo=e.localOff;if(xU32(view,lo)!==0x04034b50)throw new Error('Invalid Excel file entry.');const fnLen=xU16(view,lo+26),extraLen=xU16(view,lo+28),start=lo+30+fnLen+extraLen,comp=bytes.slice(start,start+e.compSize);if(e.method===0)return comp;if(e.method===8){if(typeof DecompressionStream==='undefined')throw new Error('Excel upload requires a modern Chrome or Edge browser.');const ds=new DecompressionStream('deflate-raw'),stream=new Blob([comp]).stream().pipeThrough(ds);return new Uint8Array(await new Response(stream).arrayBuffer())}throw new Error('Unsupported Excel compression method.')}return {entries,read}}
-function decodeXlsxXml(s){return String(s||'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&apos;/g,"'").replace(/&amp;/g,'&')}
-function xlsxColIndex(ref='A1'){let n=0;for(const ch of (ref.match(/[A-Z]+/i)||['A'])[0].toUpperCase())n=n*26+(ch.charCodeAt(0)-64);return n-1}
-function parseSharedStrings(xml=''){const out=[];let m;const si=/<si\b[^>]*>([\s\S]*?)<\/si>/gi;while((m=si.exec(xml))){let t='',tm;const tr=/<t\b[^>]*>([\s\S]*?)<\/t>/gi;while((tm=tr.exec(m[1])))t+=decodeXlsxXml(tm[1]);out.push(t)}return out}
-function parseSheetRows(xml,shared=[]){const rows=[];let rm;const rr=/<row\b[^>]*>([\s\S]*?)<\/row>/gi;while((rm=rr.exec(xml))){const row=[];let cm;const cr=/<c\b([^>]*)>([\s\S]*?)<\/c>/gi;while((cm=cr.exec(rm[1]))){const attrs=cm[1],body=cm[2],ref=(attrs.match(/\br="([^"]+)"/)||[])[1]||'A1',t=(attrs.match(/\bt="([^"]+)"/)||[])[1]||'';let val='';if(t==='inlineStr'){let tm;const tr=/<t\b[^>]*>([\s\S]*?)<\/t>/gi;while((tm=tr.exec(body)))val+=decodeXlsxXml(tm[1])}else{const vm=body.match(/<v\b[^>]*>([\s\S]*?)<\/v>/i);if(vm){val=decodeXlsxXml(vm[1]);if(t==='s')val=shared[Number(val)]??val;else if(t==='n'||t===''){const num=Number(val);if(Number.isFinite(num))val=num}}}row[xlsxColIndex(ref)]=val}rows.push(row)}return rows}
-function xlsxSplitShcs(v){return String(v||'').split(/[,\s]+/).map(x=>x.trim().toUpperCase()).filter(Boolean)}
-function xlsxHeader(v){return String(v||'').replace(/\s+/g,' ').trim().toUpperCase()}
-function xlsxFindHeader(headers,names){for(let i=0;i<headers.length;i++){const h=xlsxHeader(headers[i]);if(names.some(n=>h.includes(n)))return i}return -1}
-function parseCargoRunRows(rows,filename=''){const top=(rows[0]||[]).map(x=>String(x??'')).join(' | ').toUpperCase();let type=null;if(/IMPORT\s+ULD\s+LIST/.test(top))type='imports';else if(/EXPORT\s+UNIT\s+LIST/.test(top)||/EXPORT\s+ULD\s+LIST/.test(top))type='exports';else throw new Error('CargoRun could not detect Import or Export. The top of the sheet must say “Import ULD List” or “Export Unit List”.');const allTop=rows.slice(0,2).flat().map(x=>String(x??'')).join(' | ');let flight='',flightDate='';if(type==='imports'){const m=allTop.match(/Import\s+ULD\s+List\s*\(\s*([A-Z0-9]+)\s+([^\)]+)\)/i);if(m){flight=m[1].toUpperCase();flightDate=m[2].trim()}}else{const fm=allTop.match(/Flight\s*Number\s*:\s*([A-Z0-9]+)/i),dm=allTop.match(/Date\s*:\s*([^|]+)/i);if(fm)flight=fm[1].toUpperCase();if(dm)flightDate=dm[1].trim()}if(!flight){const fm=filename.match(/(?:ImportULDList_|Export_ULD_List_)([A-Z0-9]+)/i);if(fm)flight=fm[1].toUpperCase()}if(!flight)throw new Error('Flight number could not be read from the worksheet.');const headerRowIndex=rows.findIndex(r=>(r||[]).some(c=>/ULD\s*(NUMBER|NUMBER\s*\/\s*BULK)/i.test(String(c||''))));if(headerRowIndex<0)throw new Error('CargoRun could not find the ULD header row.');const headers=rows[headerRowIndex]||[],uldCol=xlsxFindHeader(headers,['ULD NUMBER / BULK','ULD NUMBER']),shcCol=xlsxFindHeader(headers,['SHC']),unitTypeCol=xlsxFindHeader(headers,['ULD TYPE']),weightCol=xlsxFindHeader(headers,type==='imports'?['MANIFEST WEIGHT']:['GROSS WEIGHT']),contourCol=xlsxFindHeader(headers,['CONTOUR']),remarksCol=xlsxFindHeader(headers,['ULD REMARKS']),priorityCol=xlsxFindHeader(headers,['PRIORITY']);if(uldCol<0)throw new Error('ULD Number column was not found.');const ulds=[];for(const row of rows.slice(headerRowIndex+1)){const num=String(row[uldCol]??'').trim().toUpperCase();if(!num||!/[A-Z]/.test(num)||!/\d/.test(num))continue;const handling=type==='imports'&&unitTypeCol>=0?String(row[unitTypeCol]??'').trim().toUpperCase():'';const rawWeight=weightCol>=0?Number(row[weightCol]):NaN;const handlingType=handling.includes('BREAKDOWN')?'BREAKDOWN':handling.includes('INTACT')?'INTACT':'';ulds.push({num,shcs:shcCol>=0?xlsxSplitShcs(row[shcCol]):[],status:type==='imports'?'Unarrived':'Warehouse',handlingType,rawHandling:handling,weight:Number.isFinite(rawWeight)?rawWeight:null,contour:contourCol>=0?String(row[contourCol]??'').trim():'',remarks:remarksCol>=0?String(row[remarksCol]??'').trim():'',priority:priorityCol>=0?String(row[priorityCol]??'').trim():''})}if(!ulds.length)throw new Error('No ULD records were found in the file.');return {type,flight,flightDate,ulds,sourceFile:filename}}
-async function parseCargoRunWorkbook(file){const arr=await file.arrayBuffer(),zip=await unzipXlsxEntries(arr),td=new TextDecoder('utf-8'),sharedBytes=await zip.read('xl/sharedStrings.xml'),shared=sharedBytes?parseSharedStrings(td.decode(sharedBytes)):[],sheetName=Object.keys(zip.entries).filter(n=>/^xl\/worksheets\/sheet\d+\.xml$/i.test(n)).sort()[0];if(!sheetName)throw new Error('No worksheet was found in the Excel file.');const sheetBytes=await zip.read(sheetName);if(!sheetBytes)throw new Error('Worksheet data could not be read.');return parseCargoRunRows(parseSheetRows(td.decode(sheetBytes),shared),file.name)}
-async function handleFlightWorkbook(event){const file=event.target.files?.[0],box=document.getElementById('uploadPreview'),btn=document.getElementById('createFlightBtn');pendingFlightUpload=null;if(!file)return;box.className='upload-preview loading';box.innerHTML='Reading <strong>'+esc(file.name)+'</strong>…';btn.disabled=true;try{const parsed=await parseCargoRunWorkbook(file);pendingFlightUpload=parsed;const hc={intact:parsed.ulds.filter(u=>u.handlingType==='INTACT').length,breakdown:parsed.ulds.filter(u=>u.handlingType==='BREAKDOWN').length},totalWeight=parsed.ulds.reduce((s,u)=>s+(Number(u.weight)||0),0),priority=[...new Set(parsed.ulds.flatMap(u=>u.shcs).filter(s=>SHC_META[s]&&['critical','priority'].includes(SHC_META[s].level)))];box.className='upload-preview';box.innerHTML=`<div class="upload-preview-head"><div><strong>${esc(parsed.flight)}</strong><small>${esc(parsed.flightDate||'Date not supplied')} • ${esc(parsed.sourceFile)}</small></div><span class="detect-badge ${parsed.type}">${parsed.type==='imports'?'Import detected':'Export detected'}</span></div><div class="upload-stats"><div class="upload-stat"><span>ULDs</span><strong>${parsed.ulds.length}</strong></div>${parsed.type==='imports'?`<div class="upload-stat"><span>INTACT</span><strong>${hc.intact}</strong></div><div class="upload-stat"><span>BREAKDOWN</span><strong>${hc.breakdown}</strong></div>`:`<div class="upload-stat"><span>Total weight</span><strong>${esc(formatWeight(totalWeight))}</strong></div><div class="upload-stat"><span>Priority SHCs</span><strong>${priority.length}</strong></div>`}</div>${priority.length?`<div style="margin-top:10px">${chips(priority)}</div>`:''}`;btn.disabled=false;btn.textContent=parsed.type==='imports'?'Create Import Flight':'Create Export Flight'}catch(err){box.className='upload-preview error';box.textContent=err?.message||'The Excel file could not be read.';btn.disabled=true}}
-function createUploadedFlight(){const p=pendingFlightUpload;if(!p)return;const target=state[p.type];if(target.some(f=>!f.closed&&f.flight===p.flight)){toast(`${p.flight} is already active in CargoRun`);return}const shcs=[...new Set(p.ulds.flatMap(u=>u.shcs||[]))],flight={id:(p.type==='imports'?'imp-':'exp-')+Date.now(),flight:p.flight,flightDate:p.flightDate||'',sourceFile:p.sourceFile||'',sourceType:'Excel ULD List',uploadedAt:Date.now(),shcs,closed:false,ulds:p.ulds};target.unshift(flight);const hc=handlingCounts(flight);logEvent('Upload','Flight data uploaded',{flight:p.flight,detail:p.type==='imports'?`${p.ulds.length} ULDs • ${hc.intact} INTACT • ${hc.breakdown} BREAKDOWN`:`${p.ulds.length} export ULDs loaded`,user:currentUser().name});save();pendingFlightUpload=null;closeModal();toast(`${p.flight} created as ${p.type==='imports'?'Import':'Export'} — ${p.ulds.length} ULDs`);openScreen('flight',p.type,flight.id);if(p.type==='imports'&&canUseFlightStatusApi())setTimeout(()=>syncFlightArrivalById(flight.id,true),250)}
+let pendingFlightUpload = null;
+
+function showUploadFlightData() {
+  pendingFlightUpload = null;
+
+  modal(`
+    ${modalHead('Upload Flight Data')}
+
+    <p>
+      Upload the office Excel file. CargoRun reads the text at the top of the
+      worksheet and automatically detects <strong>Import ULD List</strong>
+      or <strong>Export Unit List</strong>.
+    </p>
+
+    <div class="upload-drop">
+      <div style="font-weight:900;margin-bottom:8px">
+        Select Excel flight file
+      </div>
+
+      <input
+        id="flightDataFile"
+        type="file"
+        accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        onchange="handleFlightWorkbook(event)"
+      >
+    </div>
+
+    <div id="uploadPreview" class="upload-preview">
+      <div style="color:var(--muted);font-size:12px">
+        No file selected yet.
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button class="secondary" onclick="closeModal()">
+        Cancel
+      </button>
+
+      <button
+        id="createFlightBtn"
+        class="primary"
+        onclick="createUploadedFlight()"
+        disabled
+      >
+        Create Flight
+      </button>
+    </div>
+  `);
+}
+
+
+function xU16(v, o) {
+  return v.getUint16(o, true);
+}
+
+
+function xU32(v, o) {
+  return v.getUint32(o, true);
+}
+
+
+async function unzipXlsxEntries(arrayBuffer) {
+  const bytes = new Uint8Array(arrayBuffer);
+  const view = new DataView(arrayBuffer);
+
+  let eocd = -1;
+
+  for (
+    let i = bytes.length - 22;
+    i >= Math.max(0, bytes.length - 66000);
+    i--
+  ) {
+    if (xU32(view, i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+
+  if (eocd < 0) {
+    throw new Error(
+      'This does not appear to be a valid .xlsx file.'
+    );
+  }
+
+  const total = xU16(view, eocd + 10);
+  const cdOffset = xU32(view, eocd + 16);
+  const td = new TextDecoder('utf-8');
+
+  const entries = {};
+
+  let p = cdOffset;
+
+  for (let n = 0; n < total; n++) {
+    if (xU32(view, p) !== 0x02014b50) {
+      throw new Error('Invalid Excel file directory.');
+    }
+
+    const method = xU16(view, p + 10);
+    const compSize = xU32(view, p + 20);
+    const uncompSize = xU32(view, p + 24);
+    const fnLen = xU16(view, p + 28);
+    const extraLen = xU16(view, p + 30);
+    const commentLen = xU16(view, p + 32);
+    const localOff = xU32(view, p + 42);
+
+    const name = td.decode(
+      bytes.slice(
+        p + 46,
+        p + 46 + fnLen
+      )
+    );
+
+    entries[name] = {
+      method,
+      compSize,
+      uncompSize,
+      localOff
+    };
+
+    p += 46 + fnLen + extraLen + commentLen;
+  }
+
+  async function read(name) {
+    const e = entries[name];
+
+    if (!e) {
+      return null;
+    }
+
+    const lo = e.localOff;
+
+    if (xU32(view, lo) !== 0x04034b50) {
+      throw new Error('Invalid Excel file entry.');
+    }
+
+    const fnLen = xU16(view, lo + 26);
+    const extraLen = xU16(view, lo + 28);
+
+    const start =
+      lo +
+      30 +
+      fnLen +
+      extraLen;
+
+    const comp = bytes.slice(
+      start,
+      start + e.compSize
+    );
+
+    if (e.method === 0) {
+      return comp;
+    }
+
+    if (e.method === 8) {
+      if (typeof DecompressionStream === 'undefined') {
+        throw new Error(
+          'Excel upload requires a modern Chrome or Edge browser.'
+        );
+      }
+
+      const ds =
+        new DecompressionStream('deflate-raw');
+
+      const stream =
+        new Blob([comp])
+          .stream()
+          .pipeThrough(ds);
+
+      return new Uint8Array(
+        await new Response(stream).arrayBuffer()
+      );
+    }
+
+    throw new Error(
+      'Unsupported Excel compression method.'
+    );
+  }
+
+  return {
+    entries,
+    read
+  };
+}
+
+
+function decodeXlsxXml(s) {
+  return String(s || '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, '&');
+}
+
+
+function xlsxColIndex(ref = 'A1') {
+  let n = 0;
+
+  const letters =
+    (ref.match(/[A-Z]+/i) || ['A'])[0]
+      .toUpperCase();
+
+  for (const ch of letters) {
+    n =
+      n * 26 +
+      (ch.charCodeAt(0) - 64);
+  }
+
+  return n - 1;
+}
+
+
+function parseSharedStrings(xml = '') {
+  const out = [];
+
+  let m;
+
+  const si =
+    /<si\b[^>]*>([\s\S]*?)<\/si>/gi;
+
+  while ((m = si.exec(xml))) {
+    let t = '';
+    let tm;
+
+    const tr =
+      /<t\b[^>]*>([\s\S]*?)<\/t>/gi;
+
+    while ((tm = tr.exec(m[1]))) {
+      t += decodeXlsxXml(tm[1]);
+    }
+
+    out.push(t);
+  }
+
+  return out;
+}
+
+
+function parseSheetRows(xml, shared = []) {
+  const rows = [];
+
+  let rm;
+
+  const rr =
+    /<row\b[^>]*>([\s\S]*?)<\/row>/gi;
+
+  while ((rm = rr.exec(xml))) {
+    const row = [];
+
+    let cm;
+
+    const cr =
+      /<c\b([^>]*)>([\s\S]*?)<\/c>/gi;
+
+    while ((cm = cr.exec(rm[1]))) {
+      const attrs = cm[1];
+      const body = cm[2];
+
+      const ref =
+        (attrs.match(/\br="([^"]+)"/) || [])[1] ||
+        'A1';
+
+      const t =
+        (attrs.match(/\bt="([^"]+)"/) || [])[1] ||
+        '';
+
+      let val = '';
+
+      if (t === 'inlineStr') {
+        let tm;
+
+        const tr =
+          /<t\b[^>]*>([\s\S]*?)<\/t>/gi;
+
+        while ((tm = tr.exec(body))) {
+          val += decodeXlsxXml(tm[1]);
+        }
+      } else {
+        const vm =
+          body.match(
+            /<v\b[^>]*>([\s\S]*?)<\/v>/i
+          );
+
+        if (vm) {
+          val = decodeXlsxXml(vm[1]);
+
+          if (t === 's') {
+            val =
+              shared[Number(val)] ??
+              val;
+          } else if (
+            t === 'n' ||
+            t === ''
+          ) {
+            const num = Number(val);
+
+            if (Number.isFinite(num)) {
+              val = num;
+            }
+          }
+        }
+      }
+
+      row[xlsxColIndex(ref)] = val;
+    }
+
+    rows.push(row);
+  }
+
+  return rows;
+}
+
+
+function xlsxSplitShcs(v) {
+  return String(v || '')
+    .split(/[,\s]+/)
+    .map(x =>
+      x
+        .trim()
+        .toUpperCase()
+    )
+    .filter(Boolean);
+}
+
+
+function xlsxHeader(v) {
+  return String(v || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+
+function xlsxFindHeader(headers, names) {
+  for (
+    let i = 0;
+    i < headers.length;
+    i++
+  ) {
+    const h =
+      xlsxHeader(headers[i]);
+
+    if (
+      names.some(n =>
+        h.includes(n)
+      )
+    ) {
+      return i;
+    }
+  }
+
+  return -1;
+}
+
+
+function parseCargoRunRows(
+  rows,
+  filename = ''
+) {
+  const top =
+    (rows[0] || [])
+      .map(x =>
+        String(x ?? '')
+      )
+      .join(' | ')
+      .toUpperCase();
+
+  let type = null;
+
+  if (
+    /IMPORT\s+ULD\s+LIST/.test(top)
+  ) {
+    type = 'imports';
+  } else if (
+    /EXPORT\s+UNIT\s+LIST/.test(top) ||
+    /EXPORT\s+ULD\s+LIST/.test(top)
+  ) {
+    type = 'exports';
+  } else {
+    throw new Error(
+      'CargoRun could not detect Import or Export. ' +
+      'The top of the sheet must say “Import ULD List” ' +
+      'or “Export Unit List”.'
+    );
+  }
+
+  const allTop =
+    rows
+      .slice(0, 2)
+      .flat()
+      .map(x =>
+        String(x ?? '')
+      )
+      .join(' | ');
+
+  let flight = '';
+  let flightDate = '';
+
+  if (type === 'imports') {
+    const m =
+      allTop.match(
+        /Import\s+ULD\s+List\s*\(\s*([A-Z0-9]+)\s+([^\)]+)\)/i
+      );
+
+    if (m) {
+      flight =
+        m[1].toUpperCase();
+
+      flightDate =
+        m[2].trim();
+    }
+
+  } else {
+    const fm =
+      allTop.match(
+        /Flight\s*Number\s*:\s*([A-Z0-9]+)/i
+      );
+
+    const dm =
+      allTop.match(
+        /Date\s*:\s*([^|]+)/i
+      );
+
+    if (fm) {
+      flight =
+        fm[1].toUpperCase();
+    }
+
+    if (dm) {
+      flightDate =
+        dm[1].trim();
+    }
+  }
+
+  if (!flight) {
+    const fm =
+      filename.match(
+        /(?:ImportULDList_|Export_ULD_List_)([A-Z0-9]+)/i
+      );
+
+    if (fm) {
+      flight =
+        fm[1].toUpperCase();
+    }
+  }
+
+  if (!flight) {
+    throw new Error(
+      'Flight number could not be read from the worksheet.'
+    );
+  }
+
+  const headerRowIndex =
+    rows.findIndex(r =>
+      (r || []).some(c =>
+        /ULD\s*(NUMBER|NUMBER\s*\/\s*BULK)/i
+          .test(
+            String(c || '')
+          )
+      )
+    );
+
+  if (headerRowIndex < 0) {
+    throw new Error(
+      'CargoRun could not find the ULD header row.'
+    );
+  }
+
+  const headers =
+    rows[headerRowIndex] || [];
+
+  const uldCol =
+    xlsxFindHeader(
+      headers,
+      [
+        'ULD NUMBER / BULK',
+        'ULD NUMBER'
+      ]
+    );
+
+  const shcCol =
+    xlsxFindHeader(
+      headers,
+      ['SHC']
+    );
+
+  const unitTypeCol =
+    xlsxFindHeader(
+      headers,
+      ['ULD TYPE']
+    );
+
+  const weightCol =
+    xlsxFindHeader(
+      headers,
+      type === 'imports'
+        ? ['MANIFEST WEIGHT']
+        : ['GROSS WEIGHT']
+    );
+
+  const contourCol =
+    xlsxFindHeader(
+      headers,
+      ['CONTOUR']
+    );
+
+  const remarksCol =
+    xlsxFindHeader(
+      headers,
+      ['ULD REMARKS']
+    );
+
+  const priorityCol =
+    xlsxFindHeader(
+      headers,
+      ['PRIORITY']
+    );
+
+  if (uldCol < 0) {
+    throw new Error(
+      'ULD Number column was not found.'
+    );
+  }
+
+  const ulds = [];
+
+  for (
+    const row of
+    rows.slice(
+      headerRowIndex + 1
+    )
+  ) {
+    const num =
+      String(
+        row[uldCol] ?? ''
+      )
+        .trim()
+        .toUpperCase();
+
+    if (
+      !num ||
+      !/[A-Z]/.test(num) ||
+      !/\d/.test(num)
+    ) {
+      continue;
+    }
+
+    const handling =
+      type === 'imports' &&
+      unitTypeCol >= 0
+        ? String(
+            row[unitTypeCol] ?? ''
+          )
+            .trim()
+            .toUpperCase()
+        : '';
+
+    const rawWeight =
+      weightCol >= 0
+        ? Number(
+            row[weightCol]
+          )
+        : NaN;
+
+    const handlingType =
+      handling.includes('BREAKDOWN')
+        ? 'BREAKDOWN'
+        : handling.includes('INTACT')
+          ? 'INTACT'
+          : '';
+
+    ulds.push({
+      num,
+
+      shcs:
+        shcCol >= 0
+          ? xlsxSplitShcs(
+              row[shcCol]
+            )
+          : [],
+
+      status:
+        type === 'imports'
+          ? 'Unarrived'
+          : 'Warehouse',
+
+      handlingType,
+
+      rawHandling:
+        handling,
+
+      weight:
+        Number.isFinite(
+          rawWeight
+        )
+          ? rawWeight
+          : null,
+
+      contour:
+        contourCol >= 0
+          ? String(
+              row[contourCol] ?? ''
+            ).trim()
+          : '',
+
+      remarks:
+        remarksCol >= 0
+          ? String(
+              row[remarksCol] ?? ''
+            ).trim()
+          : '',
+
+      priority:
+        priorityCol >= 0
+          ? String(
+              row[priorityCol] ?? ''
+            ).trim()
+          : ''
+    });
+  }
+
+  if (!ulds.length) {
+    throw new Error(
+      'No ULD records were found in the file.'
+    );
+  }
+
+  return {
+    type,
+    flight,
+    flightDate,
+    ulds,
+    sourceFile: filename
+  };
+}
+
+
+async function parseCargoRunWorkbook(file) {
+  const arr =
+    await file.arrayBuffer();
+
+  const zip =
+    await unzipXlsxEntries(arr);
+
+  const td =
+    new TextDecoder('utf-8');
+
+  const sharedBytes =
+    await zip.read(
+      'xl/sharedStrings.xml'
+    );
+
+  const shared =
+    sharedBytes
+      ? parseSharedStrings(
+          td.decode(
+            sharedBytes
+          )
+        )
+      : [];
+
+  const sheetName =
+    Object
+      .keys(zip.entries)
+      .filter(n =>
+        /^xl\/worksheets\/sheet\d+\.xml$/i
+          .test(n)
+      )
+      .sort()[0];
+
+  if (!sheetName) {
+    throw new Error(
+      'No worksheet was found in the Excel file.'
+    );
+  }
+
+  const sheetBytes =
+    await zip.read(sheetName);
+
+  if (!sheetBytes) {
+    throw new Error(
+      'Worksheet data could not be read.'
+    );
+  }
+
+  return parseCargoRunRows(
+    parseSheetRows(
+      td.decode(sheetBytes),
+      shared
+    ),
+    file.name
+  );
+}
+
+
+async function handleFlightWorkbook(event) {
+  const file =
+    event.target.files?.[0];
+
+  const box =
+    document.getElementById(
+      'uploadPreview'
+    );
+
+  const btn =
+    document.getElementById(
+      'createFlightBtn'
+    );
+
+  pendingFlightUpload = null;
+
+  if (!file) {
+    return;
+  }
+
+  box.className =
+    'upload-preview loading';
+
+  box.innerHTML =
+    'Reading <strong>' +
+    esc(file.name) +
+    '</strong>…';
+
+  btn.disabled = true;
+
+  try {
+    const parsed =
+      await parseCargoRunWorkbook(
+        file
+      );
+
+    pendingFlightUpload =
+      parsed;
+
+    const hc = {
+      intact:
+        parsed.ulds.filter(
+          u =>
+            u.handlingType ===
+            'INTACT'
+        ).length,
+
+      breakdown:
+        parsed.ulds.filter(
+          u =>
+            u.handlingType ===
+            'BREAKDOWN'
+        ).length
+    };
+
+    const totalWeight =
+      parsed.ulds.reduce(
+        (s, u) =>
+          s +
+          (
+            Number(u.weight) ||
+            0
+          ),
+        0
+      );
+
+    const priority =
+      [
+        ...new Set(
+          parsed.ulds
+            .flatMap(
+              u =>
+                u.shcs
+            )
+            .filter(
+              s =>
+                SHC_META[s] &&
+                [
+                  'critical',
+                  'priority'
+                ].includes(
+                  SHC_META[s].level
+                )
+            )
+        )
+      ];
+
+    box.className =
+      'upload-preview';
+
+    box.innerHTML = `
+      <div class="upload-preview-head">
+
+        <div>
+          <strong>
+            ${esc(parsed.flight)}
+          </strong>
+
+          <small>
+            ${esc(parsed.flightDate || 'Date not supplied')}
+            •
+            ${esc(parsed.sourceFile)}
+          </small>
+        </div>
+
+        <span class="detect-badge ${parsed.type}">
+          ${
+            parsed.type === 'imports'
+              ? 'Import detected'
+              : 'Export detected'
+          }
+        </span>
+
+      </div>
+
+      <div class="upload-stats">
+
+        <div class="upload-stat">
+          <span>ULDs</span>
+          <strong>
+            ${parsed.ulds.length}
+          </strong>
+        </div>
+
+        ${
+          parsed.type === 'imports'
+            ? `
+              <div class="upload-stat">
+                <span>INTACT</span>
+                <strong>${hc.intact}</strong>
+              </div>
+
+              <div class="upload-stat">
+                <span>BREAKDOWN</span>
+                <strong>${hc.breakdown}</strong>
+              </div>
+            `
+            : `
+              <div class="upload-stat">
+                <span>Total weight</span>
+                <strong>
+                  ${esc(formatWeight(totalWeight))}
+                </strong>
+              </div>
+
+              <div class="upload-stat">
+                <span>Priority SHCs</span>
+                <strong>
+                  ${priority.length}
+                </strong>
+              </div>
+            `
+        }
+
+      </div>
+
+      ${
+        priority.length
+          ? `
+            <div style="margin-top:10px">
+              ${chips(priority)}
+            </div>
+          `
+          : ''
+      }
+    `;
+
+    btn.disabled = false;
+
+    btn.textContent =
+      parsed.type === 'imports'
+        ? 'Create Import Flight'
+        : 'Create Export Flight';
+
+  } catch (err) {
+    box.className =
+      'upload-preview error';
+
+    box.textContent =
+      err?.message ||
+      'The Excel file could not be read.';
+
+    btn.disabled = true;
+  }
+}
+
+
+function cargoRunApiDate(value) {
+  const raw =
+    String(value || '')
+      .trim();
+
+  if (!raw) {
+    throw new Error(
+      'The flight date could not be read from the Excel file.'
+    );
+  }
+
+  // Already YYYY-MM-DD
+  if (
+    /^\d{4}-\d{2}-\d{2}$/
+      .test(raw)
+  ) {
+    return raw;
+  }
+
+  // Australian DD/MM/YYYY
+  // or DD-MM-YYYY
+  let m =
+    raw.match(
+      /^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/
+    );
+
+  if (m) {
+    return (
+      `${m[3]}-` +
+      `${String(m[2]).padStart(2, '0')}-` +
+      `${String(m[1]).padStart(2, '0')}`
+    );
+  }
+
+  // Example:
+  // 13 Sep 2026
+  const parsed =
+    new Date(raw);
+
+  if (
+    !Number.isNaN(
+      parsed.getTime()
+    )
+  ) {
+    const year =
+      parsed.getFullYear();
+
+    const month =
+      String(
+        parsed.getMonth() + 1
+      ).padStart(
+        2,
+        '0'
+      );
+
+    const day =
+      String(
+        parsed.getDate()
+      ).padStart(
+        2,
+        '0'
+      );
+
+    return (
+      `${year}-${month}-${day}`
+    );
+  }
+
+  throw new Error(
+    `CargoRun could not understand the flight date: ${raw}`
+  );
+}
+
+
+async function createUploadedFlight() {
+  const p =
+    pendingFlightUpload;
+
+  if (!p) {
+    return;
+  }
+
+  const target =
+    state[p.type];
+
+  if (
+    target.some(
+      f =>
+        !f.closed &&
+        f.flight === p.flight
+    )
+  ) {
+    toast(
+      `${p.flight} is already active in CargoRun`
+    );
+
+    return;
+  }
+
+  const btn =
+    document.getElementById(
+      'createFlightBtn'
+    );
+
+  try {
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent =
+        'Saving to Azure…';
+    }
+
+    const operatingDate =
+      cargoRunApiDate(
+        p.flightDate
+      );
+
+    const airlineMatch =
+      String(
+        p.flight || ''
+      )
+        .toUpperCase()
+        .match(
+          /^([A-Z]{2,3})/
+        );
+
+    const payload = {
+      flight: {
+        flightNumber:
+          p.flight,
+
+        operatingDate,
+
+        direction:
+          p.type === 'imports'
+            ? 'IMPORT'
+            : 'EXPORT',
+
+        airlineCode:
+          airlineMatch
+            ? airlineMatch[1]
+            : null,
+
+        // CargoRun Melbourne
+        // prototype
+        originAirport:
+          p.type === 'exports'
+            ? 'MEL'
+            : null,
+
+        destinationAirport:
+          p.type === 'imports'
+            ? 'MEL'
+            : null,
+
+        sourceFileName:
+          p.sourceFile ||
+          'CargoRun Excel Upload'
+      },
+
+      ulds:
+        p.ulds.map(
+          u => ({
+            uldNumber:
+              u.num,
+
+            handlingType:
+              u.handlingType ||
+              null,
+
+            weightKg:
+              u.weight ??
+              null,
+
+            remarks:
+              u.remarks ||
+              null,
+
+            priorityText:
+              u.priority ||
+              null,
+
+            shcs:
+              Array.isArray(
+                u.shcs
+              )
+                ? u.shcs
+                : []
+          })
+        )
+    };
+
+    const response =
+      await fetch(
+        '/api/manifest-upload',
+        {
+          method: 'POST',
+
+          headers: {
+            'Content-Type':
+              'application/json'
+          },
+
+          body:
+            JSON.stringify(
+              payload
+            )
+        }
+      );
+
+    const result =
+      await response
+        .json()
+        .catch(
+          () => ({})
+        );
+
+    if (!response.ok) {
+      throw new Error(
+        result.error ||
+        result.detail ||
+        `Azure upload failed (${response.status})`
+      );
+    }
+
+    /*
+      Temporary hybrid mode:
+
+      Azure SQL is now the
+      authoritative central store,
+      while the current browser UI
+      still uses local state so the
+      existing interface continues
+      working.
+
+      Next stage:
+      load flights from Azure.
+    */
+
+    const azureUlds =
+      new Map(
+        (result.ulds || [])
+          .map(
+            u => [
+              String(
+                u.UldNumber ||
+                ''
+              )
+                .toUpperCase(),
+
+              u
+            ]
+          )
+      );
+
+    const shcs = [
+      ...new Set(
+        p.ulds.flatMap(
+          u =>
+            u.shcs ||
+            []
+        )
+      )
+    ];
+
+    const flight = {
+      id:
+        (
+          p.type === 'imports'
+            ? 'imp-'
+            : 'exp-'
+        ) +
+        Date.now(),
+
+      azureFlightId:
+        result.flight?.FlightId ||
+        null,
+
+      flight:
+        p.flight,
+
+      flightDate:
+        p.flightDate ||
+        '',
+
+      sourceFile:
+        p.sourceFile ||
+        '',
+
+      sourceType:
+        'Excel ULD List',
+
+      uploadedAt:
+        Date.now(),
+
+      shcs,
+
+      closed:
+        false,
+
+      ulds:
+        p.ulds.map(
+          u => ({
+            ...u,
+
+            azureUldId:
+              azureUlds.get(
+                String(
+                  u.num ||
+                  ''
+                )
+                  .toUpperCase()
+              )?.UldId ||
+              null
+          })
+        )
+    };
+
+    target.unshift(
+      flight
+    );
+
+    const hc =
+      handlingCounts(
+        flight
+      );
+
+    logEvent(
+      'Upload',
+      'Flight data uploaded',
+      {
+        flight:
+          p.flight,
+
+        detail:
+          p.type === 'imports'
+            ? (
+              `${p.ulds.length} ULDs • ` +
+              `${hc.intact} INTACT • ` +
+              `${hc.breakdown} BREAKDOWN`
+            )
+            : (
+              `${p.ulds.length} export ULDs loaded`
+            ),
+
+        user:
+          currentUser().name
+      }
+    );
+
+    save();
+
+    pendingFlightUpload =
+      null;
+
+    closeModal();
+
+    toast(
+      `${p.flight} saved to Azure — ${p.ulds.length} ULDs`
+    );
+
+    openScreen(
+      'flight',
+      p.type,
+      flight.id
+    );
+
+    if (
+      p.type === 'imports' &&
+      canUseFlightStatusApi()
+    ) {
+      setTimeout(
+        () =>
+          syncFlightArrivalById(
+            flight.id,
+            true
+          ),
+        250
+      );
+    }
+
+  } catch (err) {
+    console.error(
+      'CargoRun manifest upload failed',
+      err
+    );
+
+    toast(
+      err?.message ||
+      'CargoRun could not save the flight to Azure'
+    );
+
+    if (btn) {
+      btn.disabled =
+        false;
+
+      btn.textContent =
+        p.type === 'imports'
+          ? 'Create Import Flight'
+          : 'Create Export Flight';
+    }
+  }
+}
 function render(){let content='';if(route.screen==='home')content=home();else if(route.screen==='flights')content=flights(route.type);else if(route.screen==='flight')content=flightDetail(route.type,route.id);else if(route.screen==='offloads')content=offloads();else if(route.screen==='flightboard')content=flightBoardScreen();else if(route.screen==='priority')content=priorityCargoScreen();else if(route.screen==='supervisor')content=supervisorDashboard();else if(route.screen==='history')content=historyScreen();shell(content)}
 render();
 setInterval(()=>{if(document.visibilityState==='visible'&&canUseFlightStatusApi())syncAllFlightArrivals(true)},Math.max(1,Number(flightStatusSettings().pollMinutes||2))*60000);
