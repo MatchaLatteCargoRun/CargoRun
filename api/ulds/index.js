@@ -32,13 +32,11 @@ module.exports = async function (context, req) {
 
     pool = await new sql.ConnectionPool(connectionString).connect();
 
-    /* =========================
-       GET /api/ulds?flightId=1
-       ========================= */
+    /* GET /api/ulds?flightId=1 */
     if (req.method === 'GET') {
       const flightId = String(req.query?.flightId || '').trim();
 
-      if (!flightId) {
+      if (!/^\d+$/.test(flightId)) {
         sendJson(context, 400, {
           ok: false,
           error: 'flightId is required'
@@ -50,15 +48,7 @@ module.exports = async function (context, req) {
         .input('FlightId', sql.BigInt, flightId)
         .query(`
           SELECT
-            u.UldId,
-            u.FlightId,
-            u.UldNumber,
-            u.HandlingType,
-            u.WeightKg,
-            u.CurrentStatus,
-            u.Remarks,
-            u.PriorityText,
-            u.CreatedAtUtc,
+            u.*,
             (
               SELECT STRING_AGG(s.Code, ',')
               FROM dbo.UldSpecialHandlingCodes s
@@ -78,10 +68,7 @@ module.exports = async function (context, req) {
       return;
     }
 
-    /* =========================
-       POST /api/ulds
-       ========================= */
-
+    /* POST /api/ulds */
     const body = req.body || {};
 
     const flightId = String(body.flightId || '').trim();
@@ -100,7 +87,7 @@ module.exports = async function (context, req) {
       ? [...new Set(body.shcs.map(clean).filter(Boolean))]
       : [];
 
-    if (!flightId) {
+    if (!/^\d+$/.test(flightId)) {
       sendJson(context, 400, {
         ok: false,
         error: 'flightId is required'
@@ -116,13 +103,18 @@ module.exports = async function (context, req) {
       return;
     }
 
-    if (
-      handlingType &&
-      !['INTACT', 'BREAKDOWN'].includes(handlingType)
-    ) {
+    if (handlingType && !['INTACT', 'BREAKDOWN'].includes(handlingType)) {
       sendJson(context, 400, {
         ok: false,
         error: 'handlingType must be INTACT or BREAKDOWN'
+      });
+      return;
+    }
+
+    if (weightKg !== null && (!Number.isFinite(weightKg) || weightKg < 0)) {
+      sendJson(context, 400, {
+        ok: false,
+        error: 'weightKg must be a valid positive number'
       });
       return;
     }
@@ -143,12 +135,8 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const direction = flightResult.recordset[0].Direction;
-
-    const currentStatus =
-      direction === 'EXPORT'
-        ? 'WAREHOUSE'
-        : 'UNARRIVED';
+    const direction = String(flightResult.recordset[0].Direction || '').toUpperCase();
+    const currentStatus = direction === 'EXPORT' ? 'WAREHOUSE' : 'UNARRIVED';
 
     const existing = await pool.request()
       .input('FlightId', sql.BigInt, flightId)
@@ -170,7 +158,6 @@ module.exports = async function (context, req) {
     }
 
     const transaction = new sql.Transaction(pool);
-
     await transaction.begin();
 
     try {
@@ -217,10 +204,8 @@ module.exports = async function (context, req) {
           .input('UldId', sql.BigInt, uld.UldId)
           .input('Code', sql.NVarChar(10), code)
           .query(`
-            INSERT INTO dbo.UldSpecialHandlingCodes
-              (UldId, Code)
-            VALUES
-              (@UldId, @Code);
+            INSERT INTO dbo.UldSpecialHandlingCodes (UldId, Code)
+            VALUES (@UldId, @Code);
           `);
       }
 
@@ -228,10 +213,7 @@ module.exports = async function (context, req) {
 
       sendJson(context, 201, {
         ok: true,
-        uld: {
-          ...uld,
-          shcs
-        }
+        uld: { ...uld, shcs }
       });
 
     } catch (err) {
@@ -241,7 +223,6 @@ module.exports = async function (context, req) {
 
   } catch (err) {
     context.log.error('ULD API failed', err);
-
     sendJson(context, 500, {
       ok: false,
       error: 'ULD API failed',
@@ -249,8 +230,6 @@ module.exports = async function (context, req) {
     });
 
   } finally {
-    try {
-      await pool?.close();
-    } catch {}
+    try { await pool?.close(); } catch {}
   }
 };

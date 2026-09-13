@@ -392,6 +392,17 @@ function azureStatusToUi(status,direction){
   return map[s]||(String(direction||'').toUpperCase()==='EXPORT'?'Warehouse':'Unarrived');
 }
 
+function uiStatusToAzure(status){
+  return String(status||'').trim().toUpperCase().replace(/[\s-]+/g,'_');
+}
+
+function apiField(obj,names){
+  for(const name of names){
+    if(obj&&obj[name]!==undefined&&obj[name]!==null&&obj[name]!=='')return obj[name];
+  }
+  return null;
+}
+
 function azureShcs(value){
   if(Array.isArray(value))return value.map(x=>String(x).trim().toUpperCase()).filter(Boolean);
   return String(value||'').split(',').map(x=>x.trim().toUpperCase()).filter(Boolean);
@@ -434,6 +445,14 @@ function azureFlightStatus(existing,apiFlight){
 function azureUldToUi(apiUld,direction,existingUld=null){
   const status=azureStatusToUi(apiUld.CurrentStatus,direction);
   const initial=String(direction||'').toUpperCase()==='EXPORT'?'Warehouse':'Unarrived';
+  const acceptedAt=apiField(apiUld,['AcceptedAtUtc','AcceptedAt']);
+  const receivedAt=apiField(apiUld,['ReceivedAtUtc','ReceivedAt']);
+  const departedAt=apiField(apiUld,['WarehouseDepartedAtUtc','WarehouseDepartedAt','DepartedWarehouseAtUtc']);
+  const atAircraftAt=apiField(apiUld,['AtAircraftAtUtc','AtAircraftAt']);
+  const acceptedBy=apiField(apiUld,['AcceptedByDisplayName','AcceptedByName']);
+  const receivedBy=apiField(apiUld,['ReceivedByDisplayName','ReceivedByName']);
+  const departedBy=apiField(apiUld,['WarehouseDepartedByDisplayName','WarehouseDepartedByName','DepartedWarehouseByDisplayName']);
+  const deliveredBy=apiField(apiUld,['AtAircraftByDisplayName','AtAircraftByName','DeliveredByDisplayName']);
   return {
     ...(existingUld||{}),
     azureUldId:apiUld.UldId,
@@ -445,7 +464,15 @@ function azureUldToUi(apiUld,direction,existingUld=null){
     weight:apiUld.WeightKg==null?null:Number(apiUld.WeightKg),
     remarks:apiUld.Remarks||'',
     priority:apiUld.PriorityText||'',
-    identityVerified:status!==initial
+    identityVerified:apiUld.IdentityVerified===true||apiUld.IdentityVerified===1||status!==initial,
+    acceptedAt:acceptedAt?toMs(acceptedAt):(existingUld?.acceptedAt||null),
+    acceptedBy:acceptedBy||existingUld?.acceptedBy||'',
+    receivedAt:receivedAt?toMs(receivedAt):(existingUld?.receivedAt||null),
+    receivedBy:receivedBy||existingUld?.receivedBy||'',
+    departedWarehouseAt:departedAt?toMs(departedAt):(existingUld?.departedWarehouseAt||null),
+    departedWarehouseBy:departedBy||existingUld?.departedWarehouseBy||'',
+    atAircraftAt:atAircraftAt?toMs(atAircraftAt):(existingUld?.atAircraftAt||null),
+    deliveredBy:deliveredBy||existingUld?.deliveredBy||''
   };
 }
 
@@ -637,7 +664,7 @@ function eventDescription(e){let bits=[];if(e.flight)bits.push(e.flight);if(e.ul
 function activityRows(events){return events.length?events.map(e=>`<div class="activity-item"><div><strong>${esc(e.action)}</strong><small>${esc(eventDescription(e)||e.type)}</small></div><time>${fmtTime(e.ts)}</time></div>`).join(''):`<div class="empty">No activity recorded yet.</div>`}
 function supervisorAlerts(){const alerts=[];activeFlights('imports').forEach(f=>f.ulds.forEach((u,i)=>{const sla=acceptanceSla(f,u),pclass=uldPriorityClass(f,u,'imports');if(u.status==='Unarrived'){let level=pclass==='critical'?'red':pclass==='priority'?'amber':'amber';let detail=`ULD still unarrived${(u.shcs||[]).length?` • ${(u.shcs||[]).join(', ')}`:''}`;if(isCxCourierUnit(f,u,'imports'))detail+=' • CX COURIER';if(sla.level==='late'){level='red';detail+=` • acceptance ${sla.minutes}m`;}else if(sla.level==='warn'){level='amber';detail+=` • acceptance ${sla.minutes}m`;}alerts.push({level,title:`${f.flight} • ${u.num}`,detail,action:`openScreen('flight','imports','${f.id}')`,age:sla.minutes!==null?`${sla.minutes}m`:''});}else if(u.status!=='Received'&&pclass!=='standard')alerts.push({level:pclass==='critical'?'red':'amber',title:`${f.flight} • ${u.num}`,detail:`Priority cargo currently ${u.status}${isCxCourierUnit(f,u,'imports')?' • CX COURIER':''} • ${(u.shcs||[]).join(', ')}`,action:`openScreen('flight','imports','${f.id}')`,age:''})}));state.offloads.forEach(o=>{const mins=ageMinutes(o.requestedAt);if(mins>=10)alerts.push({level:'red',title:`Offload ${o.uld}`,detail:`${o.flight} • Bay ${o.bay} • ${o.status}`,action:`openScreen('offloads')`,age:`${mins}m`});else alerts.push({level:'amber',title:`Offload ${o.uld}`,detail:`${o.flight} • Bay ${o.bay} • ${o.status}`,action:`openScreen('offloads')`,age:`${mins}m`})});return alerts}
 function header(){const u=currentUser();return `<header class="topbar"><div class="brand" onclick="openScreen('home')" style="cursor:pointer"><img src="${CARGORUN_MASCOT}" alt="CargoRun mascot"><span>CargoRun</span></div><div class="nav-actions"><button class="nav-pill action" onclick="showScan()">Scan ULD</button><button class="nav-pill" onclick="openScreen('flightboard')">Flight Board</button><button class="nav-pill" onclick="openScreen('priority')">Priority</button><button class="nav-pill" onclick="openScreen('supervisor')">Supervisor</button><button class="nav-pill" onclick="openScreen('history')">History</button><button class="user-pill" onclick="showOperator()" title="Prototype user — Azure/Entra will supply this identity">${esc(u.name)}</button><div class="station">MEL • UI PROTOTYPE V3.10</div></div></header>`}
-function shell(content){document.getElementById('app').innerHTML=header()+`<main class="shell">${content}<div class="footer-note">CargoRun functional UI prototype v3.10 • Data is stored locally in this browser</div></main><button class="floating-scan" onclick="showScan()">Scan ULD</button>`}
+function shell(content){document.getElementById('app').innerHTML=header()+`<main class="shell">${content}<div class="footer-note">CargoRun functional UI prototype v3.10 • Azure SQL central sync enabled • Prototype identity</div></main><button class="floating-scan" onclick="showScan()">Scan ULD</button>`}
 function home(){
  const im=activeFlights('imports'), ex=activeFlights('exports');
  const importState=importsUrgencySummary(), exportState=exportsUrgencySummary(), offloadState=offloadUrgencySummary(), overall=overallUrgencySummary();
@@ -742,17 +769,68 @@ function confirmFirstULD(type,id,index){
 function confirmULDStatus(type,id,index){
  const f=state[type].find(x=>x.id===id),u=f.ulds[index];u.identityVerified=true;advanceULD(type,id,index,false);
 }
-function advanceULD(type,id,index,firstAcceptance=false){
- const f=state[type].find(x=>x.id===id),u=f.ulds[index],seq=type==='imports'?IMPORT_STATUSES:EXPORT_STATUSES;
- const previous=u.status;u.status=seq[Math.min(seq.indexOf(u.status)+1,seq.length-1)];
- if(type==='imports'&&previous==='Unarrived'&&u.status==='Arrived'){u.acceptedAt=Date.now();u.acceptedBy=currentUser().name;u.acceptedById=currentUser().employeeId||'';}
+async function advanceULD(type,id,index,firstAcceptance=false){
+ const f=state[type].find(x=>x.id===id),u=f?.ulds?.[index],seq=type==='imports'?IMPORT_STATUSES:EXPORT_STATUSES;
+ if(!f||!u)return;
+ const previous=u.status;
+ const next=seq[Math.min(seq.indexOf(u.status)+1,seq.length-1)];
+ if(next===previous){toast(`${u.num} is already complete`);return}
+ const operator=currentUser();
+
+ // Azure-backed ULD: write the authoritative status to SQL first.
+ if(u.azureUldId&&canUseCargoRunApi()){
+  try{
+   const response=await fetch('/api/uld-status',{
+    method:'POST',
+    headers:{'Content-Type':'application/json',Accept:'application/json'},
+    body:JSON.stringify({
+     uldId:u.azureUldId,
+     expectedCurrentStatus:uiStatusToAzure(previous),
+     nextStatus:uiStatusToAzure(next),
+     identityVerified:true,
+     actorDisplayName:operator.name,
+     actorReference:operator.employeeId||'',
+     notes:firstAcceptance?'Identity verified on first acceptance':'CargoRun ULD status change'
+    })
+   });
+   const result=await response.json().catch(()=>({}));
+   if(!response.ok||result.ok===false){
+    if(response.status===409){await syncAzureFlights(true);throw new Error(result.error||'ULD changed on another device — CargoRun refreshed it');}
+    throw new Error(result.error||result.detail||`ULD status API ${response.status}`);
+   }
+
+   const occurredAt=toMs(result.occurredAtUtc)||Date.now();
+   u.status=next;
+   u.identityVerified=true;
+   let detail=firstAcceptance?'Identity verified on first acceptance':`ULD moved to ${u.status}`;
+   if(type==='imports'&&previous==='Unarrived'&&next==='Arrived'){u.acceptedAt=occurredAt;u.acceptedBy=operator.name;u.acceptedById=operator.employeeId||'';}
+   if(type==='imports'&&next==='Received'){u.receivedAt=occurredAt;u.receivedBy=operator.name;u.receivedById=operator.employeeId||'';}
+   if(type==='exports'&&previous==='Warehouse'&&next==='Transit'){u.departedWarehouseAt=occurredAt;u.departedWarehouseBy=operator.name;u.departedWarehouseById=operator.employeeId||'';detail=`Departed warehouse at ${fmtDateTime(occurredAt)}${operator.name?` • moved by ${operator.name}`:''}`;}
+   if(type==='exports'&&next==='At Aircraft'){u.atAircraftAt=occurredAt;u.deliveredBy=operator.name;u.deliveredById=operator.employeeId||'';detail=`Delivered to aircraft by ${operator.name}${operator.employeeId?` (${operator.employeeId})`:''}`;}
+   logEvent('ULD',firstAcceptance?'ULD accepted':'Status changed',{flight:f.flight,uld:u.num,from:previous,to:next,detail,user:operator.name});
+   save();closeModal();render();
+   toast(`${u.num} → ${next} • Azure`);
+   await syncAzureFlights(true);
+  }catch(err){
+   console.error('CargoRun Azure ULD status update failed',err);
+   toast(err?.message||'ULD status could not be saved to Azure');
+  }
+  return;
+ }
+
+ // Local/demo fallback for seed records that do not yet have Azure IDs.
+ u.status=next;
+ u.identityVerified=true;
+ const now=Date.now();
+ if(type==='imports'&&previous==='Unarrived'&&next==='Arrived'){u.acceptedAt=now;u.acceptedBy=operator.name;u.acceptedById=operator.employeeId||'';}
  let detail=firstAcceptance?'Identity verified on first acceptance':`ULD moved to ${u.status}`;
- if(type==='exports'&&previous==='Warehouse'&&u.status==='Transit'){const operator=currentUser();u.departedWarehouseAt=Date.now();u.departedWarehouseBy=operator.name;u.departedWarehouseById=operator.employeeId||'';detail=`Departed warehouse at ${fmtDateTime(u.departedWarehouseAt)}${operator.name?` • moved by ${operator.name}`:''}`}
- if(type==='exports'&&u.status==='At Aircraft'){const operator=currentUser();u.atAircraftAt=Date.now();u.deliveredBy=operator.name;u.deliveredById=operator.employeeId||'';detail=`Delivered to aircraft by ${operator.name}${operator.employeeId?` (${operator.employeeId})`:''}`}
- logEvent('ULD',firstAcceptance?'ULD accepted':'Status changed',{flight:f.flight,uld:u.num,from:previous,to:u.status,detail,user:currentUser().name});
+ if(type==='imports'&&next==='Received'){u.receivedAt=now;u.receivedBy=operator.name;u.receivedById=operator.employeeId||'';}
+ if(type==='exports'&&previous==='Warehouse'&&next==='Transit'){u.departedWarehouseAt=now;u.departedWarehouseBy=operator.name;u.departedWarehouseById=operator.employeeId||'';detail=`Departed warehouse at ${fmtDateTime(now)}${operator.name?` • moved by ${operator.name}`:''}`;}
+ if(type==='exports'&&next==='At Aircraft'){u.atAircraftAt=now;u.deliveredBy=operator.name;u.deliveredById=operator.employeeId||'';detail=`Delivered to aircraft by ${operator.name}${operator.employeeId?` (${operator.employeeId})`:''}`;}
+ logEvent('ULD',firstAcceptance?'ULD accepted':'Status changed',{flight:f.flight,uld:u.num,from:previous,to:u.status,detail,user:operator.name});
  save();closeModal();
- if(type==='exports'&&f.ulds.every(x=>x.status==='At Aircraft')){f.readyToFinalize=true;logEvent('Flight','Export ready to finalise',{flight:f.flight,detail:'All export ULDs reached At Aircraft; per-ULD operator stamps recorded',user:'CargoRun'});save();toast(`${f.flight} ready to finalise`);render()}
- else{toast(`${u.num} → ${u.status}`);render()}
+ if(type==='exports'&&f.ulds.every(x=>x.status==='At Aircraft')){f.readyToFinalize=true;logEvent('Flight','Export ready to finalise',{flight:f.flight,detail:'All export ULDs reached At Aircraft; per-ULD operator stamps recorded',user:'CargoRun'});save();toast(`${f.flight} ready to finalise`);render();}
+ else{toast(`${u.num} → ${u.status}`);render();}
 }
 
 function findWarehouseDepartureTime(flight,uld){const f=state.exports.find(x=>x.flight===flight),u=f?.ulds.find(x=>x.num===uld);if(u?.departedWarehouseAt)return u.departedWarehouseAt;const e=(state.history||[]).find(x=>x.flight===flight&&x.uld===uld&&x.from==='Warehouse'&&x.to==='Transit');return e?.ts||null}
@@ -2086,6 +2164,8 @@ function render(){let content='';if(route.screen==='home')content=home();else if
 render();
 setTimeout(()=>syncAzureFlights(false),100);
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')syncAzureFlights(true)});
+// Prototype multi-device polling. SignalR can replace this later for true push updates.
+setInterval(()=>{if(document.visibilityState==='visible'&&canUseCargoRunApi())syncAzureFlights(true)},5000);
 setInterval(()=>{if(document.visibilityState==='visible'&&canUseFlightStatusApi())syncAllFlightArrivals(true)},Math.max(1,Number(flightStatusSettings().pollMinutes||2))*60000);
 </script>
 </body>
