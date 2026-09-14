@@ -2120,15 +2120,42 @@ async function createUploadedFlight() {
   const target =
     state[p.type];
 
-  if (
-    target.some(
-      f =>
-        !f.closed &&
-        f.flight === p.flight
-    )
-  ) {
+  // Daily flight numbers repeat, so a flight is only a duplicate
+  // when the flight number AND operating date match within the
+  // same direction list. Yesterday's MH149 must not block today's.
+  const pendingFlightNumber =
+    String(p.flight || '')
+      .trim()
+      .toUpperCase();
+
+  const pendingOperatingDate =
+    cargoRunApiDate(p.flightDate);
+
+  const duplicateFlight =
+    target.find(f => {
+      if (f.closed) {
+        return false;
+      }
+
+      const existingFlightNumber =
+        String(f.flight || '')
+          .trim()
+          .toUpperCase();
+
+      if (existingFlightNumber !== pendingFlightNumber) {
+        return false;
+      }
+
+      try {
+        return cargoRunApiDate(f.flightDate) === pendingOperatingDate;
+      } catch {
+        return false;
+      }
+    });
+
+  if (duplicateFlight) {
     toast(
-      `${p.flight} is already active in CargoRun`
+      `${pendingFlightNumber} for ${p.flightDate} is already active in CargoRun`
     );
 
     return;
