@@ -437,6 +437,94 @@
   @media(max-width:700px){
     .topbar{height:60px;padding:0 12px}.brand img{width:38px;height:38px}.brand span{font-size:19px}
     .shell{padding:17px 12px 32px}.hero{align-items:flex-start}.hero-logo{width:82px}.hero-mascot-wrap{width:132px;max-width:40vw}.grid{grid-template-columns:1fr}.menu-card{min-height:112px;padding:18px}.menu-card .metric{font-size:24px}.flight-row{grid-template-columns:1fr auto}.flight-row .shcs{grid-column:1/2;grid-row:2}.count{grid-column:2;grid-row:1/3;align-self:center}.uld-row{grid-template-columns:1fr auto}.uld-row .shcs{grid-column:1/2}.status-btn{grid-column:2;grid-row:1/3}.offload-row{grid-template-columns:1fr 1fr auto}.offload-row .bay{grid-column:3;grid-row:1}.offload-row .offstatus{grid-column:1/4}.detail-head{align-items:flex-start;flex-direction:column}.summary{justify-content:flex-start}.screen-title{font-size:27px}.dashboard-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dash-columns{grid-template-columns:1fr}.supervisor-hero{grid-template-columns:1fr 105px}.history-item{grid-template-columns:76px 1fr}.history-item .event-type{grid-column:2;justify-self:start}.nav-actions .nav-pill{display:none}.flight-board-row{grid-template-columns:72px 1fr 90px;padding:12px}.flight-board-row .board-shcs{grid-column:1/4}.chip .shc-name{display:none}.signoff-banner{align-items:flex-start;flex-direction:column}.signoff-banner button{width:100%}.finalize-banner{align-items:flex-start;flex-direction:column}.finalize-banner button{width:100%}.priority-row{grid-template-columns:78px 1fr}.priority-row .priority-flight,.priority-row .priority-shcs,.priority-row .priority-status,.priority-row .priority-direction{grid-column:2}.priority-row .priority-direction{grid-row:auto}.hero.hero-split{align-items:flex-start}.hero-side{width:100%;align-items:flex-start}.scan-card{width:100%}.quick-grid{grid-template-columns:1fr}.floating-scan{right:12px;left:12px;bottom:12px;text-align:center}.state-badge{left:14px;top:12px}}
+
+  /* ===== Step 5F Supervisor Wallboard ===== */
+  .supervisor-wallboard-shell{display:flex;flex-direction:column;gap:14px}
+  .supervisor-live-head{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:20px 22px;border:1px solid var(--line);border-radius:20px;background:linear-gradient(135deg,rgba(4,58,87,.96),rgba(5,46,71,.96));box-shadow:var(--shadow)}
+  .supervisor-live-head.red{border-color:rgba(255,107,107,.65);box-shadow:0 0 0 1px rgba(255,107,107,.12),0 18px 40px rgba(0,0,0,.18)}
+  .supervisor-live-head.amber{border-color:rgba(255,200,87,.55)}
+  .supervisor-live-head.green{border-color:rgba(54,211,153,.35)}
+  .supervisor-live-head h1{margin:5px 0 4px;font-size:30px;line-height:1.1}
+  .supervisor-live-head p{margin:0;color:var(--muted);font-size:13px}
+  .supervisor-live-clock{text-align:right;min-width:110px}
+  .supervisor-live-clock span{display:block;font-size:9px;font-weight:900;letter-spacing:1px;color:var(--muted)}
+  .supervisor-live-clock strong{font-size:30px;letter-spacing:.5px}
+  .supervisor-daily-grid{display:grid;grid-template-columns:1.3fr 1.3fr .8fr .8fr;gap:10px}
+  .supervisor-daily-card{background:rgba(4,58,87,.9);border:1px solid var(--line);border-radius:16px;padding:15px 16px;min-height:112px}
+  .supervisor-daily-card>span{display:block;font-size:9px;font-weight:950;letter-spacing:.85px;color:var(--muted)}
+  .supervisor-daily-card>strong{display:block;font-size:30px;margin:5px 0 7px}
+  .supervisor-daily-card>strong small{font-size:15px;color:var(--muted);font-weight:800}
+  .supervisor-daily-card p{margin:7px 0 0;font-size:11px;color:var(--muted)}
+  .supervisor-daily-card.compact>strong{font-size:34px}
+  .red-text{color:var(--red)!important}.amber-text{color:var(--amber)!important}
+  .supervisor-board-panel{background:rgba(4,58,87,.92);border:1px solid var(--line);border-radius:18px;padding:16px;box-shadow:0 8px 22px rgba(0,0,0,.12)}
+  .supervisor-board-title{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;margin-bottom:12px}
+  .supervisor-board-title h2{margin:2px 0 4px;font-size:21px}
+  .supervisor-board-title p{margin:0;color:var(--muted);font-size:11px;line-height:1.4}
+  .supervisor-board-title>span{font-size:9px;font-weight:950;letter-spacing:.8px;color:var(--muted);white-space:nowrap}
+  .wall-eyebrow{font-size:9px;font-weight:950;letter-spacing:1px;color:#8dd7ff}
+  .supervisor-export-list,.supervisor-mail-list,.supervisor-other-list{display:flex;flex-direction:column;gap:8px}
+  .supervisor-export-row{display:grid;grid-template-columns:minmax(180px,1.1fr) 110px minmax(180px,1.1fr) minmax(190px,1fr) auto;align-items:center;gap:14px;padding:12px 13px;border:1px solid var(--line);border-radius:14px;background:rgba(255,255,255,.025)}
+  .supervisor-export-row.red{border-color:rgba(255,107,107,.7);background:linear-gradient(90deg,rgba(255,107,107,.11),rgba(255,255,255,.025) 36%)}
+  .supervisor-export-row.amber{border-color:rgba(255,200,87,.55);background:linear-gradient(90deg,rgba(255,200,87,.08),rgba(255,255,255,.025) 36%)}
+  .supervisor-export-row.green{border-color:rgba(54,211,153,.25)}
+  .supervisor-export-row.neutral{border-style:dashed}
+  .supervisor-flight-id{display:flex;align-items:center;gap:10px;min-width:0}
+  .supervisor-flight-id>div:last-child{min-width:0}
+  .supervisor-flight-id strong{display:block;font-size:17px}
+  .supervisor-flight-id small{display:block;color:var(--muted);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .supervisor-time-block span,.supervisor-mail-row>div>span{display:block;font-size:8px;font-weight:950;letter-spacing:.7px;color:var(--muted)}
+  .supervisor-time-block strong{display:block;font-size:18px;margin:2px 0}
+  .supervisor-time-block small{display:block;color:var(--muted);font-size:9px}
+  .supervisor-flight-progress>div:first-child{display:flex;justify-content:space-between;gap:12px;font-size:11px;margin-bottom:6px}
+  .supervisor-flight-progress>div:first-child span{color:var(--muted)}
+  .supervisor-sla-callout{display:flex;flex-direction:column;gap:5px}
+  .supervisor-sla-callout>strong{font-size:11px;line-height:1.3}
+  .sla-chip{display:inline-flex;align-items:center;width:max-content;max-width:100%;padding:5px 8px;border-radius:999px;font-size:8px;font-weight:950;letter-spacing:.7px;border:1px solid var(--line)}
+  .sla-chip.red{color:#ffd4d4;background:rgba(255,107,107,.14);border-color:rgba(255,107,107,.45)}
+  .sla-chip.amber{color:#ffe59f;background:rgba(255,200,87,.12);border-color:rgba(255,200,87,.4)}
+  .sla-chip.green{color:#baf7df;background:rgba(54,211,153,.1);border-color:rgba(54,211,153,.28)}
+  .sla-chip.neutral{color:#d5e8f2;background:rgba(255,255,255,.05)}
+  .supervisor-row-actions{display:flex;gap:6px;justify-content:flex-end}
+  .supervisor-row-actions button{white-space:nowrap}
+  .supervisor-lower-grid{display:grid;grid-template-columns:1.35fr .65fr;gap:12px}
+  .supervisor-mail-row{display:grid;grid-template-columns:minmax(170px,1.2fr) 90px 90px minmax(170px,1fr) auto;align-items:center;gap:12px;padding:11px 12px;border:1px solid var(--line);border-radius:13px;background:rgba(255,255,255,.025)}
+  .supervisor-mail-row.red{border-color:rgba(255,107,107,.65);background:rgba(255,107,107,.08)}
+  .supervisor-mail-row.amber{border-color:rgba(255,200,87,.48);background:rgba(255,200,87,.06)}
+  .supervisor-mail-row.green{border-color:rgba(54,211,153,.24)}
+  .supervisor-mail-row>div:first-child strong{display:block;font-size:13px}
+  .supervisor-mail-row>div:first-child small{display:block;color:var(--muted);margin-top:2px;font-size:9px}
+  .supervisor-mail-row>div>strong{font-size:12px}
+  .mail-status{display:flex;flex-direction:column;gap:4px}
+  .mail-status>strong{font-size:10px!important}
+  .supervisor-other-row{display:grid;grid-template-columns:auto 1fr auto;gap:10px;align-items:center;text-align:left;width:100%;padding:10px;border:1px solid var(--line);border-radius:12px;background:rgba(255,255,255,.025);color:#fff}
+  .supervisor-other-row div strong{display:block;font-size:11px}
+  .supervisor-other-row div small{display:block;color:var(--muted);margin-top:2px;font-size:9px;line-height:1.3}
+  .supervisor-other-row>b{font-size:9px;color:var(--muted)}
+  .wallboard-exit{display:none}
+  .supervisor-wallboard-mode .topbar,.supervisor-wallboard-mode .supervisor-toolbar,.supervisor-wallboard-mode .floating-scan,.supervisor-wallboard-mode .footer-note{display:none!important}
+  .supervisor-wallboard-mode .shell{width:min(1600px,100%);padding:12px 16px 18px}
+  .supervisor-wallboard-mode .supervisor-wallboard-shell{gap:10px}
+  .supervisor-wallboard-mode .supervisor-live-head{padding:15px 18px}
+  .supervisor-wallboard-mode .supervisor-live-head h1{font-size:28px}
+  .supervisor-wallboard-mode .supervisor-board-panel{padding:13px}
+  .supervisor-wallboard-mode .wallboard-exit{display:block;position:fixed;right:12px;bottom:12px;z-index:300;border:1px solid var(--line);background:#073c5b;color:white;border-radius:999px;padding:8px 12px;font-weight:900;font-size:10px}
+  @media (max-width:1050px){
+    .supervisor-daily-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .supervisor-export-row{grid-template-columns:1fr 100px 1fr}
+    .supervisor-export-row .supervisor-sla-callout{grid-column:1/3}
+    .supervisor-export-row .supervisor-row-actions{grid-column:3;grid-row:2}
+    .supervisor-lower-grid{grid-template-columns:1fr}
+    .supervisor-mail-row{grid-template-columns:1.2fr 90px 90px 1fr auto}
+  }
+  @media (max-width:700px){
+    .supervisor-live-head,.supervisor-daily-grid,.supervisor-board-panel{display:none}
+    .supervisor-mobile-red{border:1px solid rgba(255,107,107,.5)!important}
+    .supervisor-mobile-amber{border:1px solid rgba(255,200,87,.45)!important}
+    .supervisor-mobile-row.red{border-color:rgba(255,107,107,.55)}
+    .supervisor-mobile-row.amber{border-color:rgba(255,200,87,.45)}
+  }
+
 </style>
 </head>
 <body>
@@ -592,7 +680,9 @@ function azureFlightStatus(existing,apiFlight){
     ['scheduledArrival','ScheduledArrivalUtc'],
     ['estimatedArrival','EstimatedArrivalUtc'],
     ['landedAt','LandedAtUtc'],
-    ['inBlockAt','InBlockAtUtc']
+    ['inBlockAt','InBlockAtUtc'],
+    ['scheduledDeparture','ScheduledDepartureUtc'],
+    ['estimatedDeparture','EstimatedDepartureUtc']
   ];
   let hasAzureArrival=false;
   for(const [target,source] of fields){
@@ -639,7 +729,9 @@ function azureUldToUi(apiUld,direction,existingUld=null){
     departedWarehouseAt:departedAt?toMs(departedAt):(existingUld?.departedWarehouseAt||null),
     departedWarehouseBy:departedBy||existingUld?.departedWarehouseBy||'',
     atAircraftAt:atAircraftAt?toMs(atAircraftAt):(existingUld?.atAircraftAt||null),
-    deliveredBy:deliveredBy||existingUld?.deliveredBy||''
+    deliveredBy:deliveredBy||existingUld?.deliveredBy||'',
+    mailScannedAt:apiField(apiUld,['MailScannedAtUtc','MailScannedAt'])?toMs(apiField(apiUld,['MailScannedAtUtc','MailScannedAt'])):(existingUld?.mailScannedAt||null),
+    mailScannedBy:apiField(apiUld,['MailScannedByDisplayName','MailScannedByName'])||existingUld?.mailScannedBy||''
   };
 }
 
@@ -917,11 +1009,181 @@ function historyDayOpen(key,force=false){if(force)return true;if(!historyOpenDay
 function toggleHistoryDay(key){if(historyOpenDays.has(key))historyOpenDays.delete(key);else historyOpenDays.add(key);render()}
 function completionCompactRow(x,mobile=false){const r=x.record,type=x.type,count=(r.ulds||[]).length,view=type==='Import'?`showCompletedImportRecord('${r.id}')`:`showCompletedExportRecord('${r.id}')`,print=type==='Import'?`printCompletedImport('${r.id}')`:`printCompletedExport('${r.id}')`;if(mobile)return `<div class="mobile-completion-card"><div class="mobile-completion-head"><div><strong>${esc(r.flight)}</strong><p>${type} • ${count} ULD${count===1?'':'s'} • ${fmtDateTime(r.finalizedAt)}</p></div><span class="completion-type ${type.toLowerCase()}">${type.toUpperCase()}</span></div><p>Finalised by ${esc(r.finalizedBy||'Recorded operator')}</p>${r.exceptionReason?`<div class="report-exception">Exception: ${esc(r.exceptionReason)}</div>`:''}<div class="mobile-completion-actions"><button class="secondary" onclick="${view}">View</button><button class="secondary" onclick="${print}">Print</button></div></div>`;return `<div class="day-completion-row"><div><span class="completion-type ${type.toLowerCase()}">${type.toUpperCase()}</span></div><div class="day-completion-cell"><strong>${esc(r.flight)}</strong><small>${fmtDateTime(r.finalizedAt)}</small></div><div class="day-completion-cell day-completion-detail"><strong>${count} ULD${count===1?'':'s'}</strong><small>${r.exceptionReason?`Exception: ${esc(r.exceptionReason)}`:'Completion recorded'}</small></div><div class="day-completion-cell day-completion-owner"><strong>Finalised by</strong><small>${esc(r.finalizedBy||'Recorded operator')}</small></div><div class="day-completion-actions"><button class="secondary" onclick="${view}">View</button><button class="secondary" onclick="${print}">Print</button></div></div>`}
 function dayStats(key,events,comps){const ev=events.filter(e=>localDateKey(e.ts)===key),off=ev.filter(e=>e.type==='Offload').length,flights=new Set([...ev.map(e=>e.flight).filter(Boolean),...comps.map(x=>x.record.flight).filter(Boolean)]);return{events:ev,actions:ev.length,offloads:off,flights:flights.size}}
-function mobileHistoryScreen(){const events=historyFilteredEvents(),keys=historyDateKeys(events),force=!!historySearch.trim()||historyFilter!=='All',filters=['All','ULD','Offload','Flight','Upload','FFM'];return `<div class="mobile-page"><div class="mobile-section-head"><div><div class="mobile-eyebrow">AUDIT</div><h2>History</h2></div><button class="secondary" onclick="downloadHistory()">CSV</button></div><div class="field" style="margin:0"><input id="historySearch" placeholder="Search flight, ULD or action…" value="${esc(historySearch)}" oninput="setHistorySearch(this.value)"></div><div class="mobile-filter-scroll">${filters.map(f=>`<button class="filter-btn ${historyFilter===f?'active':''}" onclick="setHistoryFilter('${f}')">${f}</button>`).join('')}</div>${keys.length?keys.map(key=>{const comps=completionsForDate(key),stats=dayStats(key,events,comps),open=historyDayOpen(key,force);return `<section class="history-day"><div class="history-day-head" onclick="toggleHistoryDay('${key}')"><div class="history-day-date"><strong>${esc(dateKeyLabel(key))}</strong><small>${stats.flights} flight${stats.flights===1?'':'s'} • ${stats.actions} action${stats.actions===1?'':'s'}</small></div><button class="secondary" onclick="event.stopPropagation();showShiftReport('${key}')">Shift Report</button><span class="history-day-toggle">${open?'−':'+'}</span></div>${open?`<div class="history-day-body">${comps.length?`<div class="mobile-section-head"><h3>Completed flights</h3><small>${comps.length}</small></div><div class="mobile-flight-stack">${comps.map(x=>completionCompactRow(x,true)).join('')}</div>`:''}<div class="mobile-section-head"><h3>Activity</h3><small>${stats.events.length}</small></div><div class="mobile-history-stack">${stats.events.length?stats.events.map(e=>`<div class="mobile-history-card"><div class="mobile-history-card-top"><strong>${esc(e.action)}</strong><time>${fmtTime(e.ts)}</time></div><p>${esc(eventDescription(e)||e.type)}${e.user?` • ${esc(e.user)}`:''}</p></div>`).join(''):`<div class="empty">No activity for this date.</div>`}</div></div>`:''}</section>`}).join(''):`<div class="empty">No history matches this filter.</div>`}</div>`}
+function mobileHistoryScreen(){const events=historyFilteredEvents(),keys=historyDateKeys(events),force=!!historySearch.trim()||historyFilter!=='All',filters=['All','ULD','Offload','Flight','Upload','FFM','Mail'];return `<div class="mobile-page"><div class="mobile-section-head"><div><div class="mobile-eyebrow">AUDIT</div><h2>History</h2></div><button class="secondary" onclick="downloadHistory()">CSV</button></div><div class="field" style="margin:0"><input id="historySearch" placeholder="Search flight, ULD or action…" value="${esc(historySearch)}" oninput="setHistorySearch(this.value)"></div><div class="mobile-filter-scroll">${filters.map(f=>`<button class="filter-btn ${historyFilter===f?'active':''}" onclick="setHistoryFilter('${f}')">${f}</button>`).join('')}</div>${keys.length?keys.map(key=>{const comps=completionsForDate(key),stats=dayStats(key,events,comps),open=historyDayOpen(key,force);return `<section class="history-day"><div class="history-day-head" onclick="toggleHistoryDay('${key}')"><div class="history-day-date"><strong>${esc(dateKeyLabel(key))}</strong><small>${stats.flights} flight${stats.flights===1?'':'s'} • ${stats.actions} action${stats.actions===1?'':'s'}</small></div><button class="secondary" onclick="event.stopPropagation();showShiftReport('${key}')">Shift Report</button><span class="history-day-toggle">${open?'−':'+'}</span></div>${open?`<div class="history-day-body">${comps.length?`<div class="mobile-section-head"><h3>Completed flights</h3><small>${comps.length}</small></div><div class="mobile-flight-stack">${comps.map(x=>completionCompactRow(x,true)).join('')}</div>`:''}<div class="mobile-section-head"><h3>Activity</h3><small>${stats.events.length}</small></div><div class="mobile-history-stack">${stats.events.length?stats.events.map(e=>`<div class="mobile-history-card"><div class="mobile-history-card-top"><strong>${esc(e.action)}</strong><time>${fmtTime(e.ts)}</time></div><p>${esc(eventDescription(e)||e.type)}${e.user?` • ${esc(e.user)}`:''}</p></div>`).join(''):`<div class="empty">No activity for this date.</div>`}</div></div>`:''}</section>`}).join(''):`<div class="empty">No history matches this filter.</div>`}</div>`}
+
+
+function recordOperatingDateKey(r){
+  if(!r)return '';
+  const raw=String(r.flightDate||'').trim();
+  if(raw){
+    try{return flightDateISO({flightDate:raw})}catch{}
+  }
+  return localDateKey(r.finalizedAt||Date.now());
+}
+function flightOperatingDateKey(f){
+  try{return flightDateISO(f)}catch{return todayDateKey()}
+}
+function supervisorTodaySnapshot(){
+  const key=todayDateKey();
+  const activeImp=activeFlights('imports').filter(f=>flightOperatingDateKey(f)===key);
+  const activeExp=activeFlights('exports').filter(f=>flightOperatingDateKey(f)===key);
+  const doneImp=(state.completedImports||[]).filter(r=>recordOperatingDateKey(r)===key);
+  const doneExp=(state.completedExports||[]).filter(r=>recordOperatingDateKey(r)===key);
+  let importExpected=0,importReceived=0,exportExpected=0,exportDelivered=0;
+  activeImp.forEach(f=>{importExpected+=f.ulds.length;importReceived+=f.ulds.filter(u=>u.status==='Received').length});
+  doneImp.forEach(r=>{const s=r.summary||{};importExpected+=Number(s.expected??(r.ulds||[]).length)||0;importReceived+=Number(s.received??(r.ulds||[]).filter(u=>u.status==='Received').length)||0});
+  activeExp.forEach(f=>{exportExpected+=f.ulds.length;exportDelivered+=f.ulds.filter(u=>u.status==='At Aircraft').length});
+  doneExp.forEach(r=>{const n=(r.ulds||[]).length;exportExpected+=n;exportDelivered+=n});
+  return {
+    key,
+    importExpected,importReceived,exportExpected,exportDelivered,
+    importFlights:activeImp.length+doneImp.length,
+    exportFlights:activeExp.length+doneExp.length,
+    importsComplete:doneImp.length,
+    exportsComplete:doneExp.length
+  };
+}
+function exportDepartureMs(f){
+  const fs=f?.flightStatus||{};
+  return toMs(fs.estimatedDeparture||fs.scheduledDeparture||f?.estimatedDeparture||f?.scheduledDeparture);
+}
+function shortDurationMinutes(minutes){
+  const n=Math.round(Number(minutes)||0),abs=Math.abs(n),h=Math.floor(abs/60),m=abs%60;
+  return h?`${h}h ${m}m`:`${m}m`;
+}
+function exportSlaState(f){
+  const c=counts(f,'exports'),complete=c.total>0&&c.done===c.total,etd=exportDepartureMs(f);
+  if(complete)return {level:'green',rank:4,label:'AT AIRCRAFT',detail:'SLA complete',etd,minutesToEtd:etd?Math.ceil((etd-Date.now())/60000):null,c};
+  if(!etd)return {level:'neutral',rank:3,label:'ETD REQUIRED',detail:'Set ETD to start 60-minute aircraft SLA',etd:null,minutesToEtd:null,c};
+  const mins=Math.ceil((etd-Date.now())/60000);
+  if(mins<=60){
+    const late=60-mins;
+    return {level:'red',rank:0,label:'HIGH PRIORITY',detail:late>0?`Aircraft SLA overdue by ${shortDurationMinutes(late)}`:'Cargo due at aircraft now',etd,minutesToEtd:mins,c};
+  }
+  if(mins<=90)return {level:'amber',rank:1,label:'WATCH',detail:`${shortDurationMinutes(mins-60)} until aircraft SLA`,etd,minutesToEtd:mins,c};
+  return {level:'green',rank:2,label:'ON TRACK',detail:`${shortDurationMinutes(mins-60)} until aircraft SLA`,etd,minutesToEtd:mins,c};
+}
+function supervisorExportFlights(){
+  const now=Date.now(),today=todayDateKey();
+  return activeFlights('exports').filter(f=>{
+    const etd=exportDepartureMs(f);
+    if(flightOperatingDateKey(f)===today)return true;
+    return etd&&etd>=now-6*3600000&&etd<=now+12*3600000;
+  }).map(f=>({f,s:exportSlaState(f)})).sort((a,b)=>{
+    if(a.s.rank!==b.s.rank)return a.s.rank-b.s.rank;
+    const ae=a.s.etd||Number.MAX_SAFE_INTEGER,be=b.s.etd||Number.MAX_SAFE_INTEGER;
+    return ae-be;
+  });
+}
+function exportSlaSummary(){
+  const rows=supervisorExportFlights();
+  return {rows,red:rows.filter(x=>x.s.level==='red').length,amber:rows.filter(x=>x.s.level==='amber').length,missing:rows.filter(x=>x.s.level==='neutral').length};
+}
+function isCxUaMail(f,u){
+  const carrier=airlineCode(f?.flight||'');
+  return ['CX','UA'].includes(carrier)&&priorityTagsFor(f,u,'imports').some(t=>t.key==='MAIL');
+}
+function mailSlaState(f,u){
+  const fs=f?.flightStatus||{},inBlock=toMs(fs.inBlockAt||fs.actualIn),scanned=toMs(u?.mailScannedAt);
+  if(scanned)return {level:'green',rank:4,label:'SCANNED',detail:`Scanned ${fmtTime(scanned)}`,inBlock,scanned,remaining:null,deadline:inBlock?inBlock+180*60000:null};
+  if(!inBlock)return {level:'neutral',rank:3,label:'IN-BLOCK NEEDED',detail:'Set aircraft In Block to start 3-hour mail SLA',inBlock:null,scanned:null,remaining:null,deadline:null};
+  const deadline=inBlock+180*60000,remaining=Math.ceil((deadline-Date.now())/60000);
+  if(remaining<=0)return {level:'red',rank:0,label:'OVERDUE',detail:`Mail scan overdue by ${shortDurationMinutes(-remaining)}`,inBlock,scanned:null,remaining,deadline};
+  if(remaining<=60)return {level:'amber',rank:1,label:'DUE SOON',detail:`${shortDurationMinutes(remaining)} remaining`,inBlock,scanned:null,remaining,deadline};
+  return {level:'green',rank:2,label:'ON TRACK',detail:`${shortDurationMinutes(remaining)} remaining`,inBlock,scanned:null,remaining,deadline};
+}
+function supervisorMailItems(){
+  const out=[];
+  activeFlights('imports').forEach(f=>f.ulds.forEach(u=>{
+    if(isCxUaMail(f,u))out.push({f,u,s:mailSlaState(f,u)});
+  }));
+  return out.sort((a,b)=>{
+    if(a.s.rank!==b.s.rank)return a.s.rank-b.s.rank;
+    return (a.s.deadline||Number.MAX_SAFE_INTEGER)-(b.s.deadline||Number.MAX_SAFE_INTEGER);
+  });
+}
+function supervisorMailSummary(){
+  const rows=supervisorMailItems();
+  return {rows,red:rows.filter(x=>x.s.level==='red').length,amber:rows.filter(x=>x.s.level==='amber').length,pending:rows.filter(x=>!x.s.scanned).length,scanned:rows.filter(x=>x.s.scanned).length};
+}
+function supervisorHeadline(){
+  const ex=exportSlaSummary(),mail=supervisorMailSummary();
+  if(ex.red)return {level:'red',title:`${ex.red} export${ex.red===1?'':'s'} inside the 60-minute aircraft SLA`,sub:'HIGH PRIORITY • cargo must be at aircraft no later than ETD − 60 min'};
+  if(mail.red)return {level:'red',title:`${mail.red} CX / UA mail item${mail.red===1?'':'s'} overdue`,sub:'HIGH PRIORITY • bulk mail must be scanned within 3 hours of In Block'};
+  if(ex.amber)return {level:'amber',title:`${ex.amber} export${ex.amber===1?'':'s'} inside 90 minutes to ETD`,sub:'WATCH • prepare remaining ULDs for aircraft delivery'};
+  if(mail.amber)return {level:'amber',title:`${mail.amber} mail item${mail.amber===1?'':'s'} due within 60 minutes`,sub:'WATCH • 3-hour In Block mail scan timer'};
+  return {level:'green',title:'Melbourne operation on track',sub:'Export aircraft SLA and CX / UA mail timers are clear'};
+}
+function supervisorOtherAlerts(){
+  return supervisorAlerts().filter(a=>a.level==='red'&&!/\bMAIL\b/i.test(`${a.title} ${a.detail}`)).slice(0,6);
+}
+function localDateTimeParts(ms){
+  const d=new Date(ms||Date.now());
+  return {date:localDateKey(d.getTime()),time:`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`};
+}
+function showSetExportEtd(id){
+  const f=state.exports.find(x=>x.id===id);if(!f)return;
+  const existing=exportDepartureMs(f),parts=existing?localDateTimeParts(existing):{date:flightOperatingDateKey(f)||todayDateKey(),time:'23:00'};
+  modal(`${modalHead(`Set ETD • ${esc(f.flight)}`)}<p>The supervisor wallboard uses ETD to enforce the Melbourne aircraft-delivery SLA. Cargo must be <strong>At Aircraft 60 minutes before ETD</strong>.</p><div class="field"><label>DEPARTURE DATE</label><input id="exportEtdDate" type="date" value="${esc(parts.date)}"></div><div class="field"><label>ETD (MEL LOCAL TIME)</label><input id="exportEtdTime" type="time" value="${esc(parts.time)}"></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveExportEtd('${id}')">Save ETD</button></div>`);
+}
+async function saveExportEtd(id){
+  const f=state.exports.find(x=>x.id===id);if(!f||!f.azureFlightId)return;
+  const date=document.getElementById('exportEtdDate')?.value,time=document.getElementById('exportEtdTime')?.value;
+  if(!date||!time){toast('Enter the departure date and ETD');return}
+  const local=new Date(`${date}T${time}:00`);
+  if(Number.isNaN(local.getTime())){toast('ETD is invalid');return}
+  showActionLoader('Saving ETD…',`${f.flight} • supervisor SLA`);
+  try{
+    const res=await fetch('/api/flights',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,estimatedDepartureUtc:local.toISOString()})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Flights API ${res.status}`);
+    f.flightStatus={...(f.flightStatus||{}),estimatedDeparture:local.toISOString(),provider:f.flightStatus?.provider||'CargoRun Supervisor'};
+    logEvent('Flight','Export ETD set',{flight:f.flight,detail:`ETD ${local.toLocaleString()}`});
+    save();closeModal();render();toast(`${f.flight} ETD set to ${fmtTime(local.getTime())}`);
+  }catch(err){console.error(err);toast(err?.message||'ETD could not be saved')}
+  finally{hideActionLoader()}
+}
+function showConfirmBulkMailScan(flightId,uldNumber){
+  const f=state.imports.find(x=>x.id===flightId),u=f?.ulds.find(x=>x.num===uldNumber);if(!f||!u)return;
+  const s=mailSlaState(f,u);
+  modal(`${modalHead('Confirm Bulk Mail Scan')}<p><strong>${esc(f.flight)} • ${esc(u.num)}</strong></p><div class="integration-card"><strong>${esc(s.detail)}</strong><small>${s.inBlock?`In Block ${fmtDateTime(s.inBlock)} • 3-hour SLA`:'In Block has not been recorded yet.'}</small></div><p>Use this only after the CX / UA bulk mail has physically been scanned.</p><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="confirmBulkMailScanned('${flightId}','${esc(u.num)}')">Confirm Scanned</button></div>`);
+}
+async function confirmBulkMailScanned(flightId,uldNumber){
+  const f=state.imports.find(x=>x.id===flightId),u=f?.ulds.find(x=>x.num===uldNumber);if(!f||!u||!u.azureUldId)return;
+  showActionLoader('Recording mail scan…',`${f.flight} • ${u.num}`);
+  try{
+    const res=await fetch('/api/mail-scan',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({uldId:u.azureUldId})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Mail scan API ${res.status}`);
+    const r=data.uld||{};
+    u.mailScannedAt=toMs(r.MailScannedAtUtc)||Date.now();
+    u.mailScannedBy=r.MailScannedByDisplayName||currentUser().name;
+    logEvent('Mail','Bulk mail scanned',{flight:f.flight,uld:u.num,detail:`3-hour mail SLA scan confirmed${data.alreadyScanned?' • already recorded':''}`});
+    save();closeModal();render();toast(`${f.flight} ${u.num} mail scan recorded`);
+  }catch(err){console.error(err);toast(err?.message||'Mail scan could not be recorded')}
+  finally{hideActionLoader()}
+}
+function toggleSupervisorWallboard(){
+  const entering=!document.body.classList.contains('supervisor-wallboard-mode');
+  if(entering){
+    document.body.classList.add('supervisor-wallboard-mode');
+    document.documentElement.requestFullscreen?.().catch(()=>{});
+  }else{
+    document.body.classList.remove('supervisor-wallboard-mode');
+    if(document.fullscreenElement)document.exitFullscreen?.().catch(()=>{});
+  }
+}
+document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement)document.body.classList.remove('supervisor-wallboard-mode')});
 
 function mobileSupervisorDashboard(){
- const overall=overallUrgencySummary(),alerts=supervisorAlerts(),im=activeFlights('imports'),ex=activeFlights('exports');
- return `<div class="mobile-page"><section class="mobile-welcome"><div class="mobile-eyebrow">SUPERVISOR • ${esc(currentStationCode())}</div><h1>${esc(overall.text)}</h1><p>${alerts.length} attention item${alerts.length===1?'':'s'} • ${im.length} imports • ${ex.length} exports • ${state.offloads.length} offloads</p></section><div class="mobile-stat-grid"><div class="mobile-stat ${overall.critical?'red':'green'}"><span>Critical</span><strong>${overall.critical}</strong><small>Immediate</small></div><div class="mobile-stat ${overall.amber?'amber':'green'}"><span>Watch</span><strong>${overall.amber}</strong><small>Monitor</small></div></div><div class="mobile-section-head"><h3>Attention queue</h3><small>${alerts.length} OPEN</small></div><div class="mobile-history-stack">${alerts.length?alerts.map(a=>`<button class="mobile-history-card" onclick="${a.action}"><div class="mobile-history-card-top"><strong>${esc(a.title)}</strong><span class="mobile-flight-status ${a.level==='red'?'red':'amber'}">${a.level==='red'?'CRITICAL':'WATCH'}</span></div><p>${esc(a.detail)}</p></button>`).join(''):`<div class="empty">No current exceptions.</div>`}</div><div class="mobile-actions"><button class="mobile-action" onclick="showScan()"><b>◎</b>Scan</button><button class="mobile-action" onclick="showRequestOffload()"><b>↘</b>Offload</button><button class="mobile-action" onclick="openScreen('history')"><b>≡</b>History</button></div></div>`;
+ const snap=supervisorTodaySnapshot(),ex=exportSlaSummary(),mail=supervisorMailSummary(),head=supervisorHeadline();
+ return `<div class="mobile-page"><section class="mobile-welcome supervisor-mobile-${head.level}"><div class="mobile-eyebrow">MEL LIVE CONTROL</div><h1>${esc(head.title)}</h1><p>${esc(head.sub)}</p></section>
+ <div class="mobile-stat-grid"><div class="mobile-stat"><span>Imports received today</span><strong>${snap.importReceived}/${snap.importExpected}</strong><small>${snap.importFlights} flight${snap.importFlights===1?'':'s'}</small></div><div class="mobile-stat"><span>Exports delivered today</span><strong>${snap.exportDelivered}/${snap.exportExpected}</strong><small>${snap.exportFlights} flight${snap.exportFlights===1?'':'s'}</small></div></div>
+ <div class="mobile-section-head"><h3>Export aircraft SLA</h3><small>ETD − 60 MIN</small></div>
+ <div class="mobile-history-stack">${ex.rows.length?ex.rows.map(({f,s})=>`<div class="mobile-history-card supervisor-mobile-row ${s.level}"><div class="mobile-history-card-top"><strong>${esc(f.flight)}</strong><span class="mobile-flight-status ${s.level==='red'?'red':s.level==='amber'?'amber':'green'}">${esc(s.label)}</span></div><p>${s.etd?`ETD ${fmtTime(s.etd)} • Aircraft due ${fmtTime(s.etd-60*60000)}`:'ETD not set'} • ${s.c.done}/${s.c.total} at aircraft</p><p><strong>${esc(s.detail)}</strong></p><button class="secondary" onclick="showSetExportEtd('${f.id}')">${s.etd?'Edit ETD':'Set ETD'}</button></div>`).join(''):`<div class="empty">No current export flights.</div>`}</div>
+ <div class="mobile-section-head"><h3>CX / UA Bulk Mail</h3><small>3H FROM IN BLOCK</small></div>
+ <div class="mobile-history-stack">${mail.rows.length?mail.rows.map(({f,u,s})=>`<div class="mobile-history-card supervisor-mobile-row ${s.level}"><div class="mobile-history-card-top"><strong>${esc(f.flight)} • ${esc(u.num)}</strong><span class="mobile-flight-status ${s.level==='red'?'red':s.level==='amber'?'amber':'green'}">${esc(s.label)}</span></div><p>${s.inBlock?`In Block ${fmtTime(s.inBlock)} • Due ${fmtTime(s.deadline)}`:'In Block not recorded'}</p><p><strong>${esc(s.detail)}</strong></p>${s.scanned?'':s.inBlock?`<button class="primary" onclick="showConfirmBulkMailScan('${f.id}','${esc(u.num)}')">Confirm Scanned</button>`:`<button class="secondary" onclick="showSetInBlock('${f.id}')">Set In Block</button>`}</div>`).join(''):`<div class="empty">No active CX / UA bulk mail timers.</div>`}</div>
+ </div>`;
 }
 function mobileMoreScreen(){
  const u=currentUser();
@@ -976,35 +1238,52 @@ function offloads(){if(isMobileUI())return mobileOffloads();return `<div class="
 
 function supervisorDashboard(){
  if(isMobileUI())return mobileSupervisorDashboard();
- const im=activeFlights('imports'),ex=activeFlights('exports');
- const importUlds=im.flatMap(f=>f.ulds),exportUlds=ex.flatMap(f=>f.ulds);
- const impDone=importUlds.filter(u=>u.status==='Received').length,expDone=exportUlds.filter(u=>u.status==='At Aircraft').length;
- const waiting10=state.offloads.filter(o=>ageMinutes(o.requestedAt)>=10).length;
- const pendingSpecial=im.reduce((n,f)=>n+f.ulds.filter(u=>u.status!=='Received'&&uldPriorityClass(f,u,'imports')!=='standard').length,0);
- const alerts=supervisorAlerts();
- const overall=overallUrgencySummary();
- const statusText=overall.text;
- return `<div class="toolbar"><button class="back" onclick="openScreen('home')">← Home</button><div class="spacer"></div><button class="secondary" onclick="showScan()">Scan ULD</button><button class="secondary" onclick="openScreen('history')">History</button><button class="primary" onclick="downloadHistory()">Export CSV</button></div>
- <section class="supervisor-hero tone-${overall.level}"><div><div class="manager-badge">SUPERVISOR VIEW • ${esc(currentStationCode())}</div><div class="status-pill ${overall.level==='red'?'red':overall.level==='amber'?'amber':'green'}">${esc(overall.label)}</div><h2>${esc(statusText)}</h2><p>CargoRun is watching active flights, ULD progress, priority special cargo and offloads. Use the quick actions or select an exception below to go straight to the operational screen.</p><div class="ops-strip">${opsChip('Critical',overall.critical,'red')}${opsChip('Watch',overall.amber,overall.amber?'amber':'green')}${opsChip('Priority cargo',pendingSpecial,pendingSpecial?'amber':'green')}</div></div><img src="${CARGORUN_MASCOT}" alt="CargoRun mascot"></section>
- <div class="dashboard-grid">
-  <div class="kpi ${overall.critical?'danger-kpi':'good-kpi'}"><div class="label">Critical now</div><div class="value">${overall.critical}</div><div class="hint">Immediate operational attention</div></div>
-  <div class="kpi ${overall.amber?'warn-kpi':'good-kpi'}"><div class="label">Watch items</div><div class="value">${overall.amber}</div><div class="hint">Monitor and work through</div></div>
-  <div class="kpi"><div class="label">Active Imports</div><div class="value">${im.length}</div><div class="hint">${impDone}/${importUlds.length} ULDs received</div></div>
-  <div class="kpi"><div class="label">Active Exports</div><div class="value">${ex.length}</div><div class="hint">${expDone}/${exportUlds.length} at aircraft</div></div>
-  <div class="kpi ${waiting10?'danger-kpi':'good-kpi'}"><div class="label">Offloads >10 min</div><div class="value">${waiting10}</div><div class="hint">${state.offloads.length} total outstanding</div></div>
-  <div class="kpi ${pendingSpecial?'warn-kpi':'good-kpi'}"><div class="label">Priority Cargo Pending</div><div class="value">${pendingSpecial}</div><div class="hint">AVI / temp-control / VAL / AVP / AVC / GOL</div></div>
-  <div class="kpi good-kpi"><div class="label">History Events</div><div class="value">${(state.history||[]).length}</div><div class="hint">Full local audit trail recorded</div></div>
-  <div class="kpi warn-kpi"><div class="label">Quick Actions</div><div class="value">3</div><div class="hint">Scan, offload, audit export</div></div>
+ const snap=supervisorTodaySnapshot(),ex=exportSlaSummary(),mail=supervisorMailSummary(),head=supervisorHeadline(),other=supervisorOtherAlerts();
+ const impPct=pct(snap.importReceived,snap.importExpected),expPct=pct(snap.exportDelivered,snap.exportExpected);
+ return `<div class="supervisor-wallboard-shell">
+ <div class="toolbar supervisor-toolbar"><button class="back" onclick="openScreen('home')">← Home</button><div class="spacer"></div><button class="secondary" onclick="openScreen('flightboard')">Flight Board</button><button class="secondary" onclick="openScreen('history')">History</button><button class="primary" onclick="toggleSupervisorWallboard()">Wallboard</button></div>
+ <section class="supervisor-live-head ${head.level}">
+   <div><div class="manager-badge">MEL LIVE OPERATIONS • ${new Date().toLocaleDateString([],{weekday:'short',day:'2-digit',month:'short'})}</div><h1>${esc(head.title)}</h1><p>${esc(head.sub)}</p></div>
+   <div class="supervisor-live-clock"><span>LOCAL</span><strong>${new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</strong></div>
+ </section>
+ <div class="supervisor-daily-grid">
+   <div class="supervisor-daily-card"><span>IMPORT ULDs RECEIVED TODAY</span><strong>${snap.importReceived}<small> / ${snap.importExpected}</small></strong><div class="progress"><span style="width:${impPct}%"></span></div><p>${snap.importFlights} import flight${snap.importFlights===1?'':'s'} • ${impPct}% received</p></div>
+   <div class="supervisor-daily-card"><span>EXPORT ULDs AT AIRCRAFT TODAY</span><strong>${snap.exportDelivered}<small> / ${snap.exportExpected}</small></strong><div class="progress"><span style="width:${expPct}%"></span></div><p>${snap.exportFlights} export flight${snap.exportFlights===1?'':'s'} • ${expPct}% delivered</p></div>
+   <div class="supervisor-daily-card compact"><span>EXPORT SLA WATCH</span><strong class="${ex.red?'red-text':ex.amber?'amber-text':''}">${ex.red+ex.amber}</strong><p>${ex.red} inside 60 min • ${ex.amber} inside 90 min</p></div>
+   <div class="supervisor-daily-card compact"><span>CX / UA MAIL WATCH</span><strong class="${mail.red?'red-text':mail.amber?'amber-text':''}">${mail.pending}</strong><p>${mail.red} overdue • ${mail.amber} due soon • ${mail.scanned} scanned</p></div>
  </div>
- <div class="dash-columns">
-  <div class="panel"><div class="panel-title"><h3>Attention Queue</h3><span>${alerts.length} OPEN</span></div><div class="alert-list">${alerts.length?alerts.map(a=>`<div class="alert-item" onclick="${a.action}"><span class="severity ${a.level==='red'?'red':''}"></span><div class="alert-main"><strong>${esc(a.title)}</strong><small>${esc(a.detail)}</small></div><div class="alert-age badge">${esc(a.age||'VIEW')}</div></div>`).join(''):`<div class="empty"><img class="mascot-empty" src="${CARGORUN_MASCOT}" alt="CargoRun mascot">No current exceptions. CargoRun is clear.</div>`}</div></div>
-  <div class="panel"><div class="panel-title"><h3>Supervisor Tools</h3><span>QUICK ACTIONS</span></div><div class="quick-grid"><button class="quick-btn" onclick="showScan()"><span>ULD</span><strong>Scan ULD</strong>Open the live item instantly</button><button class="quick-btn" onclick="showRequestOffload()"><span>OFFLOAD</span><strong>Request Offload</strong>Create a new retrieval request</button><button class="quick-btn" onclick="openScreen('history')"><span>AUDIT</span><strong>Open History</strong>Review operational actions</button><button class="quick-btn" onclick="openScreen('flightboard')"><span>LIVE</span><strong>Flight Board</strong>Open all active flights</button><button class="quick-btn" onclick="openScreen('priority')"><span>PRIORITY</span><strong>Priority Cargo</strong>Open special cargo queue</button><button class="quick-btn" onclick="showUploadFlightData()"><span>INPUT</span><strong>Upload Flight Data</strong>Auto-detect import or export Excel</button></div><div class="panel-title" style="margin-top:2px"><h3>Operation Progress</h3><span>LIVE</span></div><div class="ops-progress"><div class="ops-progress-head"><span>Imports received</span><small>${impDone}/${importUlds.length}</small></div><div class="progress"><span style="width:${pct(impDone,importUlds.length)}%"></span></div></div><div class="ops-progress"><div class="ops-progress-head"><span>Exports at aircraft</span><small>${expDone}/${exportUlds.length}</small></div><div class="progress"><span style="width:${pct(expDone,exportUlds.length)}%"></span></div></div></div>
+ <section class="supervisor-board-panel export-board">
+   <div class="supervisor-board-title"><div><span class="wall-eyebrow">CORE SLA</span><h2>Export Cargo to Aircraft</h2><p>All export cargo must be at aircraft <strong>60 minutes before ETD</strong>. Yellow inside 90 minutes. Red inside 60 minutes until complete.</p></div><span>${ex.rows.length} ACTIVE</span></div>
+   <div class="supervisor-export-list">${ex.rows.length?ex.rows.map(({f,s})=>{const m=airlineMeta(f.flight),p=pct(s.c.done,s.c.total);return `<div class="supervisor-export-row ${s.level}">
+      <div class="supervisor-flight-id">${airlineBadge(f.flight)}<div><strong>${esc(f.flight)}</strong><small>${esc(m.name)} • ${esc(f.flightDate||'')}</small></div></div>
+      <div class="supervisor-time-block"><span>ETD</span><strong>${s.etd?fmtTime(s.etd):'—'}</strong><small>${s.etd?`Aircraft SLA ${fmtTime(s.etd-60*60000)}`:'Departure time required'}</small></div>
+      <div class="supervisor-flight-progress"><div><strong>${s.c.done}/${s.c.total} at aircraft</strong><span>${p}%</span></div><div class="progress"><span style="width:${p}%"></span></div></div>
+      <div class="supervisor-sla-callout"><span class="sla-chip ${s.level}">${esc(s.label)}</span><strong>${esc(s.detail)}</strong></div>
+      <div class="supervisor-row-actions"><button class="secondary" onclick="openScreen('flight','exports','${f.id}')">Open</button><button class="secondary" onclick="showSetExportEtd('${f.id}')">${s.etd?'Edit ETD':'Set ETD'}</button></div>
+   </div>`}).join(''):`<div class="empty">No active export flights for the current operation.</div>`}</div>
+ </section>
+ <div class="supervisor-lower-grid">
+   <section class="supervisor-board-panel mail-board">
+     <div class="supervisor-board-title"><div><span class="wall-eyebrow">3-HOUR SLA</span><h2>CX / UA Bulk Mail</h2><p>Timer starts from aircraft <strong>In Block</strong>. Bulk mail must be scanned within 3 hours.</p></div><span>${mail.pending} PENDING</span></div>
+     <div class="supervisor-mail-list">${mail.rows.length?mail.rows.map(({f,u,s})=>`<div class="supervisor-mail-row ${s.level}">
+       <div><strong>${esc(f.flight)} • ${esc(u.num)}</strong><small>${u.mailScannedBy?`Scanned by ${esc(u.mailScannedBy)}`:'Priority MAIL'}</small></div>
+       <div><span>IN BLOCK</span><strong>${s.inBlock?fmtTime(s.inBlock):'—'}</strong></div>
+       <div><span>SCAN DUE</span><strong>${s.deadline?fmtTime(s.deadline):'—'}</strong></div>
+       <div class="mail-status"><span class="sla-chip ${s.level}">${esc(s.label)}</span><strong>${esc(s.detail)}</strong></div>
+       <div>${s.scanned?`<button class="secondary" onclick="openScreen('flight','imports','${f.id}')">View</button>`:s.inBlock?`<button class="primary" onclick="showConfirmBulkMailScan('${f.id}','${esc(u.num)}')">Confirm Scanned</button>`:`<button class="secondary" onclick="showSetInBlock('${f.id}')">Set In Block</button>`}</div>
+     </div>`).join(''):`<div class="empty">No active CX / UA bulk mail timers.</div>`}</div>
+   </section>
+   <section class="supervisor-board-panel other-board">
+     <div class="supervisor-board-title"><div><span class="wall-eyebrow">OTHER EXCEPTIONS</span><h2>Needs Attention</h2><p>Only critical non-SLA items are shown here to keep the wallboard clean.</p></div><span>${other.length} OPEN</span></div>
+     <div class="supervisor-other-list">${other.length?other.map(a=>`<button class="supervisor-other-row" onclick="${a.action}"><span class="severity red"></span><div><strong>${esc(a.title)}</strong><small>${esc(a.detail)}</small></div><b>${esc(a.age||'VIEW')}</b></button>`).join(''):`<div class="empty">No other critical exceptions.</div>`}</div>
+   </section>
  </div>
- <div class="panel" style="margin-top:14px"><div class="panel-title"><h3>Recent Activity</h3><span>${(state.history||[]).length} EVENTS</span></div><div class="activity-list">${activityRows(recentEvents(8))}</div></div>`
+ <button class="wallboard-exit" onclick="toggleSupervisorWallboard()">Exit Wallboard</button>
+ </div>`;
 }
 function historyScreen(){
  if(isMobileUI())return mobileHistoryScreen();
- const events=historyFilteredEvents(),keys=historyDateKeys(events),force=!!historySearch.trim()||historyFilter!=='All',filters=['All','ULD','Offload','Flight','Upload','FFM'];
+ const events=historyFilteredEvents(),keys=historyDateKeys(events),force=!!historySearch.trim()||historyFilter!=='All',filters=['All','ULD','Offload','Flight','Upload','FFM','Mail'];
  return `<div class="toolbar"><button class="back" onclick="openScreen('home')">← Home</button><div class="spacer"></div><button class="secondary" onclick="openScreen('supervisor')">Supervisor Dashboard</button><button class="primary" onclick="downloadHistory()">Export CSV</button></div><div class="screen-title">History</div><div class="screen-sub">Operational history is grouped by Melbourne date. Today stays open; older days collapse automatically. Completed import and export records sit inside the day they were finalised.</div><div class="history-controls"><input id="historySearch" placeholder="Search flight, ULD or action…" value="${esc(historySearch)}" oninput="setHistorySearch(this.value)">${filters.map(f=>`<button class="filter-btn ${historyFilter===f?'active':''}" onclick="setHistoryFilter('${f}')">${f}</button>`).join('')}</div>${keys.length?keys.map(key=>{const comps=completionsForDate(key),stats=dayStats(key,events,comps),open=historyDayOpen(key,force);return `<section class="history-day"><div class="history-day-head" onclick="toggleHistoryDay('${key}')"><div class="history-day-date"><strong>${esc(dateKeyLabel(key))}</strong><small>${key}</small></div><div class="history-day-stats"><span>${stats.flights} FLIGHTS</span><span>${stats.actions} ACTIONS</span><span>${stats.offloads} OFFLOAD EVENTS</span><span>${comps.length} COMPLETED</span></div><button class="secondary" onclick="event.stopPropagation();showShiftReport('${key}')">Shift Report</button><div class="history-day-toggle">${open?'−':'+'}</div></div>${open?`<div class="history-day-body">${comps.length?`<div class="day-completion-title"><strong>Completed Flights</strong><span>${comps.length} RECORD${comps.length===1?'':'S'}</span></div><div class="day-completion-list">${comps.map(x=>completionCompactRow(x,false)).join('')}</div>`:''}<div class="day-completion-title"><strong>Activity</strong><span>${stats.events.length} EVENT${stats.events.length===1?'':'S'}</span></div><div class="history-list">${stats.events.length?stats.events.map(e=>`<div class="history-item"><div class="history-time">${fmtTime(e.ts)}</div><div class="history-main"><strong>${esc(e.action)}</strong><small>${esc(eventDescription(e)||e.type)}${e.user?` • ${esc(e.user)}`:''}</small></div><div class="event-type ${slug(e.type)}">${esc(e.type)}</div></div>`).join(''):`<div class="empty">No activity for this date.</div>`}</div></div>`:''}</section>`}).join(''):`<div class="empty"><img class="mascot-empty" src="${CARGORUN_MASCOT}" alt="CargoRun mascot">No history matches this filter.</div>`}`
 }
 function setHistoryFilter(v){historyFilter=v;render();setTimeout(()=>document.getElementById('historySearch')?.focus(),0)}
