@@ -5,8 +5,8 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get", "post"],
-      "route": "history"
+      "methods": ["post"],
+      "route": "uld-status"
     },
     {
       "type": "http",

@@ -103,7 +103,9 @@ function normalize(row, columns) {
     collectedByDisplayName: get(['CollectedByDisplayName', 'CollectedByName']),
     deliveredAtUtc: get(['DeliveredAtUtc', 'DeliveredAt', 'CompletedAtUtc', 'CompletedAt']),
     deliveredByDisplayName: get(['DeliveredByDisplayName', 'DeliveredByName', 'CompletedByDisplayName']),
-    deliveredLocation: get(['DeliveredLocation', 'Location'])
+    deliveredLocation: get(['DeliveredLocation', 'Location']),
+    requestInstruction: get(['RequestInstruction', 'RequestedInstruction', 'RequestNote', 'HandlingInstruction']),
+    completionNote: get(['CompletionNote', 'DeliveryNote', 'ExceptionNote'])
   };
 }
 
@@ -153,6 +155,7 @@ module.exports = async function (context, req) {
       const uldNumber = clean(body.uldNumber, 20)?.toUpperCase();
       const flightNumber = clean(body.flightNumber, 12)?.toUpperCase();
       const parkingBay = clean(body.parkingBay, 30)?.toUpperCase();
+      const requestInstruction = clean(body.requestInstruction, 300);
 
       if (!uldNumber || !flightNumber || !parkingBay) {
         sendJson(context, 400, { ok: false, error: 'uldNumber, flightNumber and parkingBay are required' });
@@ -177,6 +180,7 @@ module.exports = async function (context, req) {
         .input('FlightNumber', sql.NVarChar(12), flightNumber)
         .input('UldNumber', sql.NVarChar(20), uldNumber)
         .input('ParkingBay', sql.NVarChar(30), parkingBay)
+        .input('RequestInstruction', sql.NVarChar(300), requestInstruction)
         .input('Status', sql.VarChar(20), 'REQUESTED')
         .input('ActorDisplayName', sql.NVarChar(150), actorDisplayName)
         .input('ActorReference', sql.NVarChar(150), actorReference);
@@ -198,6 +202,7 @@ module.exports = async function (context, req) {
       add(['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc'], 'SYSUTCDATETIME()');
       add(['RequestedByDisplayName', 'RequestedByName'], '@ActorDisplayName');
       add(['RequestedByObjectId', 'RequestedById', 'RequestedByReference'], '@ActorReference');
+      add(['RequestInstruction', 'RequestedInstruction', 'RequestNote', 'HandlingInstruction'], '@RequestInstruction');
 
       const mapped = new Set(names.map(n => n.toLowerCase()));
       const requiredUnknown = columns.filter(c =>
@@ -229,6 +234,7 @@ module.exports = async function (context, req) {
     const expectedCurrentStatus = canonical(body.expectedCurrentStatus);
     const nextStatus = canonical(body.nextStatus);
     const deliveredLocation = clean(body.deliveredLocation, 150);
+    const completionNote = clean(body.completionNote, 300);
 
     if (!/^\d+$/.test(offloadId)) {
       sendJson(context, 400, { ok: false, error: 'offloadId is required' });
@@ -280,7 +286,8 @@ module.exports = async function (context, req) {
       .input('NextStatus', sql.VarChar(20), nextStatus)
       .input('ActorDisplayName', sql.NVarChar(150), actorDisplayName)
       .input('ActorReference', sql.NVarChar(150), actorReference)
-      .input('DeliveredLocation', sql.NVarChar(150), deliveredLocation);
+      .input('DeliveredLocation', sql.NVarChar(150), deliveredLocation)
+      .input('CompletionNote', sql.NVarChar(300), completionNote);
 
     const sets = [`${q(statusCol)} = @NextStatus`];
     const addSet = (candidates, expression) => {
@@ -299,6 +306,7 @@ module.exports = async function (context, req) {
       addSet(['DeliveredByDisplayName', 'DeliveredByName', 'CompletedByDisplayName'], '@ActorDisplayName');
       addSet(['DeliveredByObjectId', 'DeliveredById', 'CompletedByObjectId'], '@ActorReference');
       addSet(['DeliveredLocation', 'Location'], '@DeliveredLocation');
+      addSet(['CompletionNote', 'DeliveryNote', 'ExceptionNote'], '@CompletionNote');
     }
 
     const updated = await request.query(`
