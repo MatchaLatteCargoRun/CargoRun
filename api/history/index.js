@@ -79,7 +79,16 @@ module.exports = async function(context, req) {
 
     if (req.method === 'GET') {
       const order = timeCol ? `${q(timeCol)} DESC` : idCol ? `${q(idCol)} DESC` : '(SELECT NULL)';
-      const r = await pool.request().query(`SELECT TOP 500 * FROM dbo.AuditEvents ORDER BY ${order};`);
+      const requestedLimit = Math.max(1, Math.min(5000, Number(req.query?.limit || 3000) || 3000));
+      const startUtc = clean(req.query?.startUtc, 50);
+      const endUtc = clean(req.query?.endUtc, 50);
+      const request = pool.request().input('Limit', sql.Int, requestedLimit);
+      let where = '';
+      if (timeCol && startUtc && endUtc) {
+        request.input('StartUtc', sql.DateTime2, new Date(startUtc)).input('EndUtc', sql.DateTime2, new Date(endUtc));
+        where = `WHERE ${q(timeCol)} >= @StartUtc AND ${q(timeCol)} < @EndUtc`;
+      }
+      const r = await request.query(`SELECT TOP (@Limit) * FROM dbo.AuditEvents ${where} ORDER BY ${order};`);
       sendJson(context,200,{ok:true,count:r.recordset.length,events:r.recordset.map(x=>normalize(x,columns))});
       return;
     }
