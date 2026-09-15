@@ -752,6 +752,10 @@ let actionLoaderDepth=0;
 function showActionLoader(title='Saving change…',sub='Updating CargoRun'){const el=document.getElementById('actionLoader');if(!el)return;actionLoaderDepth++;const t=document.getElementById('actionLoaderTitle'),s=document.getElementById('actionLoaderSub');if(t)t.textContent=title;if(s)s.textContent=sub;el.classList.add('show');document.body.setAttribute('aria-busy','true')}
 function hideActionLoader(force=false){const el=document.getElementById('actionLoader');if(!el)return;actionLoaderDepth=force?0:Math.max(0,actionLoaderDepth-1);if(actionLoaderDepth===0){el.classList.remove('show');if(!document.getElementById('cargoLoader')?.classList.contains('show'))document.body.removeAttribute('aria-busy')}}
 function signOutCargoRun(){location.href='/.auth/logout?post_logout_redirect_uri=/signed-out.html'}
+function pct(done,total){return total?Math.round(done/total*100):0}
+function fmtTime(ts){if(!ts)return '—';const d=new Date(ts);return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
+function fmtDateTime(ts){if(!ts)return '—';const d=new Date(ts);const today=new Date();const same=d.toDateString()===today.toDateString();return `${same?'Today':d.toLocaleDateString([], {day:'2-digit',month:'short'})} ${d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}`}
+function formatWeight(v){const n=Number(v);return Number.isFinite(n)?`${n.toLocaleString(undefined,{maximumFractionDigits:1})} kg`:''}
 function esc(s=''){return String(s).replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 function slug(s){return s.toLowerCase().replace(/\s+/g,'-')}
 function normalizeULD(s=''){return String(s).toUpperCase().replace(/[^A-Z0-9]/g,'')}
