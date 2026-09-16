@@ -999,7 +999,7 @@ function mobileHome(){
  const im=activeFlights('imports'),ex=activeFlights('exports'),priority=priorityCargoItems(),overall=overallUrgencySummary(),off=offloadUrgencySummary();
  const flights=[...im.map(f=>({f,type:'imports'})),...ex.map(f=>({f,type:'exports'}))].sort((a,b)=>{const rank=x=>flightBoardState(x.f,x.type).level==='red'?0:flightBoardState(x.f,x.type).level==='amber'?1:2;return rank(a)-rank(b)}).slice(0,4);
  const first=String(currentUser().name||'').trim().split(/\s+/)[0]||'there';
- return `<div class="mobile-page"><section class="mobile-welcome"><div class="mobile-welcome-top"><div><div class="mobile-eyebrow">${esc(currentStationCode())} OPERATIONS</div><h1>Hi ${esc(first)}.</h1><p>${esc(overall.text)}. CargoRun is synced across your signed-in devices.</p></div><span class="mobile-live-pill"><span class="mobile-sync-dot"></span>${esc(syncLabel())}</span></div></section><div class="mobile-stat-grid"><button class="mobile-stat ${im.length?'amber':'green'}" onclick="openScreen('flights','imports')"><span>Imports</span><strong>${im.length}</strong><small>${im.reduce((n,f)=>n+counts(f,'imports').done,0)} ULDs received</small></button><button class="mobile-stat ${ex.length?'amber':'green'}" onclick="openScreen('flights','exports')"><span>Exports</span><strong>${ex.length}</strong><small>${ex.reduce((n,f)=>n+counts(f,'exports').done,0)} at aircraft</small></button><button class="mobile-stat ${priority.length?'red':'green'}" onclick="openScreen('priority')"><span>Priority cargo</span><strong>${priorityTags.length}</strong><small>${priority.length?'Needs attention':'Queue clear'}</small></button><button class="mobile-stat ${state.offloads.length?'amber':'green'}" onclick="openScreen('offloads')"><span>Offloads</span><strong>${state.offloads.length}</strong><small>${esc(off.detail)}</small></button></div><button class="mobile-scan-hero" onclick="showScan()"><div class="mobile-scan-copy"><span>Fastest action</span><strong>Scan ULD</strong><small>Full ULD or numeric serial</small></div><div class="mobile-scan-icon">◎</div></button><div class="mobile-actions"><button class="mobile-action" onclick="showUploadFlightData()"><b>＋</b>Upload flight</button><button class="mobile-action" onclick="showRequestOffload()"><b>↘</b>Offload</button><button class="mobile-action" onclick="openScreen('history')"><b>≡</b>History</button></div><div class="mobile-section-head"><h3>Active flights</h3><small>${im.length+ex.length} LIVE</small></div><div class="mobile-flight-stack">${flights.length?flights.map(x=>mobileFlightCard(x.f,x.type)).join(''):`<div class="empty">No active flights at ${esc(currentStationCode())}.</div>`}</div>${im.length+ex.length>4?`<button class="secondary" style="width:100%" onclick="openScreen('mobileflights')">View all flights</button>`:''}</div>`;
+ return `<div class="mobile-page"><section class="mobile-welcome"><div class="mobile-welcome-top"><div><div class="mobile-eyebrow">${esc(currentStationCode())} OPERATIONS</div><h1>Hi ${esc(first)}.</h1><p>${esc(overall.text)}. CargoRun is synced across your signed-in devices.</p></div><span class="mobile-live-pill"><span class="mobile-sync-dot"></span>${esc(syncLabel())}</span></div></section><div class="mobile-stat-grid"><button class="mobile-stat ${im.length?'amber':'green'}" onclick="openScreen('flights','imports')"><span>Imports</span><strong>${im.length}</strong><small>${im.reduce((n,f)=>n+counts(f,'imports').done,0)} ULDs received</small></button><button class="mobile-stat ${ex.length?'amber':'green'}" onclick="openScreen('flights','exports')"><span>Exports</span><strong>${ex.length}</strong><small>${ex.reduce((n,f)=>n+counts(f,'exports').done,0)} at aircraft</small></button><button class="mobile-stat ${priority.length?'red':'green'}" onclick="openScreen('priority')"><span>Priority cargo</span><strong>${priority.length}</strong><small>${priority.length?'Needs attention':'Queue clear'}</small></button><button class="mobile-stat ${state.offloads.length?'amber':'green'}" onclick="openScreen('offloads')"><span>Offloads</span><strong>${state.offloads.length}</strong><small>${esc(off.detail)}</small></button></div><button class="mobile-scan-hero" onclick="showScan()"><div class="mobile-scan-copy"><span>Fastest action</span><strong>Scan ULD</strong><small>Full ULD or numeric serial</small></div><div class="mobile-scan-icon">◎</div></button><div class="mobile-actions"><button class="mobile-action" onclick="showUploadFlightData()"><b>＋</b>Upload flight</button><button class="mobile-action" onclick="showRequestOffload()"><b>↘</b>Offload</button><button class="mobile-action" onclick="openScreen('history')"><b>≡</b>History</button></div><div class="mobile-section-head"><h3>Active flights</h3><small>${im.length+ex.length} LIVE</small></div><div class="mobile-flight-stack">${flights.length?flights.map(x=>mobileFlightCard(x.f,x.type)).join(''):`<div class="empty">No active flights at ${esc(currentStationCode())}.</div>`}</div>${im.length+ex.length>4?`<button class="secondary" style="width:100%" onclick="openScreen('mobileflights')">View all flights</button>`:''}</div>`;
 }
 function mobileFlightsHub(){
  const im=activeFlights('imports'),ex=activeFlights('exports');
@@ -2748,7 +2748,27 @@ async function createUploadedFlight() {
     }
   }
 }
-function render(){let content='';if(route.screen==='home')content=home();else if(route.screen==='mobileflights')content=isMobileUI()?mobileFlightsHub():flightBoardScreen();else if(route.screen==='more')content=isMobileUI()?mobileMoreScreen():home();else if(route.screen==='flights')content=flights(route.type);else if(route.screen==='flight')content=flightDetail(route.type,route.id);else if(route.screen==='offloads')content=offloads();else if(route.screen==='flightboard')content=flightBoardScreen();else if(route.screen==='priority')content=priorityCargoScreen();else if(route.screen==='supervisor')content=supervisorDashboard();else if(route.screen==='history')content=historyScreen();else if(route.screen==='machfow')content=machFowScreen();shell(content)}
+function render(){
+ try{
+  let content='';
+  if(route.screen==='home')content=home();
+  else if(route.screen==='mobileflights')content=isMobileUI()?mobileFlightsHub():flightBoardScreen();
+  else if(route.screen==='more')content=isMobileUI()?mobileMoreScreen():home();
+  else if(route.screen==='flights')content=flights(route.type);
+  else if(route.screen==='flight')content=flightDetail(route.type,route.id);
+  else if(route.screen==='offloads')content=offloads();
+  else if(route.screen==='flightboard')content=flightBoardScreen();
+  else if(route.screen==='priority')content=priorityCargoScreen();
+  else if(route.screen==='supervisor')content=supervisorDashboard();
+  else if(route.screen==='history')content=historyScreen();
+  else if(route.screen==='machfow')content=machFowScreen();
+  shell(content);
+ }catch(err){
+  console.error('CargoRun render failed',err);
+  const app=document.getElementById('app');
+  if(app)app.innerHTML=`<main class="shell"><div class="empty" style="margin-top:18px;text-align:left"><strong style="display:block;font-size:18px;color:#fff;margin-bottom:8px">CargoRun couldn't load this screen.</strong><div style="margin-bottom:12px">Refresh the page. If it happens again, report: ${esc(err?.message||'Unknown screen error')}</div><button class="primary" onclick="location.reload()">Refresh CargoRun</button></div></main>`;
+ }
+}
 async function bootCargoRun(){
  render();
  showDataLoader('Starting CargoRun…','Checking your Microsoft sign-in');
