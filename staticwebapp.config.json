@@ -17,6 +17,12 @@
       ]
     },
     {
+      "route": "/api/mach-fow",
+      "allowedRoles": [
+        "anonymous"
+      ]
+    },
+    {
       "route": "/api/*",
       "allowedRoles": [
         "authenticated"

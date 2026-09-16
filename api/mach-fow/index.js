@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const crypto = require('crypto');
 
 function sendJson(context,status,body){
   context.res={status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'},body:JSON.stringify(body)};
@@ -7,6 +8,30 @@ function getHeader(req,name){
   const h=req?.headers||{};
   if(typeof h.get==='function')return h.get(name);
   return h[name]||h[name.toLowerCase()]||h[name.toUpperCase()]||null;
+}
+
+function secureEqual(a,b){
+  const aa=Buffer.from(String(a||''));
+  const bb=Buffer.from(String(b||''));
+  if(!aa.length||aa.length!==bb.length)return false;
+  try{return crypto.timingSafeEqual(aa,bb)}catch{return false}
+}
+function machineAuth(req){
+  const expected=String(process.env.MACH_FOW_INGEST_TOKEN||'').trim();
+  if(!expected)return {configured:false,ok:false,mode:null};
+  let supplied='',mode=null;
+  const direct=String(getHeader(req,'x-cargorun-mach-key')||'').trim();
+  if(direct){supplied=direct;mode='header'}
+  if(!supplied){
+    const auth=String(getHeader(req,'authorization')||'').trim();
+    const m=auth.match(/^Bearer\s+(.+)$/i);
+    if(m){supplied=m[1].trim();mode='bearer'}
+  }
+  if(!supplied&&String(process.env.MACH_FOW_ALLOW_QUERY_TOKEN||'').toLowerCase()==='true'){
+    const q=String(req?.query?.key||'').trim();
+    if(q){supplied=q;mode='query'}
+  }
+  return {configured:true,ok:secureEqual(expected,supplied),mode:mode||null};
 }
 function actorFromRequest(req){
   try{
@@ -91,7 +116,11 @@ module.exports=async function(context,req){
     const cs=process.env.DATABASE_CONNECTION_STRING;
     if(!cs){sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'});return;}
     const actor=actorFromRequest(req);
-    if(!actor){sendJson(context,401,{ok:false,error:'Microsoft Entra sign-in is required for the Step 6A simulator'});return;}
+    const machine=machineAuth(req);
+    if(req.method==='GET'&&!actor){sendJson(context,403,{ok:false,error:'Microsoft Entra sign-in is required to view the MACH FOW intake log'});return;}
+    if(req.method==='POST'&&!actor&&!machine.ok){
+      sendJson(context,403,{ok:false,error:machine.configured?'MACH receiver authentication failed':'MACH live receiver is not configured'});return;
+    }
     pool=await new sql.ConnectionPool(cs).connect();
 
     if(req.method==='GET'){
@@ -106,7 +135,24 @@ module.exports=async function(context,req){
         LEFT JOIN dbo.Flights f ON f.FlightId=m.MatchedFlightId
         ORDER BY m.ReceivedAtUtc DESC,m.MachMessageId DESC;
       `);
-      sendJson(context,200,{ok:true,messages:r.recordset});return;
+      const stats=await pool.request().query(`
+        SELECT
+          SUM(CASE WHEN SourceType='MACH_FOW_LIVE' THEN 1 ELSE 0 END) AS LiveMessageCount,
+          MAX(CASE WHEN SourceType='MACH_FOW_LIVE' THEN ReceivedAtUtc END) AS LastLiveReceivedAtUtc
+        FROM dbo.IncomingMachMessages;
+      `);
+      sendJson(context,200,{
+        ok:true,
+        receiver:{
+          configured:Boolean(process.env.MACH_FOW_INGEST_TOKEN),
+          endpoint:'/api/mach-fow',
+          preferredAuthentication:'X-CargoRun-MACH-Key header or Bearer token',
+          queryTokenEnabled:String(process.env.MACH_FOW_ALLOW_QUERY_TOKEN||'').toLowerCase()==='true',
+          liveMessageCount:Number(stats.recordset?.[0]?.LiveMessageCount||0),
+          lastLiveReceivedAtUtc:stats.recordset?.[0]?.LastLiveReceivedAtUtc||null
+        },
+        messages:r.recordset
+      });return;
     }
 
     const xml=extractRawXml(req);
@@ -130,7 +176,11 @@ module.exports=async function(context,req){
     const piecesRaw=xmlText(xml,'StsPcs')||xmlText(xml,'ConTPPcs');
     const pieces=piecesRaw&&Number.isFinite(Number(piecesRaw))?Number(piecesRaw):null;
     const ulds=parseUlds(xml);
-    const source=String(req.body?.source||'SIMULATOR').toUpperCase()==='SIMULATOR'?'MACH_FOW_SIMULATOR':'MACH_FOW_SIMULATOR';
+    const live=Boolean(machine.ok);
+    const source=live?'MACH_FOW_LIVE':'MACH_FOW_SIMULATOR';
+    const processor=live
+      ? {displayName:'MACH HTTP Feed',reference:`machine:${machine.mode||'token'}`}
+      : actor;
 
     if(!documentCorId){sendJson(context,422,{ok:false,error:'DocumentCorID is required'});return;}
     if(messageType!=='FSU'||statusCode!=='FOW'){sendJson(context,422,{ok:false,error:`Step 6A only accepts FSU/FOW messages (received ${messageType||'—'}/${statusCode||'—'})`});return;}
@@ -140,7 +190,7 @@ module.exports=async function(context,req){
 
     const duplicate=await existingMessage(pool,documentCorId);
     if(duplicate){
-      sendJson(context,200,{ok:true,duplicate:true,messageId:duplicate.row.MachMessageId,flightId:duplicate.row.MatchedFlightId,flightNumber:duplicate.row.MatchedFlightNumber||duplicate.row.FlightNumber,operatingDate:duplicate.row.OperatingDate,ulds:duplicate.ulds,processingStatus:duplicate.row.ProcessingStatus});return;
+      sendJson(context,200,{ok:true,duplicate:true,messageId:duplicate.row.MachMessageId,flightId:duplicate.row.MatchedFlightId,flightNumber:duplicate.row.MatchedFlightNumber||duplicate.row.FlightNumber,operatingDate:duplicate.row.OperatingDate,ulds:duplicate.ulds,processingStatus:duplicate.row.ProcessingStatus,sourceType:duplicate.row.SourceType,live:String(duplicate.row.SourceType||'').toUpperCase()==='MACH_FOW_LIVE'});return;
     }
 
     const requestedFlight=padFlight(carrier,carrierNum);
@@ -162,8 +212,8 @@ module.exports=async function(context,req){
       .input('Pieces',sql.Int,pieces)
       .input('EventLocalDateTime',sql.DateTime2,eventLocal?new Date(eventLocal+'Z'):null)
       .input('RawXml',sql.NVarChar(sql.MAX),xml)
-      .input('ProcessedByDisplayName',sql.NVarChar(150),actor.displayName)
-      .input('ProcessedByReference',sql.NVarChar(150),actor.reference)
+      .input('ProcessedByDisplayName',sql.NVarChar(150),processor.displayName)
+      .input('ProcessedByReference',sql.NVarChar(150),processor.reference)
       .query(`
         INSERT INTO dbo.IncomingMachMessages
         (DocumentCorID,MessageType,StatusCode,SourceType,RecipientCode,AirlineCode,FlightNumber,OperatingDate,OriginAirport,DestinationAirport,StationAirport,MawbNumber,Pieces,EventLocalDateTime,RawXml,ProcessedByDisplayName,ProcessedByReference)
@@ -191,7 +241,7 @@ module.exports=async function(context,req){
         .input('OriginAirport',sql.NVarChar(4),origin||'MEL')
         .input('DestinationAirport',sql.NVarChar(4),destination)
         .input('SourceType',sql.NVarChar(50),source)
-        .input('CreatedByDisplayName',sql.NVarChar(150),'MACH FOW Simulator')
+        .input('CreatedByDisplayName',sql.NVarChar(150),live?'MACH FOW Feed':'MACH FOW Simulator')
         .query(`
           INSERT INTO dbo.Flights(FlightNumber,OperatingDate,Direction,AirlineCode,OriginAirport,DestinationAirport,SourceType,CreatedByDisplayName)
           OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.FlightStatus
@@ -241,12 +291,12 @@ module.exports=async function(context,req){
       .query(`UPDATE dbo.IncomingMachMessages SET ProcessingStatus='PROCESSED',ProcessedAtUtc=SYSUTCDATETIME(),MatchedFlightId=@FlightId,CreatedFlight=@CreatedFlight WHERE MachMessageId=@MachMessageId;`);
 
     await tx.commit();tx=null;
-    sendJson(context,201,{ok:true,duplicate:false,messageId:machMessageId,flightId:flight.FlightId,flightNumber:flight.FlightNumber,operatingDate,createdFlight,ulds:processed,mawb,pieces,eventLocalDateTime:eventLocal});
+    sendJson(context,201,{ok:true,duplicate:false,sourceType:source,live,messageId:machMessageId,flightId:flight.FlightId,flightNumber:flight.FlightNumber,operatingDate,createdFlight,ulds:processed,mawb,pieces,eventLocalDateTime:eventLocal});
   }catch(err){
     try{if(tx)await tx.rollback();}catch{}
     context.log.error('MACH FOW intake failed',err);
     if(err?.number===2601||err?.number===2627){
-      try{const documentCorId=clean(xmlText(extractRawXml(req),'DocumentCorID'),100);const dup=await existingMessage(pool,documentCorId);if(dup){sendJson(context,200,{ok:true,duplicate:true,messageId:dup.row.MachMessageId,flightId:dup.row.MatchedFlightId,flightNumber:dup.row.MatchedFlightNumber||dup.row.FlightNumber,ulds:dup.ulds,processingStatus:dup.row.ProcessingStatus});return;}}catch{}
+      try{const documentCorId=clean(xmlText(extractRawXml(req),'DocumentCorID'),100);const dup=await existingMessage(pool,documentCorId);if(dup){sendJson(context,200,{ok:true,duplicate:true,messageId:dup.row.MachMessageId,flightId:dup.row.MatchedFlightId,flightNumber:dup.row.MatchedFlightNumber||dup.row.FlightNumber,ulds:dup.ulds,processingStatus:dup.row.ProcessingStatus,sourceType:dup.row.SourceType,live:String(dup.row.SourceType||'').toUpperCase()==='MACH_FOW_LIVE'});return;}}catch{}
     }
     sendJson(context,500,{ok:false,error:'MACH FOW intake failed',detail:err.message});
   }finally{try{await pool?.close();}catch{}}
