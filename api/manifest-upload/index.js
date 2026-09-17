@@ -1,5 +1,9 @@
 const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
+const {
+  acquireFlightIdentityLock,
+  findFlightsByIdentity
+} = require('../shared/flight');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -173,25 +177,45 @@ module.exports = async function (context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
 
-    const existingFlight = await new sql.Request(transaction)
-      .input('FlightNumber', sql.NVarChar(12), flightNumber)
+    await acquireFlightIdentityLock(
+      transaction,
+      sql,
+      operatingDate,
+      flightNumber
+    );
+
+    const flightCandidates = await new sql.Request(transaction)
       .input('OperatingDate', sql.Date, operatingDate)
-      .input('Direction', sql.VarChar(6), direction)
       .query(`
-        SELECT FlightId
+        SELECT FlightId, FlightNumber
         FROM dbo.Flights
-        WHERE FlightNumber = @FlightNumber
-          AND OperatingDate = @OperatingDate
-          AND Direction = @Direction;
+        WHERE OperatingDate = @OperatingDate;
       `);
 
-    if (existingFlight.recordset.length) {
+    const existingFlights = findFlightsByIdentity(
+      flightCandidates.recordset,
+      flightNumber
+    );
+
+    if (existingFlights.length > 1) {
+      await transaction.rollback();
+      transaction = null;
+      sendJson(context, 409, {
+        ok: false,
+        error: 'Multiple flights have the same canonical identity',
+        code: 'FLIGHT_IDENTITY_CONFLICT',
+        flightIds: existingFlights.map(existing => existing.FlightId)
+      });
+      return;
+    }
+
+    if (existingFlights.length === 1) {
       await transaction.rollback();
       transaction = null;
       sendJson(context, 409, {
         ok: false,
         error: 'Flight already exists',
-        flightId: existingFlight.recordset[0].FlightId
+        flightId: existingFlights[0].FlightId
       });
       return;
     }

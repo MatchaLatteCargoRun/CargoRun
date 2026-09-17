@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { normalizeUldNumber } = require('../api/shared/uld');
+const flightHelpers = require('../api/shared/flight');
 const fixtures = require('./uld-fixtures.json');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -172,6 +173,7 @@ function apiHarness(initialRows = []) {
       const q = text.replace(/\s+/g, ' ').trim(), p = this.values;
       state.calls.push({ q, p: { ...p }, inTransaction: !!this.tx?.active });
       const result = recordset => ({ recordset });
+      if (q.includes('sys.sp_getapplock')) return result([{ LockResult: 0 }]);
       if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS')) {
         return result(['OffloadId', 'FlightId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
@@ -184,7 +186,7 @@ function apiHarness(initialRows = []) {
         Object.assign(state.messages.find(x => x.MachMessageId === p.MachMessageId), { MatchedFlightId: p.FlightId, ProcessingStatus: 'PROCESSED' }); return result([]);
       }
       if (q.includes('FROM dbo.Flights')) {
-        if (p.Direction) return result([]); // Manifest creates a new flight.
+        if (q.startsWith('SELECT FlightId, FlightNumber FROM dbo.Flights')) return result([]); // Manifest creates a new flight.
         return result(p.FlightId ? flights.filter(x => String(x.FlightId) === String(p.FlightId)) : [flights[0]]);
       }
       if (q.startsWith('INSERT INTO dbo.Flights')) return result([{ ...p, FlightId: 3 }]);
@@ -215,7 +217,13 @@ function apiHarness(initialRows = []) {
     const module = { exports: {} };
     vm.runInNewContext(fs.readFileSync(path.join(root, 'api', endpoint, 'index.js'), 'utf8'), {
       module, exports: module.exports, Buffer, process: { env: { DATABASE_CONNECTION_STRING: 'test-only' } },
-      require: name => name === 'mssql' ? sql : name === '../shared/uld' ? { normalizeUldNumber } : require(name)
+      require: name => name === 'mssql'
+        ? sql
+        : name === '../shared/uld'
+          ? { normalizeUldNumber }
+          : name === '../shared/flight'
+            ? flightHelpers
+            : require(name)
     }, { filename: endpoint + '/index.js' });
     const log = Object.assign(() => {}, { error() {}, warn() {} });
     const context = { log };

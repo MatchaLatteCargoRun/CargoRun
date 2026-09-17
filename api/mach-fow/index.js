@@ -1,5 +1,9 @@
 const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
+const {
+  acquireFlightIdentityLock,
+  findFlightsByIdentity
+} = require('../shared/flight');
 const crypto = require('crypto');
 
 /* ============================================================
@@ -252,28 +256,6 @@ function padFlight(carrier, num) {
   }
 
   return c + n;
-}
-
-
-function flightKey(value) {
-  const s = String(value || '')
-    .trim()
-    .toUpperCase()
-    .replace(/\s+/g, '');
-
-  const m = s.match(
-    /^([A-Z0-9]{2,3}?)(\d+)([A-Z]?)$/
-  );
-
-  if (!m) {
-    return s;
-  }
-
-  return (
-    `${m[1]}` +
-    `${String(Number(m[2]))}` +
-    `${m[3] || ''}`
-  );
 }
 
 
@@ -1375,6 +1357,13 @@ module.exports = async function(
        FIND FLIGHT
        ======================================================== */
 
+    await acquireFlightIdentityLock(
+      tx,
+      sql,
+      operatingDate,
+      requestedFlight
+    );
+
     const candidates =
       await new sql.Request(tx)
 
@@ -1388,30 +1377,55 @@ module.exports = async function(
           SELECT
             FlightId,
             FlightNumber,
+            Direction,
             FlightStatus
 
           FROM dbo.Flights
 
           WHERE
             OperatingDate =
-            @OperatingDate
-
-            AND
-            UPPER(Direction) =
-            'EXPORT';
+            @OperatingDate;
         `);
 
 
+    const matchingFlights =
+      findFlightsByIdentity(
+        candidates.recordset,
+        requestedFlight
+      );
+
+
+    if (matchingFlights.length > 1) {
+      await tx.rollback();
+      tx = null;
+      sendJson(context, 409, {
+        ok: false,
+        error: 'Multiple flights have the same canonical identity',
+        code: 'FLIGHT_IDENTITY_CONFLICT',
+        flightIds: matchingFlights.map(existing => existing.FlightId)
+      });
+      return;
+    }
+
+
     let flight =
-      candidates.recordset.find(
-        x =>
-          flightKey(
-            x.FlightNumber
-          ) ===
-          flightKey(
-            requestedFlight
-          )
-      ) || null;
+      matchingFlights[0] || null;
+
+
+    if (
+      flight &&
+      String(flight.Direction || '').toUpperCase() !== 'EXPORT'
+    ) {
+      await tx.rollback();
+      tx = null;
+      sendJson(context, 409, {
+        ok: false,
+        error: 'Flight identity already exists with incompatible direction',
+        code: 'FLIGHT_IDENTITY_CONFLICT',
+        flightIds: [flight.FlightId]
+      });
+      return;
+    }
 
 
     let createdFlight =

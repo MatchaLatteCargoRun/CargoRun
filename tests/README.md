@@ -6,6 +6,7 @@ From the repository root, run:
 node --test tests/uld-normalization.test.js
 node --test tests/confirmation-safety.test.js
 node --test tests/atomic-status.test.js
+node --test tests/flight-concurrency.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
@@ -24,6 +25,12 @@ The atomic-status checks execute the canonical ULD status and offload handlers
 against an in-memory SQL stand-in. They force status changes between
 the initial read and final UPDATE to verify conditional mutation, rollback,
 identity-verification safety, and suppression of rejected movement records.
+
+The flight-concurrency checks execute the manual, manifest-upload, and MACH FOW
+handlers against a transaction-aware SQL stand-in. They force simultaneous
+requests for the same canonical flight/date identity and verify one flight,
+preserved endpoint conflict/reuse semantics, ULD/link creation, inactive-flight
+handling, and rollback after a forced post-flight failure.
 
 Before deployment, use an isolated SQL test database with the existing schema
 and indexes to run simultaneous manual/FOW requests against the same existing
