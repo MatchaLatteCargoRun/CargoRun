@@ -5,6 +5,7 @@ From the repository root, run:
 ```sh
 node --test tests/uld-normalization.test.js
 node --test tests/confirmation-safety.test.js
+node --test tests/scan-ambiguity.test.js
 node --test tests/atomic-status.test.js
 node --test tests/flight-concurrency.test.js
 ```
@@ -21,12 +22,21 @@ The confirmation-safety checks exercise the inline frontend stable-ID resolvers
 and delayed ULD/offload mutations across reorder, insertion, removal, stale
 status, duplicate-number, and failed-request scenarios.
 
+The scan-ambiguity checks exercise global full-ULD and numeric-serial candidate
+selection, explicit handling of duplicate candidates, and stable-ID resolution
+after live polling replaces or reorders the arrays. They also cover offload
+operating-date labels, legacy OffloadId fallbacks, selected-offload focus, and
+the stable FlightId request contract.
+
 The atomic-status checks execute the canonical ULD status and offload handlers
 against an in-memory SQL stand-in. They force status changes between
 the initial read and final UPDATE to verify conditional mutation, rollback,
 identity-verification safety, authoritative transactional audit writes, trusted
 actor attribution, and suppression of rejected movement/audit records. They
 also cover idempotent mail auditing and browser duplicate-audit prevention.
+Offload cases verify exact FlightId attachment, flight-context mismatch
+rejection, linked OperatingDate responses, and transactional rollback when a
+required audit insert fails.
 
 The flight-concurrency checks execute the manual, manifest-upload, and MACH FOW
 handlers against a transaction-aware SQL stand-in. They force simultaneous

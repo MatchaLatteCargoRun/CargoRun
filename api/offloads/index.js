@@ -1,5 +1,6 @@
 const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
+const { normalizeFlightNumber } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
 
 
@@ -96,6 +97,7 @@ function normalize(row, columns) {
     offloadId: get(['OffloadId', 'Id']),
     flightId: get(['FlightId']),
     flightNumber: get(['FlightNumber', 'Flight']),
+    operatingDate: row.__FlightOperatingDate ?? null,
     uldNumber: get(['UldNumber', 'ULDNumber', 'Uld']),
     parkingBay: get(['ParkingBay', 'Bay']),
     status: canonical(get(['Status', 'OffloadStatus'])),
@@ -137,13 +139,25 @@ module.exports = async function (context, req) {
 
     const idCol = pick(columns, ['OffloadId', 'Id']);
     const statusCol = pick(columns, ['Status', 'OffloadStatus']);
+    const flightIdCol = pick(columns, ['FlightId']);
     if (!idCol || !statusCol) {
       sendJson(context, 500, { ok: false, error: 'Offloads schema is missing an ID or status column' });
       return;
     }
 
     if (req.method === 'GET') {
-      const result = await pool.request().query(`SELECT * FROM dbo.Offloads ORDER BY ${q(idCol)} DESC;`);
+      const result = flightIdCol
+        ? await pool.request().query(`
+            SELECT o.*, CONVERT(char(10), f.OperatingDate, 23) AS __FlightOperatingDate
+            FROM dbo.Offloads AS o
+            LEFT JOIN dbo.Flights AS f ON f.FlightId = o.${q(flightIdCol)}
+            ORDER BY o.${q(idCol)} DESC;
+          `)
+        : await pool.request().query(`
+            SELECT o.*, CAST(NULL AS char(10)) AS __FlightOperatingDate
+            FROM dbo.Offloads AS o
+            ORDER BY o.${q(idCol)} DESC;
+          `);
       const offloads = result.recordset.map(r => normalize(r, columns));
       sendJson(context, 200, { ok: true, count: offloads.length, offloads });
       return;
@@ -155,12 +169,26 @@ module.exports = async function (context, req) {
 
     if (req.method === 'POST') {
       const uldNumber = normalizeUldNumber(body.uldNumber);
-      const flightNumber = clean(body.flightNumber, 12)?.toUpperCase();
+      const requestedFlightId = String(body.flightId || '').trim();
+      const requestedFlightNumber = clean(body.flightNumber, 12)?.toUpperCase() || null;
+      const requestedOperatingDate = body.operatingDate === null || body.operatingDate === undefined
+        ? null
+        : String(body.operatingDate).trim();
       const parkingBay = clean(body.parkingBay, 30)?.toUpperCase();
       const requestInstruction = clean(body.requestInstruction, 300);
 
-      if (!uldNumber || !flightNumber || !parkingBay) {
-        sendJson(context, 400, { ok: false, error: 'uldNumber, flightNumber and parkingBay are required' });
+      if (!uldNumber || !/^[1-9]\d*$/.test(requestedFlightId) || !parkingBay) {
+        sendJson(context, 400, { ok: false, error: 'uldNumber, flightId and parkingBay are required' });
+        return;
+      }
+
+      if (requestedOperatingDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedOperatingDate)) {
+        sendJson(context, 400, { ok: false, error: 'operatingDate must use YYYY-MM-DD' });
+        return;
+      }
+
+      if (!flightIdCol) {
+        sendJson(context, 500, { ok: false, error: 'Offloads schema is missing FlightId' });
         return;
       }
 
@@ -169,21 +197,39 @@ module.exports = async function (context, req) {
         return;
       }
 
-      let flightId = null;
-      try {
-        const f = await pool.request()
-          .input('FlightNumber', sql.NVarChar(12), flightNumber)
-          .query(`
-            SELECT TOP 1 FlightId
-            FROM dbo.Flights
-            WHERE FlightNumber = @FlightNumber
-            ORDER BY OperatingDate DESC, FlightId DESC;
-          `);
-        flightId = f.recordset?.[0]?.FlightId ?? null;
-      } catch {}
-
       transaction = new sql.Transaction(pool);
       await transaction.begin();
+
+      const flightResult = await new sql.Request(transaction)
+        .input('SelectedFlightId', sql.BigInt, requestedFlightId)
+        .query(`
+          SELECT FlightId, FlightNumber, CONVERT(char(10), OperatingDate, 23) AS OperatingDate, FlightStatus
+          FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)
+          WHERE FlightId = @SelectedFlightId;
+        `);
+      const selectedFlight = flightResult.recordset?.[0] || null;
+      if (!selectedFlight) {
+        await transaction.rollback(); transaction = null;
+        sendJson(context, 404, { ok: false, error: 'Selected flight was not found' });
+        return;
+      }
+
+      const flightId = selectedFlight.FlightId;
+      const flightNumber = clean(selectedFlight.FlightNumber, 12)?.toUpperCase();
+      const operatingDate = clean(selectedFlight.OperatingDate, 10);
+      if (canonical(selectedFlight.FlightStatus) !== 'ACTIVE') {
+        await transaction.rollback(); transaction = null;
+        sendJson(context, 409, { ok: false, error: 'Selected flight is no longer active', code: 'FLIGHT_NOT_ACTIVE' });
+        return;
+      }
+      const contextMismatch =
+        (requestedFlightNumber && normalizeFlightNumber(requestedFlightNumber) !== normalizeFlightNumber(flightNumber)) ||
+        (requestedOperatingDate && requestedOperatingDate !== operatingDate);
+      if (!flightNumber || contextMismatch) {
+        await transaction.rollback(); transaction = null;
+        sendJson(context, 409, { ok: false, error: 'Selected flight no longer matches the requested flight context', code: 'FLIGHT_CONTEXT_MISMATCH' });
+        return;
+      }
 
       const request = new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
@@ -238,6 +284,7 @@ module.exports = async function (context, req) {
       `);
 
       const created = normalize(insert.recordset[0], columns);
+      created.operatingDate = operatingDate;
       await insertAuditEvent(transaction, sql, {
         type: 'Offload',
         action: 'Offload requested',

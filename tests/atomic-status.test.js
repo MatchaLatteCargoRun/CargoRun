@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { normalizeUldNumber } = require('../api/shared/uld');
+const { normalizeFlightNumber } = require('../api/shared/flight');
 const { insertAuditEvent } = require('../api/shared/audit');
 
 const root = path.resolve(__dirname, '..');
@@ -24,6 +25,7 @@ function loadHandler(relativePath, sqlMock) {
     require(name) {
       if (name === 'mssql') return sqlMock;
       if (name === '../shared/uld') return { normalizeUldNumber };
+      if (name === '../shared/flight') return { normalizeFlightNumber };
       if (name === '../shared/audit') return { insertAuditEvent };
       throw new Error(`Unexpected require: ${name}`);
     }
@@ -32,10 +34,11 @@ function loadHandler(relativePath, sqlMock) {
   return module.exports;
 }
 
-function sqlHarness({ uld, offload } = {}) {
+function sqlHarness({ uld, offload, flights } = {}) {
   const state = {
     uld: uld ? structuredClone(uld) : null,
     offload: offload ? structuredClone(offload) : null,
+    flights: structuredClone(flights || [{ FlightId: 1, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }]),
     movements: [], audits: [], commits: 0, rollbacks: 0, failAudit: false,
     raceUldStatus: null, raceOffloadStatus: null, queries: []
   };
@@ -119,7 +122,12 @@ function sqlHarness({ uld, offload } = {}) {
         const id = p.OffloadId ?? p.LatestOffloadId;
         return result(state.offload && String(state.offload.OffloadId) === String(id) ? [{ ...state.offload }] : []);
       }
-      if (q.includes('SELECT TOP 1 FlightId') && q.includes('FROM dbo.Flights')) return result([{ FlightId: 1 }]);
+      if (q.includes('FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)')) return result(state.flights.filter(f => String(f.FlightId) === String(p.SelectedFlightId)));
+      if (q.startsWith('SELECT o.*') && q.includes('LEFT JOIN dbo.Flights')) {
+        if (!state.offload) return result([]);
+        const flight = state.flights.find(f => String(f.FlightId) === String(state.offload.FlightId));
+        return result([{ ...state.offload, __FlightOperatingDate: flight?.OperatingDate || null }]);
+      }
       if (q.startsWith('INSERT INTO dbo.Offloads')) {
         state.offload = { OffloadId: 90, FlightId: p.FlightId, FlightNumber: p.FlightNumber, UldNumber: p.UldNumber, ParkingBay: p.ParkingBay, Status: p.Status };
         return result([{ ...state.offload }], [1]);
@@ -253,11 +261,67 @@ test('offload collection and completion each succeed once, then reject stale rep
 test('offload request creates exactly one authoritative server audit', async () => {
   const h = sqlHarness();
   const handler = loadHandler('api/offloads/index.js', h.sql);
-  const response = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightNumber: 'CX178', parkingBay: 'F25' });
+  const response = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 1, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   assert.equal(response.status, 201);
   assert.equal(h.state.audits.length, 1);
   assert.equal(h.state.audits[0].Action, 'Offload requested');
   assert.equal(h.state.audits[0].ActorDisplayName, 'Concurrency Tester');
+});
+
+test('offload request attaches to the explicitly selected flight instance, never the newest matching number', async () => {
+  const h = sqlHarness({ flights: [
+    { FlightId: 100, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' },
+    { FlightId: 110, FlightNumber: 'CX178', OperatingDate: '2026-09-18', FlightStatus: 'ACTIVE' }
+  ] });
+  const handler = loadHandler('api/offloads/index.js', h.sql);
+  const response = await call(handler, 'POST', { uldNumber: 'PMC48921R7', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  assert.equal(response.status, 201);
+  assert.equal(h.state.offload.FlightId, 100);
+  assert.equal(h.state.offload.FlightNumber, 'CX0178');
+  assert.equal(response.body.offload.operatingDate, '2026-09-17');
+  assert.equal(h.state.queries.some(call => /TOP 1|ORDER BY OperatingDate DESC/.test(call.q)), false);
+});
+
+test('invalid FlightId and mismatched flight context fail closed without insert or success audit', async () => {
+  const h = sqlHarness({ flights: [{ FlightId: 100, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }] });
+  const handler = loadHandler('api/offloads/index.js', h.sql);
+  const missing = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 999, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const wrongNumber = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'QF11', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const wrongDate = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-18', parkingBay: 'F25' });
+  h.state.flights[0].FlightStatus = 'CLOSED';
+  const inactive = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  assert.deepEqual([missing.status, wrongNumber.status, wrongDate.status, inactive.status], [404, 409, 409, 409]);
+  assert.equal(wrongNumber.body.code, 'FLIGHT_CONTEXT_MISMATCH');
+  assert.equal(inactive.body.code, 'FLIGHT_NOT_ACTIVE');
+  assert.equal(h.state.offload, null);
+  assert.equal(h.state.audits.length, 0);
+});
+
+test('offload GET returns operating date from the flight linked by FlightId', async () => {
+  const h = sqlHarness({
+    offload: { OffloadId: 90, FlightId: 100, FlightNumber: 'CX178', UldNumber: 'AKE12345CX', ParkingBay: 'F25', Status: 'REQUESTED' },
+    flights: [
+      { FlightId: 100, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' },
+      { FlightId: 110, FlightNumber: 'CX178', OperatingDate: '2026-09-18', FlightStatus: 'ACTIVE' }
+    ]
+  });
+  const handler = loadHandler('api/offloads/index.js', h.sql);
+  const response = await call(handler, 'GET');
+  assert.equal(response.status, 200);
+  assert.equal(response.body.offloads[0].flightId, 100);
+  assert.equal(response.body.offloads[0].operatingDate, '2026-09-17');
+});
+
+test('required audit failure rolls back offload creation', async () => {
+  const h = sqlHarness();
+  h.state.failAudit = true;
+  const handler = loadHandler('api/offloads/index.js', h.sql);
+  const response = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 1, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  assert.equal(response.status, 500);
+  assert.equal(h.state.offload, null);
+  assert.equal(h.state.audits.length, 0);
+  assert.equal(h.state.commits, 0);
+  assert.equal(h.state.rollbacks, 1);
 });
 
 test('mail scan writes one authoritative audit and an idempotent retry writes none', async () => {

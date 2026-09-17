@@ -14,7 +14,7 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
 // Exercise the actual inline functions without booting the app or mocking a DOM.
 function frontend() {
-  const context = vm.createContext({ state: { history: [] } });
+  const context = vm.createContext({ state: { history: [] }, azureDateOnly: value => String(value || '').slice(0, 10) });
   const start = html.indexOf('function normalizeULD(');
   const end = html.indexOf('function firstStatus(', start);
   vm.runInContext(html.slice(start, end), context);
@@ -161,7 +161,7 @@ test('upload response links canonical server number to formatted pending ULD', a
 // It verifies transaction/locking use, not SQL Server's lock implementation.
 function apiHarness(initialRows = []) {
   const state = { rows: structuredClone(initialRows), messages: [], links: [], audits: [], calls: [], commits: 0, rollbacks: 0 };
-  const flights = [1, 2].map(FlightId => ({ FlightId, FlightNumber: 'CX0178', FlightStatus: 'ACTIVE', Direction: 'EXPORT' }));
+  const flights = [1, 2].map(FlightId => ({ FlightId, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'EXPORT' }));
   class Transaction {
     async begin() { this.active = true; this.snapshot = structuredClone({ rows: state.rows, messages: state.messages, links: state.links, audits: state.audits }); }
     async commit() { assert.equal(this.active, true); this.active = false; state.commits++; }
@@ -189,7 +189,8 @@ function apiHarness(initialRows = []) {
       }
       if (q.includes('FROM dbo.Flights')) {
         if (q.startsWith('SELECT FlightId, FlightNumber FROM dbo.Flights')) return result([]); // Manifest creates a new flight.
-        return result(p.FlightId ? flights.filter(x => String(x.FlightId) === String(p.FlightId)) : [flights[0]]);
+        const flightId = p.SelectedFlightId ?? p.FlightId;
+        return result(flightId ? flights.filter(x => String(x.FlightId) === String(flightId)) : [flights[0]]);
       }
       if (q.startsWith('INSERT INTO dbo.Flights')) return result([{ ...p, FlightId: 3 }]);
       if (q.startsWith('INSERT INTO dbo.FlightUploads') || q.startsWith('INSERT INTO dbo.UldSpecialHandlingCodes')) return result([]);
@@ -281,7 +282,7 @@ for (const value of ['', ' - \t\n', null, 12345, {}, ['AKE12345CX'], 'A'.repeat(
 test('new offloads normalize without stripping punctuation or deduplicating requests', async () => {
   const api = apiHarness();
   for (let i = 0; i < 2; i++) {
-    const response = await api.call('offloads', { uldNumber: ' ake-/00123/cx ', flightNumber: 'CX0178', parkingBay: 'F25' });
+    const response = await api.call('offloads', { uldNumber: ' ake-/00123/cx ', flightId: 1, flightNumber: 'CX0178', operatingDate: '2026-09-17', parkingBay: 'F25' });
     assert.equal(response.status, 201); assert.equal(response.body.offload.uldNumber, 'AKE/00123/CX');
   }
   assert.equal(api.state.calls.filter(x => x.q.startsWith('INSERT INTO dbo.Offloads')).length, 2);
