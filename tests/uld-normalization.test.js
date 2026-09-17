@@ -20,6 +20,9 @@ function frontend() {
     const line = html.split(/\r?\n/).find(x => x.startsWith(`function ${name}(`));
     vm.runInContext(line, context);
   }
+  const offloadStart = html.indexOf('function azureOffloadToUi(');
+  const offloadEnd = html.indexOf('async function syncAzureOffloads(', offloadStart);
+  vm.runInContext(html.slice(offloadStart, offloadEnd), context);
   return context;
 }
 
@@ -66,6 +69,52 @@ test('serial convenience remains separate; active timestamps stay within selecte
   assert.equal(browser.findWarehouseDepartureTime(second, { num: 'ake12345cx' }), 30);
   assert.equal(browser.findAtAircraftTime(second, { azureUldId: 2, num: 'ake12345cx' }), 40);
   assert.equal(browser.findWarehouseDepartureTime(first, { azureUldId: 2, num: 'AKE12345CX' }), null);
+});
+
+test('historical timestamp recovery uses canonical comparison without rewriting evidence', () => {
+  const browser = frontend();
+  const historicalNumber = 'AKE-12345-CX';
+  const departure = { flight: 'CX0178', uld: historicalNumber, from: 'Warehouse', to: 'Transit', ts: 1000 };
+  const aircraft = { flight: 'CX0178', uld: historicalNumber, from: 'Transit', to: 'At Aircraft', ts: 2000 };
+  browser.state.history = [departure, aircraft];
+  const active = { azureUldId: 7, num: 'AKE12345CX' };
+  const flight = { flight: 'CX0178', ulds: [active] };
+  assert.equal(browser.findWarehouseDepartureTime(flight, active), 1000);
+  assert.equal(browser.findAtAircraftTime(flight, active), 2000);
+  assert.equal(departure.uld, historicalNumber);
+  assert.equal(aircraft.uld, historicalNumber);
+  assert.equal(departure.ts, 1000);
+  assert.equal(aircraft.ts, 2000);
+});
+
+test('missing historical movement timestamp remains unknown', () => {
+  const browser = frontend();
+  browser.state.history = [{ flight: 'CX0178', uld: 'AKE/12345/CX', to: 'At Aircraft', ts: 2000 }];
+  const active = { azureUldId: 7, num: 'AKE12345CX' };
+  const flight = { flight: 'CX0178', ulds: [active] };
+  assert.equal(browser.findWarehouseDepartureTime(flight, active), null);
+  assert.equal(browser.findAtAircraftTime(flight, active), null);
+});
+
+test('completed offload keeps stored formatting while canonical comparison remains available', () => {
+  const browser = frontend();
+  Object.assign(browser, {
+    azureStatusToUi: () => 'Complete',
+    toMs: value => value == null ? null : Number(value)
+  });
+  const stored = 'AKE-12345-CX';
+  const mapped = browser.azureOffloadToUi({ offloadId: 1, uldNumber: stored, status: 'COMPLETE' });
+  assert.equal(mapped.uld, stored);
+  assert.equal(browser.sameUldNumber(mapped.uld, 'AKE12345CX'), true);
+});
+
+test('serial extraction ignores punctuation without changing canonical identity', () => {
+  const browser = frontend();
+  assert.equal(browser.uldSerial('AKE12/345CX'), '12345');
+  assert.equal(browser.uldSerial('AKE/12345/CX'), '12345');
+  assert.equal(browser.uldSerial('AKE12345CX'), '12345');
+  assert.equal(browser.normalizeULD('AKE/12345/CX'), 'AKE/12345/CX');
+  assert.notEqual(browser.normalizeULD('AKE/12345/CX'), browser.normalizeULD('AKE12345CX'));
 });
 
 test('Excel parsing canonicalizes identifiers without merging duplicate rows', () => {
