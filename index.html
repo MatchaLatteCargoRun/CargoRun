@@ -1221,7 +1221,56 @@ function fowSampleXml(){
 }
 function loadFowSample(){const el=document.getElementById('machFowXml');if(el)el.value=fowSampleXml()}
 async function loadMachFowRecent(silent=true){if(machFowLoading)return;machFowLoading=true;try{const res=await fetch('/api/mach-fow',{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||`MACH FOW API ${res.status}`);machFowRecent=Array.isArray(data.messages)?data.messages:[];machFowReceiver=data.receiver||null;machFowLoaded=true;if(route.screen==='machfow')render()}catch(err){console.error(err);if(!silent)toast(err?.message||'Could not load FOW message log')}finally{machFowLoading=false}}
-async function processMachFow(){const xml=(document.getElementById('machFowXml')?.value||'').trim();if(!xml){toast('Paste a FOW XML message first');return}showActionLoader('Processing MACH FOW…','Validating flight, operating date and ULD');try{const res=await fetch('/api/mach-fow',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({xml,source:'SIMULATOR'})}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`MACH FOW API ${res.status}`);const ulds=(data.ulds||[]).map(x=>typeof x==='string'?x:x.uldNumber).filter(Boolean);logEvent('System',data.duplicate?'MACH FOW duplicate ignored':'MACH FOW processed',{flight:data.flightNumber||'',uld:ulds.length===1?ulds[0]:'',detail:`${data.duplicate?'Duplicate message ignored':'Simulator populated export'} • ${ulds.length} ULD${ulds.length===1?'':'s'}${data.createdFlight?' • flight created':' • existing flight updated'}`,user:currentUser().name});await syncCentralData(true);await loadMachFowRecent(true);toast(data.duplicate?`Duplicate FOW ignored • ${data.flightNumber}`:`${data.flightNumber} updated from FOW • ${ulds.length} ULD${ulds.length===1?'':'s'}`);openScreen('machfow')}catch(err){console.error(err);toast(err?.message||'FOW could not be processed')}finally{hideActionLoader()}}
+async function processMachFow(){
+  const xml=(document.getElementById('machFowXml')?.value||'').trim();
+  if(!xml){toast('Paste a FOW XML message first');return}
+  showActionLoader('Processing MACH FOW…','Checking flight and unique ULDs');
+  try{
+    const res=await fetch('/api/mach-fow',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({xml,source:'SIMULATOR'})});
+    const data=await res.json().catch(()=>({}));
+    if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`MACH FOW API ${res.status}`);
+    const ulds=(data.ulds||[]).map(x=>typeof x==='string'?x:x.uldNumber).filter(Boolean);
+
+    if(data.duplicate){
+      logEvent('System','MACH FOW duplicate ignored',{flight:data.flightNumber||'',uld:ulds.length===1?ulds[0]:'',detail:`Exact FOW message already received • ${ulds.length} ULD${ulds.length===1?'':'s'} • no operational change`,user:currentUser().name});
+      await syncCentralData(true);
+      await loadMachFowRecent(true);
+      toast(`Duplicate FOW ignored • ${data.flightNumber||'Flight'}`);
+      openScreen('machfow');
+      return;
+    }
+
+    const newCount=Number(data.newUldCount ?? (data.ulds||[]).filter(x=>typeof x==='object'&&x.created===true).length);
+    const existingCount=Number(data.existingUldCount ?? (data.ulds||[]).filter(x=>typeof x==='object'&&x.created===false).length);
+    let eventDetail='';
+    let toastMessage='';
+
+    if(newCount>0 && existingCount===0){
+      eventDetail=`${newCount} new ULD${newCount===1?'':'s'} created${data.createdFlight?' • flight created':' • existing flight'}`;
+      toastMessage=`${data.flightNumber||'Flight'} • ${newCount} new ULD${newCount===1?'':'s'} added`;
+    }else if(newCount===0 && existingCount>0){
+      eventDetail=`${existingCount} ULD${existingCount===1?'':'s'} already on flight • FOW recorded • no operational ULD change`;
+      toastMessage=`${data.flightNumber||'Flight'} • ${existingCount===1?'ULD already exists':'ULDs already exist'} • no change`;
+    }else if(newCount>0 && existingCount>0){
+      eventDetail=`${newCount} new ULD${newCount===1?'':'s'} created • ${existingCount} existing ULD${existingCount===1?'':'s'} reused`;
+      toastMessage=`${data.flightNumber||'Flight'} • ${newCount} new • ${existingCount} existing`;
+    }else{
+      eventDetail=`FOW processed • ${ulds.length} ULD${ulds.length===1?'':'s'} referenced`;
+      toastMessage=`${data.flightNumber||'Flight'} • FOW processed`;
+    }
+
+    logEvent('System','MACH FOW processed',{flight:data.flightNumber||'',uld:ulds.length===1?ulds[0]:'',detail:eventDetail,user:currentUser().name});
+    await syncCentralData(true);
+    await loadMachFowRecent(true);
+    toast(toastMessage);
+    openScreen('machfow');
+  }catch(err){
+    console.error(err);
+    toast(err?.message||'FOW could not be processed');
+  }finally{
+    hideActionLoader();
+  }
+}
 function machFowScreen(){
  if(!machFowLoaded&&!machFowLoading)setTimeout(()=>loadMachFowRecent(true),50);
  const receiver=machFowReceiver||{};
