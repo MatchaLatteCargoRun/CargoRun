@@ -247,6 +247,11 @@ module.exports = async function (context, req) {
       return;
     }
 
+    if (!expectedCurrentStatus) {
+      sendJson(context, 400, { ok: false, error: 'expectedCurrentStatus is required' });
+      return;
+    }
+
     const sequence = ['REQUESTED', 'TRANSIT', 'COMPLETE'];
     if (!sequence.includes(nextStatus)) {
       sendJson(context, 400, { ok: false, error: 'nextStatus must be TRANSIT or COMPLETE' });
@@ -269,7 +274,7 @@ module.exports = async function (context, req) {
     const current = normalize(currentResult.recordset[0], columns);
     if (expectedCurrentStatus && expectedCurrentStatus !== current.status) {
       await transaction.rollback(); transaction = null;
-      sendJson(context, 409, { ok: false, error: 'Offload changed on another device', currentStatus: current.status });
+      sendJson(context, 409, { ok: false, error: 'Offload status changed; refresh and review again', code: 'STALE_STATUS', currentStatus: current.status });
       return;
     }
 
@@ -289,6 +294,7 @@ module.exports = async function (context, req) {
 
     const request = new sql.Request(transaction)
       .input('OffloadId', sql.BigInt, offloadId)
+      .input('ExpectedStatus', sql.VarChar(20), expectedCurrentStatus)
       .input('NextStatus', sql.VarChar(20), nextStatus)
       .input('ActorDisplayName', sql.NVarChar(150), actorDisplayName)
       .input('ActorReference', sql.NVarChar(150), actorReference)
@@ -319,8 +325,36 @@ module.exports = async function (context, req) {
       UPDATE dbo.Offloads
       SET ${sets.join(', ')}
       OUTPUT INSERTED.*
-      WHERE ${q(idCol)} = @OffloadId;
+      WHERE ${q(idCol)} = @OffloadId
+        AND ${q(statusCol)} = @ExpectedStatus;
     `);
+
+    const affectedRows = Number(updated.rowsAffected?.[0] ?? updated.recordset?.length ?? 0);
+    if (affectedRows !== 1 || updated.recordset.length !== 1) {
+      const latest = affectedRows === 0
+        ? await new sql.Request(transaction)
+          .input('LatestOffloadId', sql.BigInt, offloadId)
+          .query(`SELECT ${q(statusCol)} AS CurrentStatus FROM dbo.Offloads WHERE ${q(idCol)} = @LatestOffloadId;`)
+        : null;
+      await transaction.rollback(); transaction = null;
+
+      if (affectedRows === 0) {
+        sendJson(context, 409, {
+          ok: false,
+          error: 'Offload status changed; refresh and review again',
+          code: 'STALE_STATUS',
+          currentStatus: latest?.recordset?.[0]?.CurrentStatus || null
+        });
+        return;
+      }
+
+      sendJson(context, 500, {
+        ok: false,
+        error: 'Offload status update affected an unexpected number of rows',
+        code: 'STATUS_UPDATE_INVARIANT'
+      });
+      return;
+    }
 
     await transaction.commit(); transaction = null;
     sendJson(context, 200, { ok: true, offload: normalize(updated.recordset[0], columns) });

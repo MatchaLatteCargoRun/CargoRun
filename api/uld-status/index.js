@@ -129,6 +129,11 @@ module.exports = async function (context, req) {
       return;
     }
 
+    if (!expectedCurrent) {
+      sendJson(context, 400, { ok: false, error: 'expectedCurrentStatus is required' });
+      return;
+    }
+
     pool = await new sql.ConnectionPool(connectionString).connect();
     transaction = new sql.Transaction(pool);
     await transaction.begin();
@@ -165,7 +170,8 @@ module.exports = async function (context, req) {
       transaction = null;
       sendJson(context, 409, {
         ok: false,
-        error: 'ULD status changed on another device',
+        error: 'ULD status changed; refresh and review again',
+        code: 'STALE_STATUS',
         currentStatus
       });
       return;
@@ -215,6 +221,7 @@ module.exports = async function (context, req) {
     const sets = ['CurrentStatus = @NextStatus'];
     const request = new sql.Request(transaction)
       .input('UldId', sql.BigInt, uldId)
+      .input('ExpectedStatus', sql.VarChar(30), expectedCurrent)
       .input('NextStatus', sql.VarChar(30), requestedNext)
       .input('ActorDisplayName', sql.NVarChar(150), actorDisplayName)
       .input('ActorReference', sql.NVarChar(150), actorReference)
@@ -261,12 +268,42 @@ module.exports = async function (context, req) {
 
       UPDATE dbo.ULDs
       SET ${sets.join(',\n          ')}
-      WHERE UldId = @UldId;
+      WHERE UldId = @UldId
+        AND CurrentStatus = @ExpectedStatus;
 
       SELECT @Now AS OccurredAtUtc;
     `;
 
     const updateResult = await request.query(updateSql);
+    const affectedRows = Number(updateResult.rowsAffected?.[0] || 0);
+
+    if (affectedRows !== 1) {
+      const latest = affectedRows === 0
+        ? await new sql.Request(transaction)
+          .input('LatestUldId', sql.BigInt, uldId)
+          .query('SELECT CurrentStatus FROM dbo.ULDs WHERE UldId = @LatestUldId;')
+        : null;
+      await transaction.rollback();
+      transaction = null;
+
+      if (affectedRows === 0) {
+        sendJson(context, 409, {
+          ok: false,
+          error: 'ULD status changed; refresh and review again',
+          code: 'STALE_STATUS',
+          currentStatus: latest?.recordset?.[0]?.CurrentStatus || null
+        });
+        return;
+      }
+
+      sendJson(context, 500, {
+        ok: false,
+        error: 'ULD status update affected an unexpected number of rows',
+        code: 'STATUS_UPDATE_INVARIANT'
+      });
+      return;
+    }
+
     const occurredAtUtc = updateResult.recordset?.[0]?.OccurredAtUtc || new Date().toISOString();
 
     let movementLogged = false;

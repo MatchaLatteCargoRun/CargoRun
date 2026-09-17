@@ -5,6 +5,7 @@ From the repository root, run:
 ```sh
 node --test tests/uld-normalization.test.js
 node --test tests/confirmation-safety.test.js
+node --test tests/atomic-status.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
@@ -18,6 +19,11 @@ state/traceability preservation. They do not prove SQL Server lock behavior.
 The confirmation-safety checks exercise the inline frontend stable-ID resolvers
 and delayed ULD/offload mutations across reorder, insertion, removal, stale
 status, duplicate-number, and failed-request scenarios.
+
+The atomic-status checks execute both ULD status route copies and the offload
+handler against an in-memory SQL stand-in. They force status changes between
+the initial read and final UPDATE to verify conditional mutation, rollback,
+identity-verification safety, and suppression of rejected movement records.
 
 Before deployment, use an isolated SQL test database with the existing schema
 and indexes to run simultaneous manual/FOW requests against the same existing
