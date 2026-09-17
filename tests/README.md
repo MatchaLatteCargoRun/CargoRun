@@ -20,8 +20,8 @@ The confirmation-safety checks exercise the inline frontend stable-ID resolvers
 and delayed ULD/offload mutations across reorder, insertion, removal, stale
 status, duplicate-number, and failed-request scenarios.
 
-The atomic-status checks execute both ULD status route copies and the offload
-handler against an in-memory SQL stand-in. They force status changes between
+The atomic-status checks execute the canonical ULD status and offload handlers
+against an in-memory SQL stand-in. They force status changes between
 the initial read and final UPDATE to verify conditional mutation, rollback,
 identity-verification safety, and suppression of rejected movement records.
 

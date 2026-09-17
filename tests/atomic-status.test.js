@@ -156,7 +156,7 @@ test('ULD update is conditional, atomic, and records one movement', async () => 
 test('ULD race returns STALE_STATUS and rolls back status, verification, and movement', async () => {
   const h = sqlHarness({ uld: { UldId: 7, FlightId: 1, UldNumber: 'AKE12345CX', CurrentStatus: 'ARRIVED', IdentityVerified: 0 } });
   h.state.raceUldStatus = 'TRANSIT';
-  const handler = loadHandler('api/uld_status/index.js', h.sql);
+  const handler = loadHandler('api/uld-status/index.js', h.sql);
   const response = await call(handler, 'POST', { uldId: 7, expectedCurrentStatus: 'ARRIVED', nextStatus: 'TRANSIT' });
   assert.equal(response.status, 409);
   assert.equal(response.body.code, 'STALE_STATUS');
@@ -222,9 +222,11 @@ test('offload race and wrong ID do not mutate another request', async () => {
   assert.equal(h.state.offload.Status, 'TRANSIT');
 });
 
-test('both duplicate ULD routes retain identical atomic implementation', () => {
-  const hyphen = fs.readFileSync(path.join(root, 'api/uld-status/index.js'), 'utf8');
-  const underscore = fs.readFileSync(path.join(root, 'api/uld_status/index.js'), 'utf8');
-  assert.equal(hyphen, underscore);
-  assert.match(hyphen, /WHERE UldId = @UldId\s+AND CurrentStatus = @ExpectedStatus/);
+test('canonical ULD status function exposes the unchanged public route', () => {
+  const config = JSON.parse(fs.readFileSync(path.join(root, 'api/uld-status/function.json'), 'utf8'));
+  const trigger = config.bindings.find(binding => binding.type === 'httpTrigger');
+  assert.equal(trigger.route, 'uld-status');
+  assert.deepEqual(Array.from(trigger.methods), ['post']);
+  const source = fs.readFileSync(path.join(root, 'api/uld-status/index.js'), 'utf8');
+  assert.match(source, /WHERE UldId = @UldId\s+AND CurrentStatus = @ExpectedStatus/);
 });
