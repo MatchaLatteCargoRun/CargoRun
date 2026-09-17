@@ -215,9 +215,10 @@ test('duplicate exact full ULD identities also require explicit selection', () =
   assert.match(h.modals[0], /2<\/strong> active items match/);
 });
 
-test('offload request UI submits a selected stable flight instance', () => {
-  assert.match(html, /<select id="offFlightId">/);
-  assert.doesNotMatch(html, /id="offFlight"/);
-  assert.match(html, /findActiveFlightForOffload\(flightId\)/);
-  assert.match(html, /JSON\.stringify\(\{uldNumber:uld,flightId,flightNumber:flight,operatingDate,/);
+test('offload request UI uses server eligibility and ULD selectors', () => {
+  assert.match(html, /id="offFlightId"/);
+  assert.match(html, /id="offUldId"/);
+  assert.doesNotMatch(html, /id="offUld"/);
+  assert.match(html, /offloads\?eligibleFlights=true/);
+  assert.match(html, /JSON\.stringify\(\{flightId,uldId,uldNumber,/);
 });

@@ -161,7 +161,7 @@ test('upload response links canonical server number to formatted pending ULD', a
 // It verifies transaction/locking use, not SQL Server's lock implementation.
 function apiHarness(initialRows = []) {
   const state = { rows: structuredClone(initialRows), messages: [], links: [], audits: [], calls: [], commits: 0, rollbacks: 0 };
-  const flights = [1, 2].map(FlightId => ({ FlightId, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'EXPORT' }));
+  const flights = [1, 2].map(FlightId => ({ FlightId, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'EXPORT', InclusionReason: 'OPERATING_TODAY' }));
   class Transaction {
     async begin() { this.active = true; this.snapshot = structuredClone({ rows: state.rows, messages: state.messages, links: state.links, audits: state.audits }); }
     async commit() { assert.equal(this.active, true); this.active = false; state.commits++; }
@@ -177,7 +177,7 @@ function apiHarness(initialRows = []) {
       if (q.includes('sys.sp_getapplock')) return result([{ LockResult: 0 }]);
       if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS')) {
         if (p.AuditTableName === 'AuditEvents') return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
-        return result(['OffloadId', 'FlightId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
+        return result(['OffloadId', 'FlightId', 'UldId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
       if (q.includes('FROM dbo.IncomingMachMessages')) return result(state.messages.filter(x => x.DocumentCorID === p.DocumentCorID));
       if (q.includes('FROM dbo.MachFowShipments')) return result(state.links.filter(x => x.MachMessageId === p.MachMessageId));
@@ -211,6 +211,7 @@ function apiHarness(initialRows = []) {
       }
       if (q.startsWith('INSERT INTO dbo.MachFowShipments')) { state.links.push({ ...p }); return result([]); }
       if (q.startsWith('INSERT INTO dbo.AuditEvents')) { const row = { ...p, AuditEventId: state.audits.length + 1 }; state.audits.push(row); return result([row]); }
+      if (q.includes('FROM dbo.Offloads WITH')) return result([]);
       if (q.startsWith('INSERT INTO dbo.Offloads')) return result([{ ...p, OffloadId: 1 }]);
       throw new Error('Unexpected SQL in test: ' + q);
     }
@@ -279,13 +280,13 @@ for (const value of ['', ' - \t\n', null, 12345, {}, ['AKE12345CX'], 'A'.repeat(
   });
 }
 
-test('new offloads normalize without stripping punctuation or deduplicating requests', async () => {
-  const api = apiHarness();
-  for (let i = 0; i < 2; i++) {
-    const response = await api.call('offloads', { uldNumber: ' ake-/00123/cx ', flightId: 1, flightNumber: 'CX0178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+test('new offloads normalize a selected real ULD without stripping punctuation', async () => {
+  const api = apiHarness([{ FlightId: 1, UldId: 7, UldNumber: 'AKE/00123/CX' }]);
+  for (let i = 0; i < 1; i++) {
+    const response = await api.call('offloads', { uldId:'7', uldNumber: ' ake-/00123/cx ', flightId: 1, flightNumber: 'CX0178', operatingDate: '2026-09-17', parkingBay: 'F25' });
     assert.equal(response.status, 201); assert.equal(response.body.offload.uldNumber, 'AKE/00123/CX');
   }
-  assert.equal(api.state.calls.filter(x => x.q.startsWith('INSERT INTO dbo.Offloads')).length, 2);
+  assert.equal(api.state.calls.filter(x => x.q.startsWith('INSERT INTO dbo.Offloads')).length, 1);
 });
 
 function fow(document, serial = '12 345', awb = '11111111') {

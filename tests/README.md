@@ -8,10 +8,34 @@ node --test tests/confirmation-safety.test.js
 node --test tests/scan-ambiguity.test.js
 node --test tests/atomic-status.test.js
 node --test tests/flight-concurrency.test.js
+node --test tests/offload-identity.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
 database connection, credentials, or network access are required.
+
+Run the complete suite with `node --test tests/*.test.js`. If the sandbox blocks
+child-process isolation with `spawn EPERM`, use
+`node --test --test-isolation=none tests/*.test.js` on a Node version supporting
+that option. Record the actual local runtime separately from Azure Node 22.
+
+Phase B tests execute the real offload handler against both legacy aliases and
+the live `OffloadStatus`/`Bay` schema. They cover database-clock query structure,
+boundary/date fixtures, exact ULD ownership, conflicting canonical identities,
+duplicate creation (including concurrent fixture transactions), required audit
+rollback, pre-migration failure, and NULL-ID legacy transitions. Browser tests
+exercise dependent selectors, stale async responses, and exact duplicate focus.
+The SQL fixture models eligibility and locking; it does not execute T-SQL or
+prove Azure SQL DST, FK, CHECK, or filtered-index behavior. Run the isolated SQL
+checks in `migrations/phase-b-review.md` before applying the review-only migration.
+
+For the real Azure SQL migration/concurrency rehearsal, follow
+`migrations/phase-b-rehearsal.md`. Its explicitly invoked runner is
+`tests/integration/phase-b-rehearsal.js`; it is not included in the mock regression
+suite. It requires Node 22, an acknowledged disposable copy, and a test-only
+connection. Never point it at production. On Node 22 versions exposing isolation
+as experimental, use `--experimental-test-isolation=none` instead of
+`--test-isolation=none` for the regression command above.
 
 Fixtures exercise the actual backend and inline frontend normalizers. Handler
 tests use a small in-memory SQL stand-in to verify canonical writes, flight

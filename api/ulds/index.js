@@ -50,6 +50,8 @@ module.exports = async function (context, req) {
         .query(`
           SELECT
             u.*,
+            CONVERT(varchar(20), u.UldId) AS __UldIdText,
+            CONVERT(varchar(20), u.FlightId) AS __FlightIdText,
             (
               SELECT STRING_AGG(s.Code, ',')
               FROM dbo.UldSpecialHandlingCodes s
@@ -63,7 +65,9 @@ module.exports = async function (context, req) {
       sendJson(context, 200, {
         ok: true,
         count: result.recordset.length,
-        ulds: result.recordset
+        ulds: result.recordset.map(({ __UldIdText, __FlightIdText, ...row }) => ({
+          ...row, UldId: __UldIdText, FlightId: __FlightIdText
+        }))
       });
 
       return;

@@ -1,174 +1,10 @@
 'use strict';
-
-const test = require('node:test');
-const assert = require('node:assert/strict');
-const fs = require('node:fs');
-const path = require('node:path');
-const vm = require('node:vm');
-const { normalizeUldNumber } = require('../api/shared/uld');
-const { normalizeFlightNumber } = require('../api/shared/flight');
-const { insertAuditEvent } = require('../api/shared/audit');
-
-const root = path.resolve(__dirname, '..');
-const principal = Buffer.from(JSON.stringify({
-  userDetails: 'Concurrency Tester', userId: 'test-user', userRoles: ['authenticated']
-})).toString('base64');
-
-function loadHandler(relativePath, sqlMock) {
-  const filename = path.join(root, relativePath);
-  const source = fs.readFileSync(filename, 'utf8');
-  const module = { exports: {} };
-  const context = vm.createContext({
-    module, exports: module.exports, Buffer,
-    process: { env: { DATABASE_CONNECTION_STRING: 'test-only' } },
-    console,
-    require(name) {
-      if (name === 'mssql') return sqlMock;
-      if (name === '../shared/uld') return { normalizeUldNumber };
-      if (name === '../shared/flight') return { normalizeFlightNumber };
-      if (name === '../shared/audit') return { insertAuditEvent };
-      throw new Error(`Unexpected require: ${name}`);
-    }
-  });
-  vm.runInContext(source, context, { filename });
-  return module.exports;
-}
-
-function sqlHarness({ uld, offload, flights } = {}) {
-  const state = {
-    uld: uld ? structuredClone(uld) : null,
-    offload: offload ? structuredClone(offload) : null,
-    flights: structuredClone(flights || [{ FlightId: 1, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }]),
-    movements: [], audits: [], commits: 0, rollbacks: 0, failAudit: false,
-    raceUldStatus: null, raceOffloadStatus: null, queries: []
-  };
-
-  const columns = {
-    ULDs: [
-      'UldId', 'FlightId', 'UldNumber', 'CurrentStatus', 'IdentityVerified',
-      'AcceptedAtUtc', 'AcceptedByDisplayName', 'AcceptedByObjectId',
-      'WarehouseDepartedAtUtc', 'WarehouseDepartedByDisplayName', 'WarehouseDepartedByObjectId'
-    ],
-    UldMovements: ['UldMovementId', 'UldId', 'FromStatus', 'ToStatus', 'OccurredAtUtc', 'ActorDisplayName', 'ActorObjectId', 'Source', 'Notes'],
-    Offloads: [
-      'OffloadId', 'FlightId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status',
-      'CollectedAtUtc', 'CollectedByDisplayName', 'CollectedByObjectId',
-      'DeliveredAtUtc', 'DeliveredByDisplayName', 'DeliveredByObjectId', 'DeliveredLocation', 'CompletionNote'
-    ],
-    AuditEvents: ['AuditEventId', 'EventType', 'Action', 'EntityType', 'EntityId', 'FlightNumber', 'UldNumber', 'FromStatus', 'ToStatus', 'OccurredAtUtc', 'ActorDisplayName', 'ActorReference', 'Detail', 'DetailsJson']
-  };
-
-  class Transaction {
-    async begin() { this.active = true; this.snapshot = structuredClone({ uld: state.uld, offload: state.offload, movements: state.movements, audits: state.audits }); }
-    async commit() { this.active = false; state.commits++; }
-    async rollback() {
-      if (this.active) {
-        state.uld = this.snapshot.uld; state.offload = this.snapshot.offload; state.movements = this.snapshot.movements; state.audits = this.snapshot.audits;
-        this.active = false; state.rollbacks++;
-      }
-    }
-  }
-
-  class Request {
-    constructor(transaction) { this.transaction = transaction; this.values = {}; this.parameters = {}; }
-    input(name, type, value) { this.values[name] = value; this.parameters[name] = { value }; return this; }
-    async query(text) {
-      const q = String(text).replace(/\s+/g, ' ').trim();
-      const p = this.values;
-      state.queries.push({ q, p: { ...p } });
-      const result = (recordset = [], rowsAffected = []) => ({ recordset, recordsets: [recordset], rowsAffected });
-
-      if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS')) {
-        const table = p.TableName || p.AuditTableName || Object.entries(p).find(([k]) => k.startsWith('TableName_'))?.[1];
-        return result((columns[table] || []).map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES', IS_IDENTITY: COLUMN_NAME.endsWith('Id') ? 1 : 0 })));
-      }
-      if (q.includes('FROM dbo.ULDs u INNER JOIN dbo.Flights')) {
-        if (p.AuditUldId) return result(state.uld ? [{ ...state.uld, FlightNumber: state.uld.FlightNumber || 'CX178' }] : []);
-        return result(state.uld && String(state.uld.UldId) === String(p.UldId)
-          ? [{ ...state.uld, Direction: state.uld.Direction || 'IMPORT', FlightNumber: state.uld.FlightNumber || 'CX178' }]
-          : []);
-      }
-      if (q.startsWith('DECLARE @Now') && q.includes('UPDATE dbo.ULDs')) {
-        assert.match(q, /WHERE UldId = @UldId AND CurrentStatus = @ExpectedStatus/);
-        if (state.raceUldStatus) {
-          state.uld.CurrentStatus = state.raceUldStatus;
-          if (this.transaction?.snapshot?.uld) this.transaction.snapshot.uld.CurrentStatus = state.raceUldStatus;
-          state.raceUldStatus = null;
-        }
-        const matched = state.uld && String(state.uld.UldId) === String(p.UldId) && state.uld.CurrentStatus === p.ExpectedStatus;
-        if (matched) {
-          state.uld.CurrentStatus = p.NextStatus;
-          state.uld.IdentityVerified = 1;
-          return result([{ OccurredAtUtc: '2026-09-17T00:00:00.000Z' }], [1]);
-        }
-        return result([{ OccurredAtUtc: '2026-09-17T00:00:00.000Z' }], [0]);
-      }
-      if (q.startsWith('INSERT INTO dbo.UldMovements')) { state.movements.push({ from: p.MoveFromStatus, to: p.MoveToStatus }); return result([], [1]); }
-      if (q.startsWith('INSERT INTO dbo.AuditEvents')) {
-        if (state.failAudit) throw new Error('forced audit failure');
-        const row = { Action: p.AuditAction, ActorDisplayName: p.AuditActorDisplayName, FromStatus: p.AuditFromStatus, ToStatus: p.AuditToStatus, OccurredAtUtc: '2026-09-17T00:00:00.000Z' };
-        state.audits.push(row); return result([row], [1]);
-      }
-      if (q.includes('SELECT CurrentStatus FROM dbo.ULDs')) return result(state.uld ? [{ CurrentStatus: state.uld.CurrentStatus }] : []);
-      if (q.includes('SELECT * FROM dbo.ULDs')) return result(state.uld ? [{ ...state.uld }] : []);
-      if (q.startsWith('UPDATE dbo.ULDs SET MailScannedAtUtc')) {
-        if (!state.uld || String(state.uld.UldId) !== String(p.UldId) || state.uld.MailScannedAtUtc) return result([]);
-        Object.assign(state.uld, { MailScannedAtUtc: '2026-09-17T01:00:00.000Z', MailScannedByDisplayName: p.DisplayName, MailScannedByReference: p.Reference });
-        return result([{ ...state.uld }], [1]);
-      }
-      if (q.includes('FROM dbo.ULDs WHERE UldId=@UldId2')) return result(state.uld ? [{ ...state.uld }] : []);
-
-      if (q.startsWith('SELECT * FROM dbo.Offloads WHERE')) {
-        const id = p.OffloadId ?? p.LatestOffloadId;
-        return result(state.offload && String(state.offload.OffloadId) === String(id) ? [{ ...state.offload }] : []);
-      }
-      if (q.includes('FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)')) return result(state.flights.filter(f => String(f.FlightId) === String(p.SelectedFlightId)));
-      if (q.startsWith('SELECT o.*') && q.includes('LEFT JOIN dbo.Flights')) {
-        if (!state.offload) return result([]);
-        const flight = state.flights.find(f => String(f.FlightId) === String(state.offload.FlightId));
-        return result([{ ...state.offload, __FlightOperatingDate: flight?.OperatingDate || null }]);
-      }
-      if (q.startsWith('INSERT INTO dbo.Offloads')) {
-        state.offload = { OffloadId: 90, FlightId: p.FlightId, FlightNumber: p.FlightNumber, UldNumber: p.UldNumber, ParkingBay: p.ParkingBay, Status: p.Status };
-        return result([{ ...state.offload }], [1]);
-      }
-      if (q.startsWith('UPDATE dbo.Offloads')) {
-        assert.match(q, /WHERE \[OffloadId\] = @OffloadId AND \[Status\] = @ExpectedStatus/);
-        if (state.raceOffloadStatus) {
-          state.offload.Status = state.raceOffloadStatus;
-          if (this.transaction?.snapshot?.offload) this.transaction.snapshot.offload.Status = state.raceOffloadStatus;
-          state.raceOffloadStatus = null;
-        }
-        const matched = state.offload && String(state.offload.OffloadId) === String(p.OffloadId) && state.offload.Status === p.ExpectedStatus;
-        if (!matched) return result([], [0]);
-        state.offload.Status = p.NextStatus;
-        if (p.NextStatus === 'COMPLETE') state.offload.DeliveredLocation = p.DeliveredLocation;
-        return result([{ ...state.offload }], [1]);
-      }
-      if (q.includes('AS CurrentStatus FROM dbo.Offloads')) return result(state.offload ? [{ CurrentStatus: state.offload.Status }] : []);
-      throw new Error(`Unhandled SQL: ${q}`);
-    }
-  }
-
-  class ConnectionPool {
-    async connect() { return this; }
-    request() { return new Request(); }
-    async close() {}
-  }
-
-  const sql = {
-    ConnectionPool, Transaction, Request,
-    NVarChar: n => `nvarchar(${n})`, VarChar: n => `varchar(${n})`,
-    BigInt: 'bigint', DateTime2: n => `datetime2(${n})`, MAX: 'max'
-  };
-  return { sql, state };
-}
-
-async function call(handler, method, body) {
-  const context = { log: { error() {}, warn() {} } };
-  await handler(context, { method, body, headers: { 'x-ms-client-principal': principal } });
-  return { status: context.res.status, body: JSON.parse(context.res.body) };
-}
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const root=path.resolve(__dirname,'..');
+const {sqlHarness,loadHandler,call}=require('./helpers/operational-harness');
 
 test('ULD update is conditional, atomic, and records one authoritative audit and movement', async () => {
   const h = sqlHarness({ uld: { UldId: 7, FlightId: 1, UldNumber: 'AKE12345CX', CurrentStatus: 'ARRIVED', IdentityVerified: 0 } });
@@ -261,7 +97,7 @@ test('offload collection and completion each succeed once, then reject stale rep
 test('offload request creates exactly one authoritative server audit', async () => {
   const h = sqlHarness();
   const handler = loadHandler('api/offloads/index.js', h.sql);
-  const response = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 1, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const response = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 1, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   assert.equal(response.status, 201);
   assert.equal(h.state.audits.length, 1);
   assert.equal(h.state.audits[0].Action, 'Offload requested');
@@ -274,7 +110,7 @@ test('offload request attaches to the explicitly selected flight instance, never
     { FlightId: 110, FlightNumber: 'CX178', OperatingDate: '2026-09-18', FlightStatus: 'ACTIVE' }
   ] });
   const handler = loadHandler('api/offloads/index.js', h.sql);
-  const response = await call(handler, 'POST', { uldNumber: 'PMC48921R7', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const response = await call(handler, 'POST', { uldId: '7', uldNumber: 'PMC48921R7', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   assert.equal(response.status, 201);
   assert.equal(h.state.offload.FlightId, 100);
   assert.equal(h.state.offload.FlightNumber, 'CX0178');
@@ -285,11 +121,11 @@ test('offload request attaches to the explicitly selected flight instance, never
 test('invalid FlightId and mismatched flight context fail closed without insert or success audit', async () => {
   const h = sqlHarness({ flights: [{ FlightId: 100, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }] });
   const handler = loadHandler('api/offloads/index.js', h.sql);
-  const missing = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 999, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
-  const wrongNumber = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'QF11', operatingDate: '2026-09-17', parkingBay: 'F25' });
-  const wrongDate = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-18', parkingBay: 'F25' });
+  const missing = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 999, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const wrongNumber = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'QF11', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const wrongDate = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-18', parkingBay: 'F25' });
   h.state.flights[0].FlightStatus = 'CLOSED';
-  const inactive = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const inactive = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   assert.deepEqual([missing.status, wrongNumber.status, wrongDate.status, inactive.status], [404, 409, 409, 409]);
   assert.equal(wrongNumber.body.code, 'FLIGHT_CONTEXT_MISMATCH');
   assert.equal(inactive.body.code, 'FLIGHT_NOT_ACTIVE');
@@ -316,7 +152,7 @@ test('required audit failure rolls back offload creation', async () => {
   const h = sqlHarness();
   h.state.failAudit = true;
   const handler = loadHandler('api/offloads/index.js', h.sql);
-  const response = await call(handler, 'POST', { uldNumber: 'AKE12345CX', flightId: 1, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
+  const response = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 1, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   assert.equal(response.status, 500);
   assert.equal(h.state.offload, null);
   assert.equal(h.state.audits.length, 0);
