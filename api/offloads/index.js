@@ -1,5 +1,6 @@
 const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
+const { insertAuditEvent } = require('../shared/audit');
 
 
 function getHeader(req, name) {
@@ -181,7 +182,10 @@ module.exports = async function (context, req) {
         flightId = f.recordset?.[0]?.FlightId ?? null;
       } catch {}
 
-      const request = pool.request()
+      transaction = new sql.Transaction(pool);
+      await transaction.begin();
+
+      const request = new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
         .input('FlightNumber', sql.NVarChar(12), flightNumber)
         .input('UldNumber', sql.NVarChar(20), uldNumber)
@@ -218,6 +222,8 @@ module.exports = async function (context, req) {
         !mapped.has(String(c.COLUMN_NAME).toLowerCase())
       );
       if (requiredUnknown.length) {
+        await transaction.rollback();
+        transaction = null;
         sendJson(context, 500, {
           ok: false,
           error: `Offloads schema has unmapped required columns: ${requiredUnknown.map(c => c.COLUMN_NAME).join(', ')}`
@@ -231,7 +237,26 @@ module.exports = async function (context, req) {
         VALUES (${values.join(', ')});
       `);
 
-      sendJson(context, 201, { ok: true, offload: normalize(insert.recordset[0], columns) });
+      const created = normalize(insert.recordset[0], columns);
+      await insertAuditEvent(transaction, sql, {
+        type: 'Offload',
+        action: 'Offload requested',
+        actorDisplayName,
+        actorReference,
+        entityType: 'Offload',
+        entityId: created.offloadId,
+        offloadId: created.offloadId,
+        flightId: created.flightId,
+        flightNumber: created.flightNumber || flightNumber,
+        uldNumber: created.uldNumber || uldNumber,
+        toStatus: 'REQUESTED',
+        detail: `Requested from bay ${created.parkingBay || parkingBay}${requestInstruction ? ` • Instruction: ${requestInstruction}` : ''}`
+      });
+
+      await transaction.commit();
+      transaction = null;
+
+      sendJson(context, 201, { ok: true, offload: created });
       return;
     }
 
@@ -356,8 +381,27 @@ module.exports = async function (context, req) {
       return;
     }
 
+    const changed = normalize(updated.recordset[0], columns);
+    await insertAuditEvent(transaction, sql, {
+      type: 'Offload',
+      action: nextStatus === 'TRANSIT' ? 'Offload collected' : 'Offload delivered',
+      actorDisplayName,
+      actorReference,
+      entityType: 'Offload',
+      entityId: changed.offloadId,
+      offloadId: changed.offloadId,
+      flightId: changed.flightId,
+      flightNumber: changed.flightNumber,
+      uldNumber: changed.uldNumber,
+      fromStatus: current.status,
+      toStatus: nextStatus,
+      detail: nextStatus === 'TRANSIT'
+        ? `Collected from bay ${changed.parkingBay || current.parkingBay}${changed.requestInstruction ? ` • ${changed.requestInstruction}` : ''}`
+        : `Delivered to ${changed.deliveredLocation || deliveredLocation}${completionNote ? ` • Note: ${completionNote}` : ''}`
+    });
+
     await transaction.commit(); transaction = null;
-    sendJson(context, 200, { ok: true, offload: normalize(updated.recordset[0], columns) });
+    sendJson(context, 200, { ok: true, offload: changed });
   } catch (err) {
     if (transaction) { try { await transaction.rollback(); } catch {} }
     context.log.error('Offloads API failed', err);

@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const flightHelpers = require('../api/shared/flight');
 const { normalizeUldNumber } = require('../api/shared/uld');
+const { insertAuditEvent } = require('../api/shared/audit');
 
 const root = path.resolve(__dirname, '..');
 const principal = Buffer.from(JSON.stringify({
@@ -187,6 +188,8 @@ function harness(initialFlights = []) {
             ? flightHelpers
             : name === '../shared/uld'
               ? { normalizeUldNumber }
+              : name === '../shared/audit'
+                ? { insertAuditEvent }
               : require(name)
       },
       { filename: endpoint + '/index.js' }

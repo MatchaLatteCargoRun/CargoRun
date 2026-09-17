@@ -1,5 +1,6 @@
 const sql = require('mssql');
 const crypto = require('crypto');
+const { insertAuditEvent } = require('../shared/audit');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -70,6 +71,8 @@ module.exports=async function(context,req){let pool,tx;try{
   const mapped=new Set(names.map(x=>x.toLowerCase()));const requiredUnknown=columns.filter(c=>c.IS_NULLABLE==='NO'&&!c.COLUMN_DEFAULT&&Number(c.IS_IDENTITY)!==1&&!mapped.has(String(c.COLUMN_NAME).toLowerCase()));if(requiredUnknown.length){await tx.rollback();tx=null;sendJson(context,500,{ok:false,error:`ImportCompletionRecords has unmapped required columns: ${requiredUnknown.map(c=>c.COLUMN_NAME).join(', ')}`});return}
   const inserted=await request.query(`INSERT INTO dbo.ImportCompletionRecords (${names.map(q).join(',')}) OUTPUT INSERTED.* VALUES (${values.join(',')});`);
   await new sql.Request(tx).input('FlightId4',sql.BigInt,flightId).query(`UPDATE dbo.Flights SET FlightStatus='FINALISED' WHERE FlightId=@FlightId4;`);
+  const auditRecord=normalize(inserted.recordset[0],columns,flight.FlightNumber);
+  await insertAuditEvent(tx,sql,{type:'Flight',action:'Import finalised',actorDisplayName:identity.displayName,actorReference:identity.reference,entityType:'Flight',entityId:flightId,flightId,flightNumber:flight.FlightNumber,fromStatus:flight.FlightStatus,toStatus:'FINALISED',detail:`Import finalised${exceptionReason?` with exception: ${exceptionReason}`:''} • Record ${auditRecord.verificationId}`,details:{completionRecordId:auditRecord.id,verificationId:auditRecord.verificationId,pendingCount}});
   await tx.commit();tx=null;
   const rec=normalize(inserted.recordset[0],columns,flight.FlightNumber);rec.recordHash=hash;sendJson(context,201,{ok:true,record:rec,pendingCount});
 }catch(err){if(tx){try{await tx.rollback()}catch{}}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed',detail:err.message})}finally{try{await pool?.close()}catch{}}};

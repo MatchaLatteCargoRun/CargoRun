@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { insertAuditEvent } = require('../shared/audit');
 
 
 function getHeader(req, name) {
@@ -305,6 +306,26 @@ module.exports = async function (context, req) {
     }
 
     const occurredAtUtc = updateResult.recordset?.[0]?.OccurredAtUtc || new Date().toISOString();
+
+    const firstAcceptance = currentIndex === 0;
+    await insertAuditEvent(transaction, sql, {
+      type: 'ULD',
+      action: firstAcceptance ? 'ULD accepted' : 'Status changed',
+      actorDisplayName,
+      actorReference,
+      entityType: 'ULD',
+      entityId: current.UldId,
+      flightId: current.FlightId,
+      flightNumber: current.FlightNumber,
+      uldId: current.UldId,
+      uldNumber: current.UldNumber,
+      fromStatus: currentStatus,
+      toStatus: requestedNext,
+      detail: firstAcceptance
+        ? 'Identity verified on first acceptance'
+        : `ULD moved to ${requestedNext}`,
+      details: { direction, source: 'CARGORUN_API' }
+    });
 
     let movementLogged = false;
     let movementWarning = null;

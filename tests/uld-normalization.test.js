@@ -7,6 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { normalizeUldNumber } = require('../api/shared/uld');
 const flightHelpers = require('../api/shared/flight');
+const { insertAuditEvent } = require('../api/shared/audit');
 const fixtures = require('./uld-fixtures.json');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -159,10 +160,10 @@ test('upload response links canonical server number to formatted pending ULD', a
 // Small SQL stand-in: execute the real HTTP handlers with in-memory query results.
 // It verifies transaction/locking use, not SQL Server's lock implementation.
 function apiHarness(initialRows = []) {
-  const state = { rows: structuredClone(initialRows), messages: [], links: [], calls: [], commits: 0, rollbacks: 0 };
+  const state = { rows: structuredClone(initialRows), messages: [], links: [], audits: [], calls: [], commits: 0, rollbacks: 0 };
   const flights = [1, 2].map(FlightId => ({ FlightId, FlightNumber: 'CX0178', FlightStatus: 'ACTIVE', Direction: 'EXPORT' }));
   class Transaction {
-    async begin() { this.active = true; this.snapshot = structuredClone({ rows: state.rows, messages: state.messages, links: state.links }); }
+    async begin() { this.active = true; this.snapshot = structuredClone({ rows: state.rows, messages: state.messages, links: state.links, audits: state.audits }); }
     async commit() { assert.equal(this.active, true); this.active = false; state.commits++; }
     async rollback() { assert.equal(this.active, true); Object.assign(state, this.snapshot); this.active = false; state.rollbacks++; }
   }
@@ -175,6 +176,7 @@ function apiHarness(initialRows = []) {
       const result = recordset => ({ recordset });
       if (q.includes('sys.sp_getapplock')) return result([{ LockResult: 0 }]);
       if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS')) {
+        if (p.AuditTableName === 'AuditEvents') return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
         return result(['OffloadId', 'FlightId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
       if (q.includes('FROM dbo.IncomingMachMessages')) return result(state.messages.filter(x => x.DocumentCorID === p.DocumentCorID));
@@ -207,6 +209,7 @@ function apiHarness(initialRows = []) {
         row.SourceType ??= p.SourceType; row.MachDocumentCorId ??= p.MachDocumentCorId; return result([]);
       }
       if (q.startsWith('INSERT INTO dbo.MachFowShipments')) { state.links.push({ ...p }); return result([]); }
+      if (q.startsWith('INSERT INTO dbo.AuditEvents')) { const row = { ...p, AuditEventId: state.audits.length + 1 }; state.audits.push(row); return result([row]); }
       if (q.startsWith('INSERT INTO dbo.Offloads')) return result([{ ...p, OffloadId: 1 }]);
       throw new Error('Unexpected SQL in test: ' + q);
     }
@@ -223,6 +226,8 @@ function apiHarness(initialRows = []) {
           ? { normalizeUldNumber }
           : name === '../shared/flight'
             ? flightHelpers
+            : name === '../shared/audit'
+              ? { insertAuditEvent }
             : require(name)
     }, { filename: endpoint + '/index.js' });
     const log = Object.assign(() => {}, { error() {}, warn() {} });

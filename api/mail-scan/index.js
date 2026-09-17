@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { insertAuditEvent } = require('../shared/audit');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -28,6 +29,7 @@ function sendJson(context, status, body) {
 
 module.exports = async function(context, req) {
   let pool;
+  let transaction;
   try {
     const cs = process.env.DATABASE_CONNECTION_STRING;
     if (!cs) { sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'}); return; }
@@ -36,8 +38,10 @@ module.exports = async function(context, req) {
     const uldId = String(req.body?.uldId || '').trim();
     if (!/^\d+$/.test(uldId)) { sendJson(context,400,{ok:false,error:'uldId is required'}); return; }
     pool = await new sql.ConnectionPool(cs).connect();
+    transaction = new sql.Transaction(pool);
+    await transaction.begin();
 
-    const update = await pool.request()
+    const update = await new sql.Request(transaction)
       .input('UldId', sql.BigInt, uldId)
       .input('DisplayName', sql.NVarChar(150), actor.displayName)
       .input('Reference', sql.NVarChar(150), actor.reference)
@@ -52,9 +56,38 @@ module.exports = async function(context, req) {
       `);
 
     if (update.recordset.length) {
+      const current = await new sql.Request(transaction)
+        .input('AuditUldId', sql.BigInt, uldId)
+        .query(`
+          SELECT u.UldId, u.UldNumber, u.MailScannedAtUtc,
+                 u.MailScannedByDisplayName, u.MailScannedByReference,
+                 f.FlightId, f.FlightNumber
+          FROM dbo.ULDs u
+          INNER JOIN dbo.Flights f ON f.FlightId = u.FlightId
+          WHERE u.UldId = @AuditUldId;
+        `);
+      const scanned = current.recordset[0] || update.recordset[0];
+      await insertAuditEvent(transaction, sql, {
+        type: 'Mail',
+        action: 'Bulk mail scanned',
+        actorDisplayName: actor.displayName,
+        actorReference: actor.reference,
+        entityType: 'ULD',
+        entityId: scanned.UldId,
+        flightId: scanned.FlightId,
+        flightNumber: scanned.FlightNumber,
+        uldId: scanned.UldId,
+        uldNumber: scanned.UldNumber,
+        detail: '3-hour mail SLA scan confirmed'
+      });
+      await transaction.commit();
+      transaction = null;
       sendJson(context,200,{ok:true,alreadyScanned:false,uld:update.recordset[0]});
       return;
     }
+
+    await transaction.rollback();
+    transaction = null;
 
     const existing = await pool.request().input('UldId2',sql.BigInt,uldId).query(`
       SELECT UldId,UldNumber,MailScannedAtUtc,MailScannedByDisplayName,MailScannedByReference
@@ -63,6 +96,7 @@ module.exports = async function(context, req) {
     if (!existing.recordset.length) { sendJson(context,404,{ok:false,error:'ULD not found'}); return; }
     sendJson(context,200,{ok:true,alreadyScanned:!!existing.recordset[0].MailScannedAtUtc,uld:existing.recordset[0]});
   } catch (err) {
+    if (transaction) { try { await transaction.rollback(); } catch {} }
     context.log.error('Mail scan API failed', err);
     sendJson(context,500,{ok:false,error:'Mail scan API failed',detail:err.message});
   } finally {

@@ -1,5 +1,6 @@
 const sql = require('mssql');
 const { acquireFlightIdentityLock, findFlightsByIdentity } = require('../shared/flight');
+const { insertAuditEvent } = require('../shared/audit');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -81,11 +82,17 @@ module.exports = async function (context, req) {
         return;
       }
 
-      if (Object.prototype.hasOwnProperty.call(body, 'scheduledDepartureUtc') || Object.prototype.hasOwnProperty.call(body, 'estimatedDepartureUtc')) {
+      if (
+        Object.prototype.hasOwnProperty.call(body, 'scheduledDepartureUtc') ||
+        Object.prototype.hasOwnProperty.call(body, 'estimatedDepartureUtc') ||
+        Object.prototype.hasOwnProperty.call(body, 'inBlockAtUtc')
+      ) {
         const scheduledRaw = body.scheduledDepartureUtc;
         const estimatedRaw = body.estimatedDepartureUtc;
+        const inBlockRaw = body.inBlockAtUtc;
         const scheduled = scheduledRaw ? new Date(scheduledRaw) : null;
         const estimated = estimatedRaw ? new Date(estimatedRaw) : null;
+        const inBlock = inBlockRaw ? new Date(inBlockRaw) : null;
         if (scheduledRaw && Number.isNaN(scheduled.getTime())) {
           sendJson(context, 400, { ok: false, error: 'scheduledDepartureUtc is invalid' });
           return;
@@ -94,16 +101,45 @@ module.exports = async function (context, req) {
           sendJson(context, 400, { ok: false, error: 'estimatedDepartureUtc is invalid' });
           return;
         }
+        if (inBlockRaw && Number.isNaN(inBlock.getTime())) {
+          sendJson(context, 400, { ok: false, error: 'inBlockAtUtc is invalid' });
+          return;
+        }
 
-        const result = await pool.request()
+        transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        const result = await new sql.Request(transaction)
           .input('FlightId', sql.BigInt, flightId)
           .input('ScheduledDepartureUtc', sql.DateTime2, scheduled)
           .input('EstimatedDepartureUtc', sql.DateTime2, estimated)
-          .query(`UPDATE dbo.Flights SET ScheduledDepartureUtc=COALESCE(@ScheduledDepartureUtc,ScheduledDepartureUtc),EstimatedDepartureUtc=COALESCE(@EstimatedDepartureUtc,EstimatedDepartureUtc) OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.ScheduledDepartureUtc,INSERTED.EstimatedDepartureUtc WHERE FlightId=@FlightId;`);
+          .input('InBlockAtUtc', sql.DateTime2, inBlock)
+          .query(`UPDATE dbo.Flights SET ScheduledDepartureUtc=COALESCE(@ScheduledDepartureUtc,ScheduledDepartureUtc),EstimatedDepartureUtc=COALESCE(@EstimatedDepartureUtc,EstimatedDepartureUtc),InBlockAtUtc=COALESCE(@InBlockAtUtc,InBlockAtUtc) OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.ScheduledDepartureUtc,INSERTED.EstimatedDepartureUtc,INSERTED.InBlockAtUtc WHERE FlightId=@FlightId;`);
         if (!result.recordset.length) {
+          await transaction.rollback();
+          transaction = null;
           sendJson(context, 404, { ok: false, error: 'Flight not found' });
           return;
         }
+        const flight = result.recordset[0];
+        const action = inBlockRaw
+          ? 'In block set manually'
+          : estimatedRaw
+            ? 'Export ETD set'
+            : 'Flight timing updated';
+        const timestamp = inBlockRaw || estimatedRaw || scheduledRaw;
+        await insertAuditEvent(transaction, sql, {
+          type: 'Flight',
+          action,
+          actorDisplayName: identity.displayName,
+          actorReference: identity.reference,
+          entityType: 'Flight',
+          entityId: flight.FlightId,
+          flightId: flight.FlightId,
+          flightNumber: flight.FlightNumber,
+          detail: `${action}: ${timestamp}`
+        });
+        await transaction.commit();
+        transaction = null;
         sendJson(context, 200, { ok: true, flight: result.recordset[0] });
         return;
       }
@@ -114,15 +150,19 @@ module.exports = async function (context, req) {
         sendJson(context, 400, { ok: false, error: 'nextStatus must be CLOSED or FINALISED' });
         return;
       }
-      const result = await pool.request()
+      transaction = new sql.Transaction(pool);
+      await transaction.begin();
+      const result = await new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
         .input('ExpectedStatus', sql.NVarChar(30), expectedStatus)
         .input('NextStatus', sql.NVarChar(30), nextStatus)
         .query(`UPDATE dbo.Flights SET FlightStatus=@NextStatus OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.FlightStatus WHERE FlightId=@FlightId AND UPPER(FlightStatus)=@ExpectedStatus;`);
       if (!result.recordset.length) {
-        const current = await pool.request()
+        const current = await new sql.Request(transaction)
           .input('FlightId2', sql.BigInt, flightId)
           .query(`SELECT FlightStatus FROM dbo.Flights WHERE FlightId=@FlightId2;`);
+        await transaction.rollback();
+        transaction = null;
         sendJson(context, 409, {
           ok: false,
           error: 'Flight status changed on another device',
@@ -130,6 +170,22 @@ module.exports = async function (context, req) {
         });
         return;
       }
+      const flight = result.recordset[0];
+      await insertAuditEvent(transaction, sql, {
+        type: 'Flight',
+        action: 'Flight manually closed',
+        actorDisplayName: identity.displayName,
+        actorReference: identity.reference,
+        entityType: 'Flight',
+        entityId: flight.FlightId,
+        flightId: flight.FlightId,
+        flightNumber: flight.FlightNumber,
+        fromStatus: expectedStatus,
+        toStatus: nextStatus,
+        detail: 'Closed with supervisor passcode'
+      });
+      await transaction.commit();
+      transaction = null;
       sendJson(context, 200, { ok: true, flight: result.recordset[0] });
       return;
     }

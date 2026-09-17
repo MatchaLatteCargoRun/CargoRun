@@ -24,7 +24,9 @@ status, duplicate-number, and failed-request scenarios.
 The atomic-status checks execute the canonical ULD status and offload handlers
 against an in-memory SQL stand-in. They force status changes between
 the initial read and final UPDATE to verify conditional mutation, rollback,
-identity-verification safety, and suppression of rejected movement records.
+identity-verification safety, authoritative transactional audit writes, trusted
+actor attribution, and suppression of rejected movement/audit records. They
+also cover idempotent mail auditing and browser duplicate-audit prevention.
 
 The flight-concurrency checks execute the manual, manifest-upload, and MACH FOW
 handlers against a transaction-aware SQL stand-in. They force simultaneous
