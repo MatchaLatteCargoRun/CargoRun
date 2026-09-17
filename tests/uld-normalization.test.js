@@ -110,9 +110,16 @@ test('completed offload keeps stored formatting while canonical comparison remai
 
 test('serial extraction ignores punctuation without changing canonical identity', () => {
   const browser = frontend();
+  assert.equal(browser.uldSerial('PMC48921R7'), '48921');
+  assert.equal(browser.uldSerial('PMC48921CX'), '48921');
+  assert.equal(browser.uldSerial('AKE12345CX'), '12345');
   assert.equal(browser.uldSerial('AKE12/345CX'), '12345');
   assert.equal(browser.uldSerial('AKE/12345/CX'), '12345');
-  assert.equal(browser.uldSerial('AKE12345CX'), '12345');
+  assert.equal(browser.uldSerial('AKE-12345-CX'), '12345');
+  assert.equal(browser.matchesULDInput('PMC48921R7', 'PMC48921R7'), true);
+  assert.equal(browser.matchesULDInput('PMC48921R7', '48921'), true);
+  assert.equal(browser.matchesULDInput('PMC48921R7', '489217'), false);
+  assert.equal(browser.normalizeULD('PMC48921R7'), 'PMC48921R7');
   assert.equal(browser.normalizeULD('AKE/12345/CX'), 'AKE/12345/CX');
   assert.notEqual(browser.normalizeULD('AKE/12345/CX'), browser.normalizeULD('AKE12345CX'));
 });

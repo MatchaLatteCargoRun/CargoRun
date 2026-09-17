@@ -940,7 +940,7 @@ function findOffloadById(offloadId){
  const matches=(state.offloads||[]).filter(o=>String(o?.azureOffloadId??'').trim()===id);
  return matches.length===1?matches[0]:null;
 }
-function uldSerial(uld=''){return typeof uld==='string'?(uld.match(/\d/g)||[]).join(''):''}
+function uldSerial(uld=''){const value=normalizeULD(uld);return value.length>5?(value.slice(3,-2).match(/\d/g)||[]).join(''):''}
 function matchesULDInput(expected,input){const e=normalizeULD(expected),v=normalizeULD(input),serial=uldSerial(e);return !!v&&(v===e||(serial&&v===serial))}
 function firstStatus(type){return type==='imports'?'Unarrived':'Warehouse'}
 function isIdentityVerified(type,u){return u.identityVerified===true||u.status!==firstStatus(type)}
