@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { normalizeUldNumber } = require('../shared/uld');
 const crypto = require('crypto');
 
 /* ============================================================
@@ -192,18 +193,6 @@ function clean(v, max = 200) {
 
    => AKE12345CX
    ============================================================ */
-
-function normalizeUldNumber(value) {
-  if (!value) {
-    return null;
-  }
-
-  return String(value)
-    .trim()
-    .toUpperCase()
-    .replace(/[\s-]/g, '');
-}
-
 
 function xmlText(xml, tag) {
   const re = new RegExp(
@@ -1105,14 +1094,14 @@ module.exports = async function(
     }
 
 
-    if (!ulds.length) {
+    if (!ulds.length || ulds.some(item => !item.number || item.number.length > 30)) {
       sendJson(
         context,
         422,
         {
           ok: false,
           error:
-            'FOW does not contain a usable ULD identifier'
+            'FOW must contain nonempty ULD identifiers of at most 30 characters after normalization'
         }
       );
 
@@ -1632,14 +1621,8 @@ module.exports = async function(
             flight.FlightId
           )
 
-          .input(
-            'UldNumber',
-            sql.NVarChar(30),
-            normalizedUld
-          )
-
           .query(`
-            SELECT TOP 1
+            SELECT
 
               UldId,
               UldNumber,
@@ -1654,27 +1637,25 @@ module.exports = async function(
 
             WHERE
               FlightId =
-              @FlightId
-
-              AND
-              UPPER(
-                REPLACE(
-                  REPLACE(
-                    UldNumber,
-                    ' ',
-                    ''
-                  ),
-                  '-',
-                  ''
-                )
-              ) =
-              @UldNumber;
+              @FlightId;
           `);
 
 
-      let uld =
-        er.recordset[0] ||
-        null;
+      const matches = er.recordset.filter(
+        row => normalizeUldNumber(row.UldNumber) === normalizedUld
+      );
+      if (matches.length > 1) {
+        await tx.rollback();
+        tx = null;
+        sendJson(context, 409, {
+          ok: false,
+          error: 'Multiple existing ULDs on this flight have the same normalized number',
+          conflictingUldIds: matches.map(row => row.UldId)
+        });
+        return;
+      }
+
+      let uld = matches[0] || null;
 
 
       let created =

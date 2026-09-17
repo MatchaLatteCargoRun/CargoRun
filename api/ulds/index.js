@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { normalizeUldNumber } = require('../shared/uld');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -72,7 +73,7 @@ module.exports = async function (context, req) {
     const body = req.body || {};
 
     const flightId = String(body.flightId || '').trim();
-    const uldNumber = clean(body.uldNumber);
+    const uldNumber = normalizeUldNumber(body.uldNumber);
     const handlingType = clean(body.handlingType);
     const remarks = body.remarks ? String(body.remarks).trim() : null;
 
@@ -95,10 +96,10 @@ module.exports = async function (context, req) {
       return;
     }
 
-    if (!uldNumber) {
+    if (!uldNumber || uldNumber.length > 20) {
       sendJson(context, 400, {
         ok: false,
-        error: 'uldNumber is required'
+        error: 'uldNumber must be a nonempty string of at most 20 characters after normalization'
       });
       return;
     }
@@ -138,29 +139,36 @@ module.exports = async function (context, req) {
     const direction = String(flightResult.recordset[0].Direction || '').toUpperCase();
     const currentStatus = direction === 'EXPORT' ? 'WAREHOUSE' : 'UNARRIVED';
 
-    const existing = await pool.request()
-      .input('FlightId', sql.BigInt, flightId)
-      .input('UldNumber', sql.NVarChar(20), uldNumber)
-      .query(`
-        SELECT UldId
-        FROM dbo.ULDs
-        WHERE FlightId = @FlightId
-          AND UldNumber = @UldNumber;
-      `);
-
-    if (existing.recordset.length) {
-      sendJson(context, 409, {
-        ok: false,
-        error: 'ULD already exists on this flight',
-        uldId: existing.recordset[0].UldId
-      });
-      return;
-    }
-
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
 
     try {
+      // Keep the flight's ULD range locked through commit, including an empty range.
+      // Compare legacy values without rewriting them or duplicating whitespace rules in SQL.
+      const candidates = await new sql.Request(transaction)
+        .input('FlightId', sql.BigInt, flightId)
+        .query(`
+          SELECT UldId, UldNumber
+          FROM dbo.ULDs WITH (UPDLOCK, HOLDLOCK)
+          WHERE FlightId = @FlightId;
+        `);
+      const matches = candidates.recordset.filter(
+        row => normalizeUldNumber(row.UldNumber) === uldNumber
+      );
+      if (matches.length) {
+        await transaction.rollback();
+        sendJson(context, 409, matches.length === 1 ? {
+          ok: false,
+          error: 'ULD already exists on this flight',
+          uldId: matches[0].UldId
+        } : {
+          ok: false,
+          error: 'Multiple existing ULDs on this flight have the same normalized number',
+          conflictingUldIds: matches.map(row => row.UldId)
+        });
+        return;
+      }
+
       const insertResult = await new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
         .input('UldNumber', sql.NVarChar(20), uldNumber)

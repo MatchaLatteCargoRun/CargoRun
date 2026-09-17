@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { normalizeUldNumber } = require('../shared/uld');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -103,8 +104,13 @@ module.exports = async function (context, req) {
       return;
     }
 
+    if (ulds.some(item => !item || typeof item !== 'object' || Array.isArray(item))) {
+      sendJson(context, 400, { ok: false, error: 'Every ULD requires an object with uldNumber' });
+      return;
+    }
+
     const normalisedUlds = ulds.map(item => ({
-      uldNumber: clean(item.uldNumber),
+      uldNumber: normalizeUldNumber(item.uldNumber),
       handlingType: clean(item.handlingType),
       weightKg:
         item.weightKg === null ||
@@ -126,8 +132,8 @@ module.exports = async function (context, req) {
     }));
 
     for (const uld of normalisedUlds) {
-      if (!uld.uldNumber) {
-        sendJson(context, 400, { ok: false, error: 'Every ULD requires uldNumber' });
+      if (!uld.uldNumber || uld.uldNumber.length > 20) {
+        sendJson(context, 400, { ok: false, error: 'Every ULD requires a nonempty string uldNumber of at most 20 characters after normalization' });
         return;
       }
 

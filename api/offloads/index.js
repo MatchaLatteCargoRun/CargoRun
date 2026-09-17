@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { normalizeUldNumber } = require('../shared/uld');
 
 
 function getHeader(req, name) {
@@ -152,13 +153,18 @@ module.exports = async function (context, req) {
     const actorReference = identity.reference;
 
     if (req.method === 'POST') {
-      const uldNumber = clean(body.uldNumber, 20)?.toUpperCase();
+      const uldNumber = normalizeUldNumber(body.uldNumber);
       const flightNumber = clean(body.flightNumber, 12)?.toUpperCase();
       const parkingBay = clean(body.parkingBay, 30)?.toUpperCase();
       const requestInstruction = clean(body.requestInstruction, 300);
 
       if (!uldNumber || !flightNumber || !parkingBay) {
         sendJson(context, 400, { ok: false, error: 'uldNumber, flightNumber and parkingBay are required' });
+        return;
+      }
+
+      if (uldNumber.length > 20) {
+        sendJson(context, 400, { ok: false, error: 'uldNumber exceeds 20 characters after normalization' });
         return;
       }
 
