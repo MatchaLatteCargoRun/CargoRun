@@ -112,13 +112,12 @@ test('ACTIVE, CLOSED and FINALISED lifecycle labels render without changing data
   }
 });
 
-test('print summary contains OFFLOADS while immutable V1 print stays snapshot-only',()=>{
+test('active print summary contains live OFFLOADS while finalised statements use immutable snapshots',()=>{
   const h=harness();
   const printed=h.context.flightSummaryHtml({flight:{flightId:'25',flightNumber:'CX163',operatingDate:'2026-09-18',flightStatus:'FINALISED'},offloads:[offload()]});
   assert.match(printed,/OFFLOADS/);assert.match(printed,/AKE12345CX/);assert.match(printed,/current operational summary/i);
-  const immutableSource=sourceBetween('function completionRecordHtml(', 'function downloadCompletedExport(');
-  assert.doesNotMatch(immutableSource,/flightOffloadsSection|loadFlightSummary|state\.offloads/);
-  assert.match(html,/immutable V1 completion record/);
-  assert.match(html,/showFlightSummary\('\$\{r\.flightId\}'\)/);
+  const statementSource=sourceBetween('function flightStatementBody(', 'function remoteAuditToUi(');
+  assert.doesNotMatch(statementSource,/state\.offloads|state\.completedOffloads|loadFlightSummary/);
+  assert.match(statementSource,/selected\.snapshot/);
+  assert.match(html,/showCompletedExportRecord\(id\).*showFlightStatement/s);
 });
-

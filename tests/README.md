@@ -11,6 +11,7 @@ node --test tests/flight-concurrency.test.js
 node --test tests/offload-identity.test.js
 node --test tests/completion-amendments.test.js
 node --test tests/flight-summary-offloads.test.js
+node --test tests/flight-statement.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
@@ -30,8 +31,10 @@ cover immutable V1 bytes, deterministic V2+ hashes, full-chain validation,
 transactional V2/V3/V4 writes, concurrent version allocation and rollback.
 Browser tests exercise dependent selectors, stale async responses, and exact duplicate focus.
 Flight Summary tests cover exact FlightId offload reads, deterministic ordering,
-empty/optional-field rendering, lifecycle labels, read-only requests, printable
-live summaries, and separation from immutable V1 completion output.
+empty/optional-field rendering, lifecycle labels and printable live summaries.
+Flight Statement tests cover read-only exact FlightId/CompletionId/version reads,
+V1 exact-byte verification, contiguous V2+ chain validation, immutable selected
+snapshots, version selection, offload rendering and matching print output.
 The SQL fixture models eligibility and locking; it does not execute T-SQL or
 prove Azure SQL DST, FK, CHECK, or filtered-index behavior. Run the isolated SQL
 checks in `migrations/phase-b-review.md` before applying the review-only migration.

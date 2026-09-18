@@ -94,6 +94,15 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
       if (q.includes("OBJECT_ID(N'dbo.ExportCompletionRecords'")) return result([{
         BaseObjectId: completionSchema ? 1 : null, AmendmentObjectId: amendmentSchema ? 2 : null
       }]);
+      if (q.includes('FROM dbo.Flights WHERE FlightId=@StatementFlightId')) {
+        return result(state.flights.filter(f => String(f.FlightId) === String(p.StatementFlightId)).map(f => ({ ...f, Direction: f.Direction || 'EXPORT' })));
+      }
+      if (q.includes('FROM dbo.ExportCompletionRecords WHERE FlightId=@StatementBaseFlightId')) {
+        return result(state.completions.filter(c => String(c.FlightId) === String(p.StatementBaseFlightId)));
+      }
+      if (q.includes('FROM dbo.ExportCompletionAmendments') && Object.hasOwn(p, 'StatementCompletionId')) {
+        return result(state.amendments.filter(a => String(a.CompletionId) === String(p.StatementCompletionId)).sort((a, b) => a.VersionNumber - b.VersionNumber));
+      }
       if (q.includes('FROM dbo.ULDs u INNER JOIN dbo.Flights')) {
         if (p.AuditUldId) return result(state.uld ? [{ ...state.uld, FlightNumber: state.uld.FlightNumber || 'CX178' }] : []);
         return result(state.uld && String(state.uld.UldId) === String(p.UldId)

@@ -83,6 +83,44 @@ function parseSnapshot(raw, label) {
   }
 }
 
+function verifyCompletionEvidence(base, amendments, flightId) {
+  if (!base || String(base.FlightId) !== String(flightId)) {
+    throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Export completion FlightId association is invalid');
+  }
+
+  const baseSnapshot = parseSnapshot(base.SnapshotJson, 'Export completion V1');
+  const baseHash = String(base.RecordHash || '').toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(baseHash) || sha256(base.SnapshotJson) !== baseHash) {
+    throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Export completion V1 hash verification failed');
+  }
+
+  const versions = [{ versionNumber: 1, row: base, snapshot: baseSnapshot, recordHash: baseHash }];
+  let previousSnapshot = baseSnapshot;
+  let previousHash = baseHash;
+  let versionNumber = 2;
+  for (const amendment of amendments || []) {
+    const actualVersion = Number(amendment.VersionNumber);
+    if (!Number.isSafeInteger(actualVersion) || actualVersion !== versionNumber ||
+        String(amendment.CompletionId) !== String(base.CompletionId) ||
+        String(amendment.FlightId) !== String(flightId) ||
+        String(amendment.PreviousHash || '').toLowerCase() !== previousHash) {
+      throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', `Export completion V${versionNumber} chain association is invalid`);
+    }
+    const snapshot = parseSnapshot(amendment.SnapshotJson, `Export completion V${actualVersion}`);
+    const recordHash = String(amendment.RecordHash || '').toLowerCase();
+    const calculated = sha256(canonicalJson(amendmentEnvelope(amendment, snapshot)));
+    if (!/^[a-f0-9]{64}$/.test(recordHash) || calculated !== recordHash) {
+      throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', `Export completion V${actualVersion} hash verification failed`);
+    }
+    versions.push({ versionNumber: actualVersion, row: amendment, snapshot, recordHash });
+    previousSnapshot = snapshot;
+    previousHash = recordHash;
+    versionNumber++;
+  }
+
+  return { versions, latestSnapshot: previousSnapshot, latestHash: previousHash, nextVersionNumber: versionNumber };
+}
+
 function selectExpression(column, alias, conversion = null) {
   if (!column) return `NULL AS ${quoteName(alias)}`;
   return conversion
@@ -129,14 +167,6 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
     throw new CompletionAmendmentError('OFFLOAD_AMENDMENT_SCHEMA_NOT_READY', 'Export completion amendment schema is not ready', 503);
   }
   const base = baseResult.recordset[0];
-  const baseRaw = base.SnapshotJson;
-  const baseHash = String(base.RecordHash || '').toLowerCase();
-  if (!/^[a-f0-9]{64}$/.test(baseHash) || sha256(baseRaw) !== baseHash) {
-    throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Export completion V1 hash verification failed');
-  }
-  if (String(base.FlightId) !== String(options.flightId)) {
-    throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Export completion FlightId association is invalid');
-  }
 
   const amendmentsResult = await new sql.Request(transaction)
     .input('AmendmentBaseId', sql.BigInt, base.CompletionId)
@@ -151,27 +181,10 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
       FROM dbo.ExportCompletionAmendments WITH (UPDLOCK, HOLDLOCK)
       WHERE CompletionId=@AmendmentBaseId ORDER BY VersionNumber ASC;`);
 
-  let previousSnapshot = parseSnapshot(baseRaw, 'Export completion V1');
-  let previousHash = baseHash;
-  let versionNumber = 2;
-  for (const amendment of amendmentsResult.recordset) {
-    const actualVersion = Number(amendment.VersionNumber);
-    if (!Number.isSafeInteger(actualVersion) || actualVersion !== versionNumber ||
-        String(amendment.CompletionId) !== String(base.CompletionId) ||
-        String(amendment.FlightId) !== String(options.flightId) ||
-        String(amendment.PreviousHash || '').toLowerCase() !== previousHash) {
-      throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', `Export completion V${versionNumber} chain association is invalid`);
-    }
-    const snapshot = parseSnapshot(amendment.SnapshotJson, `Export completion V${actualVersion}`);
-    const recordHash = String(amendment.RecordHash || '').toLowerCase();
-    const calculated = sha256(canonicalJson(amendmentEnvelope(amendment, snapshot)));
-    if (!/^[a-f0-9]{64}$/.test(recordHash) || calculated !== recordHash) {
-      throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', `Export completion V${actualVersion} hash verification failed`);
-    }
-    previousSnapshot = snapshot;
-    previousHash = recordHash;
-    versionNumber++;
-  }
+  const evidence = verifyCompletionEvidence(base, amendmentsResult.recordset, options.flightId);
+  let previousSnapshot = evidence.latestSnapshot;
+  let previousHash = evidence.latestHash;
+  let versionNumber = evidence.nextVersionNumber;
 
   const columns = options.offloadColumns || [];
   const id = pick(columns, ['OffloadId', 'Id']);
@@ -280,6 +293,7 @@ module.exports = {
   canonicalJson,
   sha256,
   amendmentEnvelope,
+  verifyCompletionEvidence,
   CompletionAmendmentError,
   appendOffloadAmendmentIfRequired
 };
