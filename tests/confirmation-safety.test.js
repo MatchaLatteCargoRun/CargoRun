@@ -155,7 +155,7 @@ test('desktop and mobile markup carry stable IDs, and protected workflows stay I
   assert.doesNotMatch(html, /showConfirmULD\([^\n]*\$\{i\}/);
   assert.doesNotMatch(html, /handleOffload\(\$\{i\}\)/);
   assert.match(html, /showConfirmULD\('\$\{type\}','\$\{f\.azureFlightId\|\|''\}','\$\{u\.azureUldId\|\|''\}'\)/);
-  assert.match(html, /handleOffload\('\$\{o\.azureOffloadId\|\|''\}'\)/);
+  assert.match(html, /handleOffload\('\$\{esc\(id\|\|''\)\}'\)/);
   assert.match(html, /showConfirmBulkMailScan\('\$\{f\.azureFlightId\|\|''\}'.*\$\{u\.azureUldId\|\|''\}/);
   assert.match(html, /fetch\('\/api\/export-completions'.*flightId:f\.azureFlightId/s);
   assert.match(html, /fetch\('\/api\/import-completions'.*flightId:f\.azureFlightId/s);
