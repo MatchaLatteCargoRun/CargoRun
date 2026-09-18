@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const { normalizeUldNumber } = require('../../api/shared/uld');
 const { normalizeFlightNumber } = require('../../api/shared/flight');
 const { insertAuditEvent } = require('../../api/shared/audit');
+const completionAmendments = require('../../api/shared/completion-amendments');
 
 const root = path.resolve(__dirname, '..', '..');
 const principal = Buffer.from(JSON.stringify({
@@ -26,6 +27,7 @@ function loadHandler(relativePath, sqlMock) {
       if (name === '../shared/uld') return { normalizeUldNumber };
       if (name === '../shared/flight') return { normalizeFlightNumber };
       if (name === '../shared/audit') return { insertAuditEvent };
+      if (name === '../shared/completion-amendments') return completionAmendments;
       throw new Error(`Unexpected require: ${name}`);
     }
   });
@@ -33,16 +35,20 @@ function loadHandler(relativePath, sqlMock) {
   return module.exports;
 }
 
-function sqlHarness({ uld, offload, flights, offloadUlds, liveSchema = false, migrated = true } = {}) {
+function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amendments = [], completionSchema = true, amendmentSchema = true, liveSchema = false, migrated = true } = {}) {
   const state = {
     uld: uld ? structuredClone(uld) : null,
     offload: offload ? structuredClone(offload) : null,
     flights: structuredClone(flights || [{ FlightId: 1, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }]),
-    offloadUlds: offloadUlds || [{ UldId: '7', FlightId: '1', UldNumber: 'AKE12345CX' }, { UldId: '7', FlightId: '100', UldNumber: 'PMC48921R7' }], extraOffloads: [], now: '2026-09-17T00:00:00.000Z', movements: [], audits: [], commits: 0, rollbacks: 0, failAudit: false,
+    completions: structuredClone(completions),
+    amendments: structuredClone(amendments),
+    offloadUlds: offloadUlds || [{ UldId: '7', FlightId: '1', UldNumber: 'AKE12345CX' }, { UldId: '7', FlightId: '100', UldNumber: 'PMC48921R7' }], extraOffloads: [], now: '2026-09-17T00:00:00.000Z', movements: [], audits: [], commits: 0, rollbacks: 0, failAudit: false, failAmendment: false,
     raceUldStatus: null, raceOffloadStatus: null, queries: []
   };
 
   const columns = {
+    ExportCompletionRecords: completionSchema ? ['ExportCompletionRecordId', 'FlightId', 'SnapshotJson', 'RecordHash'] : [],
+    ExportCompletionAmendments: amendmentSchema ? ['AmendmentId','ExportCompletionRecordId','FlightId','VersionNumber','PreviousHash','RecordHash','VerificationId','OperationId','Action','PreviousStatus','ResultingStatus','Reason','RelatedOffloadId','RelatedUldId','ActorProvider','ActorReference','ActorDisplayName','OccurredAtUtc','SnapshotJson'] : [],
     ULDs: [
       'UldId', 'FlightId', 'UldNumber', 'CurrentStatus', 'IdentityVerified',
       'AcceptedAtUtc', 'AcceptedByDisplayName', 'AcceptedByObjectId',
@@ -62,11 +68,11 @@ function sqlHarness({ uld, offload, flights, offloadUlds, liveSchema = false, mi
   const statusField = liveSchema ? 'OffloadStatus' : 'Status';
   let lockTail=Promise.resolve();
   class Transaction {
-    async begin() { this.active = true; this.snapshot = structuredClone({ uld: state.uld, offload: state.offload, movements: state.movements, audits: state.audits }); }
+    async begin() { this.active = true; this.snapshot = structuredClone({ uld: state.uld, offload: state.offload, extraOffloads: state.extraOffloads, movements: state.movements, audits: state.audits, amendments: state.amendments }); }
     async commit() { this.active = false; state.commits++; this.release?.(); }
     async rollback() {
       if (this.active) {
-        state.uld = this.snapshot.uld; state.offload = this.snapshot.offload; state.movements = this.snapshot.movements; state.audits = this.snapshot.audits;
+        state.uld = this.snapshot.uld; state.offload = this.snapshot.offload; state.extraOffloads = this.snapshot.extraOffloads; state.movements = this.snapshot.movements; state.audits = this.snapshot.audits; state.amendments = this.snapshot.amendments;
         this.active = false; state.rollbacks++; this.release?.();
       }
     }
@@ -85,6 +91,9 @@ function sqlHarness({ uld, offload, flights, offloadUlds, liveSchema = false, mi
         const table = p.TableName || p.AuditTableName || Object.entries(p).find(([k]) => k.startsWith('TableName_'))?.[1];
         return result((columns[table] || []).map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES', IS_IDENTITY: COLUMN_NAME.endsWith('Id') ? 1 : 0 })));
       }
+      if (q.includes("OBJECT_ID(N'dbo.ExportCompletionRecords'")) return result([{
+        BaseObjectId: completionSchema ? 1 : null, AmendmentObjectId: amendmentSchema ? 2 : null
+      }]);
       if (q.includes('FROM dbo.ULDs u INNER JOIN dbo.Flights')) {
         if (p.AuditUldId) return result(state.uld ? [{ ...state.uld, FlightNumber: state.uld.FlightNumber || 'CX178' }] : []);
         return result(state.uld && String(state.uld.UldId) === String(p.UldId)
@@ -109,7 +118,7 @@ function sqlHarness({ uld, offload, flights, offloadUlds, liveSchema = false, mi
       if (q.startsWith('INSERT INTO dbo.UldMovements')) { state.movements.push({ from: p.MoveFromStatus, to: p.MoveToStatus }); return result([], [1]); }
       if (q.startsWith('INSERT INTO dbo.AuditEvents')) {
         if (state.failAudit) throw new Error('forced audit failure');
-        const row = { Action: p.AuditAction, ActorDisplayName: p.AuditActorDisplayName, FromStatus: p.AuditFromStatus, ToStatus: p.AuditToStatus, OccurredAtUtc: '2026-09-17T00:00:00.000Z' };
+        const row = { Action: p.AuditAction, ActorDisplayName: p.AuditActorDisplayName, FromStatus: p.AuditFromStatus, ToStatus: p.AuditToStatus, Detail: p.AuditDetail, DetailsJson: p.AuditDetailsJson, OccurredAtUtc: '2026-09-17T00:00:00.000Z' };
         state.audits.push(row); return result([row], [1]);
       }
       if (q.includes('SELECT CurrentStatus FROM dbo.ULDs')) return result(state.uld ? [{ CurrentStatus: state.uld.CurrentStatus }] : []);
@@ -121,23 +130,61 @@ function sqlHarness({ uld, offload, flights, offloadUlds, liveSchema = false, mi
       }
       if (q.includes('FROM dbo.ULDs WHERE UldId=@UldId2')) return result(state.uld ? [{ ...state.uld }] : []);
 
-      if (q.includes('DECLARE @ServerNowUtc')) {
+      if (q.includes('FROM dbo.Flights') && Object.hasOwn(p, 'SelectedFlightId')) {
         if(this.transaction){
           const previous=lockTail;lockTail=new Promise(resolve=>this.transaction.release=resolve);await previous;
-          this.transaction.snapshot=structuredClone({uld:state.uld,offload:state.offload,movements:state.movements,audits:state.audits});
+          this.transaction.snapshot=structuredClone({uld:state.uld,offload:state.offload,extraOffloads:state.extraOffloads,movements:state.movements,audits:state.audits,amendments:state.amendments});
         }
-        const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Australia/Melbourne'}).format(new Date(state.now));
-        const rows=state.flights.map(f=>({...f,Direction:f.Direction||'EXPORT',InclusionReason:Date.parse(f.CreatedAtUtc)>=Date.parse(state.now)-86400000?'RECENTLY_CREATED':f.OperatingDate===today?'OPERATING_TODAY':null}));
-        return result(p.SelectedFlightId ? rows.filter(f=>String(f.FlightId)===String(p.SelectedFlightId)) : rows.filter(f=>f.Direction==='EXPORT'&&f.FlightStatus==='ACTIVE'&&f.InclusionReason));
+        const rows=state.flights.map(f=>({...f,Direction:f.Direction||'EXPORT'}));
+        return result(p.SelectedFlightId ? rows.filter(f=>String(f.FlightId)===String(p.SelectedFlightId)) : rows.filter(f=>f.Direction==='EXPORT'&&['ACTIVE','CLOSED','FINALISED','FINALIZED'].includes(f.FlightStatus)));
       }
+      if(q.includes('FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)') && p.AmendmentMutationFlightId) {
+        if(this.transaction){
+          const previous=lockTail;lockTail=new Promise(resolve=>this.transaction.release=resolve);await previous;
+          this.transaction.snapshot=structuredClone({uld:state.uld,offload:state.offload,extraOffloads:state.extraOffloads,movements:state.movements,audits:state.audits,amendments:state.amendments});
+        }
+        return result(state.flights.filter(f=>String(f.FlightId)===String(p.AmendmentMutationFlightId)).map(f=>({FlightStatus:f.FlightStatus})));
+      }
+      if(q.includes('FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)') && p.AmendmentFlightId) return result(state.flights.filter(f=>String(f.FlightId)===String(p.AmendmentFlightId)).map(f=>({...f,Direction:f.Direction||'EXPORT'})));
       if(q.includes('FROM dbo.ULDs WITH (UPDLOCK, HOLDLOCK)')) return result(state.offloadUlds.filter(u=>String(u.FlightId)===String(p.FlightId)));
+      if(q.includes('FROM dbo.ExportCompletionRecords WITH (UPDLOCK, HOLDLOCK)')) return result(state.completions.filter(c=>String(c.FlightId)===String(p.AmendmentBaseFlightId)));
+      if(q.includes('FROM dbo.ExportCompletionAmendments WITH (UPDLOCK, HOLDLOCK)')) {
+        const rows=state.amendments.filter(a=>String(a.ExportCompletionRecordId)===String(p.AmendmentBaseId)).sort((a,b)=>a.VersionNumber-b.VersionNumber);
+        return result(rows);
+      }
+      if(q.includes('FROM dbo.Offloads WITH (UPDLOCK, HOLDLOCK)') && Object.hasOwn(p,'EvidenceFlightId')) {
+        return result([state.offload,...state.extraOffloads].filter(o=>o&&String(o.FlightId)===String(p.EvidenceFlightId)).map(o=>({
+          offloadId:String(o.OffloadId),flightId:String(o.FlightId),uldId:o.UldId==null?null:String(o.UldId),flightNumber:o.FlightNumber||null,
+          uldNumber:o.UldNumber||null,parkingBay:o.Bay||o.ParkingBay||null,status:o[statusField]||null,requestedAtUtc:o.RequestedAtUtc||null,
+          requestedByDisplayName:o.RequestedByDisplayName||null,collectedAtUtc:o.CollectedAtUtc||null,collectedByDisplayName:o.CollectedByDisplayName||null,
+          deliveredAtUtc:o.DeliveredAtUtc||null,deliveredByDisplayName:o.DeliveredByDisplayName||null,deliveredLocation:o.DeliveredLocation||null,
+          requestInstruction:o.RequestInstruction||null,completionNote:o.CompletionNote||null
+        })));
+      }
       if(q.includes('FROM dbo.Offloads WITH (UPDLOCK, HOLDLOCK)')) return result([state.offload,...state.extraOffloads].filter(o=>o&&String(o.FlightId)===String(p.FlightId)&&['REQUESTED','TRANSIT'].includes(o[statusField])));
+      if(q.startsWith('DECLARE @OccurredAtUtc')) return result([{OccurredAtUtc:new Date(state.now),OccurredAtIso:state.now}]);
+      if(q.startsWith('INSERT INTO dbo.ExportCompletionAmendments')) {
+        if(state.failAmendment) throw new Error('forced amendment failure');
+        const row={AmendmentId:String(state.amendments.length+1),ExportCompletionRecordId:String(p.CompletionBaseId),FlightId:String(p.CompletionFlightId),
+          VersionNumber:p.CompletionVersion,PreviousHash:p.CompletionPreviousHash,RecordHash:p.CompletionRecordHash,VerificationId:p.CompletionVerificationId,
+          OperationId:p.CompletionOperationId,Action:p.CompletionAction,PreviousStatus:p.CompletionPreviousStatus,ResultingStatus:p.CompletionResultingStatus,
+          Reason:p.CompletionReason,RelatedOffloadId:String(p.CompletionOffloadId),
+          RelatedUldId:String(p.CompletionUldId),ActorProvider:p.CompletionActorProvider,ActorReference:p.CompletionActorReference,
+          ActorDisplayName:p.CompletionActorDisplayName,OccurredAtIso:state.now,SnapshotJson:p.CompletionSnapshotJson};
+        state.amendments.push(row);return result([{AmendmentId:row.AmendmentId}],[1]);
+      }
       if (q.startsWith('SELECT * FROM dbo.Offloads WHERE')) {
         const id = p.OffloadId ?? p.LatestOffloadId;
         return result(state.offload && String(state.offload.OffloadId) === String(id) ? [{ ...state.offload }] : []);
       }
       if (p.ConflictFlightId) return result(state.extraOffloads.filter(o=>String(o.FlightId)===String(p.ConflictFlightId)&&String(o.UldId)===String(p.ConflictUldId)&&['REQUESTED','TRANSIT'].includes(o[statusField])));
       if (q.includes('FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)')) return result(state.flights.filter(f => String(f.FlightId) === String(p.SelectedFlightId)));
+      if (q.startsWith('SELECT o.*') && q.includes('@SummaryFlightId')) {
+        return result([state.offload,...state.extraOffloads]
+          .filter(o=>o&&String(o.FlightId)===String(p.SummaryFlightId))
+          .sort((a,b)=>String(a.RequestedAtUtc||'').localeCompare(String(b.RequestedAtUtc||''))||Number(a.OffloadId)-Number(b.OffloadId))
+          .map(o=>{const flight=state.flights.find(f=>String(f.FlightId)===String(o.FlightId));return {...o,__OffloadIdText:String(o.OffloadId),__FlightIdText:String(o.FlightId),__UldIdText:o.UldId==null?null:String(o.UldId),__FlightOperatingDate:flight?.OperatingDate||null}}));
+      }
       if (q.startsWith('SELECT o.*') && q.includes('LEFT JOIN dbo.Flights')) {
         if (!state.offload) return result([]);
         const flight = state.flights.find(f => String(f.FlightId) === String(state.offload.FlightId));
@@ -145,10 +192,13 @@ function sqlHarness({ uld, offload, flights, offloadUlds, liveSchema = false, mi
       }
       if (q.startsWith('INSERT INTO dbo.Offloads')) {
         if(state.uniqueViolation) {
-          state.extraOffloads.push({OffloadId:'91',FlightId:p.FlightId,UldId:p.UldId,UldNumber:p.UldNumber,[statusField]:'REQUESTED'});
+          const competitor={OffloadId:'91',FlightId:p.FlightId,UldId:p.UldId,UldNumber:p.UldNumber,[statusField]:'REQUESTED'};
+          state.extraOffloads.push(competitor);
+          if(this.transaction?.snapshot) this.transaction.snapshot.extraOffloads.push(structuredClone(competitor));
           const error=new Error('UX_Offloads_ActiveFlightUld duplicate');error.number=2601;throw error;
         }
-        state.offload = { OffloadId: 90, FlightId: p.FlightId, UldId: p.UldId, FlightNumber: p.FlightNumber, UldNumber: p.UldNumber, [liveSchema ? 'Bay' : 'ParkingBay']: p.ParkingBay, [statusField]: p.Status };
+        if(state.offload) state.extraOffloads.push(structuredClone(state.offload));
+        state.offload = { OffloadId: 90+state.extraOffloads.length, FlightId: p.FlightId, UldId: p.UldId, FlightNumber: p.FlightNumber, UldNumber: p.UldNumber, [liveSchema ? 'Bay' : 'ParkingBay']: p.ParkingBay, [statusField]: p.Status };
         return result([{ ...state.offload }], [1]);
       }
       if (q.startsWith('UPDATE dbo.Offloads')) {
@@ -178,7 +228,7 @@ function sqlHarness({ uld, offload, flights, offloadUlds, liveSchema = false, mi
   const sql = {
     ConnectionPool, Transaction, Request,
     NVarChar: n => `nvarchar(${n})`, VarChar: n => `varchar(${n})`,
-    BigInt: 'bigint', DateTime2: n => `datetime2(${n})`, MAX: 'max'
+    BigInt: 'bigint', Int: 'int', DateTime2: n => `datetime2(${n})`, MAX: 'max'
   };
   return { sql, state };
 }

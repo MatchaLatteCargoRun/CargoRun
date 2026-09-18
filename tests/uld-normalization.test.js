@@ -230,6 +230,8 @@ function apiHarness(initialRows = []) {
             ? flightHelpers
             : name === '../shared/audit'
               ? { insertAuditEvent }
+            : name === '../shared/completion-amendments'
+              ? require('../api/shared/completion-amendments')
             : require(name)
     }, { filename: endpoint + '/index.js' });
     const log = Object.assign(() => {}, { error() {}, warn() {} });

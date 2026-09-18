@@ -26,11 +26,15 @@ No legacy exception is extended automatically if the population changes.
    proposed object names. Apply `phase-b-offload-identity.sql` only after approval.
 4. Run `phase-b-verify.sql`: trusted/enabled constraints, correct index keys/filter,
    all twelve legacy UldIds NULL, Offload 9 REQUESTED/unlinked, Offload 12 unchanged.
-5. Deploy compatible backend/UI, smoke-test, then resume writers. Old creation
+5. Rehearse and separately approve `export-completion-amendments.sql`, then run
+   `export-completion-amendments-verify.sql`. Neither script runs automatically.
+6. Deploy compatible backend/UI, smoke-test, then resume writers. Old creation
    code must fail the NULL-UldId CHECK; old transition SQL remains valid.
 
 New code before migration returns OFFLOAD_SCHEMA_NOT_READY on creation; existing
-GET and PATCH continue working. No versioned summary code is included.
+GET and legacy NULL-identity PATCH continue working. A completion-backed historical
+mutation fails closed with OFFLOAD_AMENDMENT_SCHEMA_NOT_READY until the amendment
+schema exists; its operational mutation and audit roll back together.
 
 ## Isolated SQL tests required
 
@@ -43,7 +47,11 @@ GET and PATCH continue working. No versioned summary code is included.
 - COMPLETE history permits a subsequent request.
 - Audit failure rolls back insertion. ULD/flight lock contention and deadlocks fail
   closed; SQL mock tests cannot establish actual lock behavior.
-- SQL creation boundary and Melbourne date/DST conversion match the approved rule.
+- Historical ACTIVE/CLOSED/FINALISED export flights are selectable by exact dated
+  FlightId; offload creation never changes their lifecycle.
+- Completion-backed historical requests/progression append sequential immutable
+  amendments; stale retries append nothing, V1 bytes remain unchanged, and a
+  forced amendment or audit failure rolls back the operational mutation.
 
 ## Rollback
 

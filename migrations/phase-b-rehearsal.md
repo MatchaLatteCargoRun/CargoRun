@@ -4,6 +4,13 @@ Status: prepared, NOT executed against SQL. Node 22 and an explicitly identified
 isolated Azure SQL copy were not available in the local environment. Local Node
 is v24.14.1. This document does not authorize production execution.
 
+Historical-flight follow-up: the selector now permits ACTIVE/CLOSED/FINALISED
+exports regardless of age. Completion-backed historical offloads use the additive
+`ExportCompletionAmendments` V2+ store; `ExportCompletionRecords` V1 remains
+immutable and `AuditEvents` remains an action trail. Rehearse the identity migration
+first and the amendment migration second. Do not treat a failed rehearsal as
+permission to remove completion evidence or bypass validation.
+
 ## Migration review (actual current file)
 
 | SQL section | Finding |
@@ -120,6 +127,9 @@ The runner uses the actual migration file, unmodified, and:
   sets are empty, and asserts the three new constraints are enabled/trusted.
 - Asserts the active index exists, is unique, enabled and filtered. Independently
   review the printed FK columns/index key order/filter against the migration.
+- Applies the review-only amendment migration second, proves Offloads and exact V1
+  completion JSON are unchanged, confirms the new table starts empty, runs
+  `export-completion-amendments-verify.sql`, and confirms its immutable trigger.
 
 Keep full stdout as rehearsal evidence, without credentials. A failure is not
 permission to weaken constraints or edit historical data. Investigate, then use a
@@ -127,18 +137,15 @@ fresh disposable copy. The production migration is never automatically invoked.
 
 ## F-M: database constraints, concurrency, audits and transitions
 
-Select a real eligible flight/ULD pair in the copy. If copied flights have aged
-out, create a fresh export flight and ULD through an isolated application instance;
-do not rewrite creation timestamps or historic identities to make it eligible.
+Select a real eligible flight/ULD pair in the copy. ACTIVE, CLOSED and FINALISED
+exports are eligible regardless of age (FINALIZED is also supported). Do not
+rewrite creation timestamps, lifecycle statuses or historic identities.
 This read-only query lists candidates; choose one explicitly, not TOP 1:
 
 ```sql
-DECLARE @Now datetime2(7)=SYSUTCDATETIME();
 SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.CreatedAtUtc,u.UldId,u.UldNumber
 FROM dbo.Flights f JOIN dbo.ULDs u ON u.FlightId=f.FlightId
-WHERE f.Direction='EXPORT' AND f.FlightStatus='ACTIVE'
-  AND (f.CreatedAtUtc>=DATEADD(hour,-24,@Now)
-       OR f.OperatingDate=CONVERT(date,@Now AT TIME ZONE 'UTC' AT TIME ZONE 'AUS Eastern Standard Time'))
+WHERE f.Direction='EXPORT' AND f.FlightStatus IN ('ACTIVE','CLOSED','FINALISED','FINALIZED')
   AND NOT EXISTS (SELECT 1 FROM dbo.Offloads o WHERE o.FlightId=f.FlightId
     AND o.UldId=u.UldId AND o.OffloadStatus IN ('REQUESTED','TRANSIT'))
 ORDER BY f.FlightId,u.UldId;
@@ -233,8 +240,8 @@ baseline/migration review; never revert its status to satisfy the old guard.
 Use a designated operationally valid test movement approved by the operator.
 Do not fabricate a physical movement or advance legacy 9 solely for a smoke test.
 
-- Sign in normally; Request Offload shows ACTIVE EXPORT only, with correct
-  server-calculated recent-created/today eligibility, never departure-time gating.
+- Sign in normally; Request Offload includes historical ACTIVE/CLOSED/FINALISED
+  exports, with number, operating date and lifecycle shown; imports are excluded.
 - Choose flight; dropdown contains only its authoritative ULDs. Switch flights
   quickly; old responses must not repopulate the dropdown. Arbitrary ULD unavailable.
 - Request valid offload; record returned OffloadId and actual FlightId/UldId.

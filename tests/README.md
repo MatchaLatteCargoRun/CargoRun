@@ -9,6 +9,8 @@ node --test tests/scan-ambiguity.test.js
 node --test tests/atomic-status.test.js
 node --test tests/flight-concurrency.test.js
 node --test tests/offload-identity.test.js
+node --test tests/completion-amendments.test.js
+node --test tests/flight-summary-offloads.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
@@ -20,14 +22,30 @@ child-process isolation with `spawn EPERM`, use
 that option. Record the actual local runtime separately from Azure Node 22.
 
 Phase B tests execute the real offload handler against both legacy aliases and
-the live `OffloadStatus`/`Bay` schema. They cover database-clock query structure,
-boundary/date fixtures, exact ULD ownership, conflicting canonical identities,
+the live `OffloadStatus`/`Bay` schema. They cover historical ACTIVE/CLOSED/FINALISED
+export selection without lifecycle changes, exact ULD ownership, conflicting canonical identities,
 duplicate creation (including concurrent fixture transactions), required audit
-rollback, pre-migration failure, and NULL-ID legacy transitions. Browser tests
-exercise dependent selectors, stale async responses, and exact duplicate focus.
+rollback, pre-migration failure, and NULL-ID legacy transitions. Completion tests
+cover immutable V1 bytes, deterministic V2+ hashes, full-chain validation,
+transactional V2/V3/V4 writes, concurrent version allocation and rollback.
+Browser tests exercise dependent selectors, stale async responses, and exact duplicate focus.
+Flight Summary tests cover exact FlightId offload reads, deterministic ordering,
+empty/optional-field rendering, lifecycle labels, read-only requests, printable
+live summaries, and separation from immutable V1 completion output.
 The SQL fixture models eligibility and locking; it does not execute T-SQL or
 prove Azure SQL DST, FK, CHECK, or filtered-index behavior. Run the isolated SQL
 checks in `migrations/phase-b-review.md` before applying the review-only migration.
+
+Historical-flight follow-up: the recent-created/today restriction is removed from
+offload selection and creation. Options show flight number, full operating date,
+lifecycle and FlightId. Tests cover CLOSED duplicate/concurrent requests, exact
+ownership across dated flights, unchanged lifecycle, and stable audit IDs.
+Completion-backed CLOSED/FINALISED offloads append full immutable snapshots to
+`ExportCompletionAmendments` in the same transaction as the operational mutation
+and audit. V1 is verified from its exact stored bytes and never rewritten. Flights
+without a completion record create and progress offloads without an amendment.
+The additive `export-completion-amendments.sql` migration is review-only and must
+be rehearsed after the Phase B identity migration before this behavior is deployed.
 
 For the real Azure SQL migration/concurrency rehearsal, follow
 `migrations/phase-b-rehearsal.md`. Its explicitly invoked runner is

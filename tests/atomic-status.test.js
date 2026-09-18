@@ -124,11 +124,11 @@ test('invalid FlightId and mismatched flight context fail closed without insert 
   const missing = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 999, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   const wrongNumber = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'QF11', operatingDate: '2026-09-17', parkingBay: 'F25' });
   const wrongDate = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-18', parkingBay: 'F25' });
-  h.state.flights[0].FlightStatus = 'CLOSED';
+  h.state.flights[0].FlightStatus = 'CANCELLED';
   const inactive = await call(handler, 'POST', { uldId: '7', uldNumber: 'AKE12345CX', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   assert.deepEqual([missing.status, wrongNumber.status, wrongDate.status, inactive.status], [404, 409, 409, 409]);
   assert.equal(wrongNumber.body.code, 'FLIGHT_CONTEXT_MISMATCH');
-  assert.equal(inactive.body.code, 'FLIGHT_NOT_ACTIVE');
+  assert.equal(inactive.body.code, 'FLIGHT_NOT_ELIGIBLE');
   assert.equal(h.state.offload, null);
   assert.equal(h.state.audits.length, 0);
 });

@@ -49,7 +49,8 @@ async function main() {
     const snapshot = async (table, where = '1=1', omit = []) => {
       const columns = await query(`SELECT name FROM sys.columns WHERE object_id=OBJECT_ID(N'dbo.${table}') ORDER BY column_id;`);
       const projection = columns.filter(c => !omit.includes(c.name)).map(c => quote(c.name)).join(',');
-      const order = table === 'Offloads' ? ' ORDER BY OffloadId' : '';
+      const order = table === 'Offloads' ? ' ORDER BY OffloadId'
+        : table === 'ExportCompletionRecords' ? ' ORDER BY ExportCompletionRecordId' : '';
       return (await query(`SELECT (SELECT ${projection} FROM dbo.${table} WHERE ${where}${order} FOR JSON PATH, INCLUDE_NULL_VALUES) AS Evidence;`))[0].Evidence;
     };
     const schema = async () => JSON.stringify(await query(`
@@ -62,8 +63,10 @@ async function main() {
       ORDER BY Kind,TableName,name;`));
     if (mode === 'migration') {
       const migration = fs.readFileSync(path.join(root, 'migrations/phase-b-offload-identity.sql'), 'utf8');
+      const amendmentMigration = fs.readFileSync(path.join(root, 'migrations/export-completion-amendments.sql'), 'utf8');
       assert.equal((await query("SELECT COL_LENGTH('dbo.Offloads','UldId') AS Size;"))[0].Size, null, 'Start with an unmigrated copy');
       const before = await snapshot('Offloads');
+      const completionsBefore = await snapshot('ExportCompletionRecords');
       const beforeSchema = await schema();
       // Both faults and the migration execute on the same session/batch. The
       // migration's CATCH must roll back the outer fault transaction as well.
@@ -103,26 +106,40 @@ async function main() {
         WHERE object_id=OBJECT_ID('dbo.Offloads') AND name='UX_Offloads_ActiveFlightUld';`);
       assert.equal(indexes.length, 1);
       assert.ok(indexes[0].is_unique && !indexes[0].is_disabled && indexes[0].has_filter);
-      pass('migration, verification, trusted constraints, active index, and exact historical preservation');
+      await pool.request().batch(amendmentMigration);
+      assert.equal(await snapshot('Offloads'), before, 'Amendment migration must not change offload data');
+      assert.equal(await snapshot('ExportCompletionRecords'), completionsBefore, 'Amendment migration must not rewrite V1 records');
+      assert.equal(Number((await query('SELECT COUNT_BIG(*) AS N FROM dbo.ExportCompletionAmendments;'))[0].N), 0);
+      const amendmentVerification = await pool.request().batch(fs.readFileSync(path.join(root, 'migrations/export-completion-amendments-verify.sql'), 'utf8'));
+      console.log('AMENDMENT VERIFICATION', JSON.stringify(amendmentVerification.recordsets, null, 2));
+      assert.ok(amendmentVerification.recordsets.slice(-4).every(rows => rows.length === 0));
+      const immutableTrigger = await query(`SELECT is_disabled FROM sys.triggers
+        WHERE parent_id=OBJECT_ID('dbo.ExportCompletionAmendments')
+          AND name='TR_ExportCompletionAmendments_Immutable';`);
+      assert.equal(immutableTrigger.length, 1);
+      assert.equal(immutableTrigger[0].is_disabled, false);
+      pass('identity and amendment migrations, verification, immutable V1, trusted constraints, and exact historical preservation');
       return;
     }
 
     assert.equal((await query("SELECT COL_LENGTH('dbo.Offloads','UldId') AS Size;"))[0].Size, 8, 'Apply the migration rehearsal first');
+    assert.notEqual((await query("SELECT OBJECT_ID('dbo.ExportCompletionAmendments','U') AS Id;"))[0].Id, null, 'Apply the amendment migration rehearsal first');
     const flightId = env.CARGORUN_TEST_FLIGHT_ID;
     const uldId = env.CARGORUN_TEST_ULD_ID;
     assert.match(flightId || '', /^[1-9]\d*$/);
     assert.match(uldId || '', /^[1-9]\d*$/);
     const selected = (await pool.request().input('F', sql.BigInt, flightId).input('U', sql.BigInt, uldId).query(`
       SELECT u.UldNumber FROM dbo.ULDs u JOIN dbo.Flights f ON f.FlightId=u.FlightId
-      WHERE u.FlightId=@F AND u.UldId=@U AND f.Direction='EXPORT' AND f.FlightStatus='ACTIVE'
-        AND (f.CreatedAtUtc>=DATEADD(hour,-24,SYSUTCDATETIME()) OR f.OperatingDate=CONVERT(date,SYSUTCDATETIME() AT TIME ZONE 'UTC' AT TIME ZONE 'AUS Eastern Standard Time'));`)).recordset;
+      WHERE u.FlightId=@F AND u.UldId=@U AND f.Direction='EXPORT'
+        AND f.FlightStatus IN ('ACTIVE','CLOSED','FINALISED','FINALIZED');`)).recordset;
     assert.equal(selected.length, 1, 'Choose one real eligible flight/ULD in the copy');
     const { normalizeUldNumber } = apiRequire('./shared/uld');
     const body = { flightId, uldId, uldNumber: normalizeUldNumber(selected[0].UldNumber), parkingBay: 'REHEARSAL', requestInstruction: 'ISOLATED TEST ONLY' };
     const state = async () => (await pool.request().input('F', sql.BigInt, flightId).input('U', sql.BigInt, uldId).query(`
       SELECT (SELECT COUNT(*) FROM dbo.Offloads WHERE FlightId=@F AND UldId=@U AND OffloadStatus IN ('REQUESTED','TRANSIT')) AS Active,
         (SELECT COUNT_BIG(*) FROM dbo.Offloads) AS Offloads,
-        (SELECT COUNT_BIG(*) FROM dbo.AuditEvents) AS Audits;`)).recordset[0];
+        (SELECT COUNT_BIG(*) FROM dbo.AuditEvents) AS Audits,
+        (SELECT COUNT_BIG(*) FROM dbo.ExportCompletionAmendments WHERE FlightId=@F) AS Amendments;`)).recordset[0];
     assert.equal((await state()).Active, 0, 'Use a pair without active offloads; do not delete records to make this pass');
     const history12 = await snapshot('Offloads', 'OffloadId=12');
     const originalBegin = sql.Transaction.prototype.begin;

@@ -2,6 +2,7 @@ const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
 const { normalizeFlightNumber } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
+const { appendOffloadAmendmentIfRequired, CompletionAmendmentError } = require('../shared/completion-amendments');
 
 
 function getHeader(req, name) {
@@ -61,23 +62,17 @@ function operationalId(value) {
   return /^[1-9]\d*$/.test(id) && BigInt(id) <= 9223372036854775807n ? id : null;
 }
 
-// Both selector and POST use the database clock and exactly the same window.
-async function selectOffloadFlights(request, flightId = null) {
+// Historical export flights remain eligible without changing their lifecycle.
+const offloadFlightStatuses = ['ACTIVE', 'CLOSED', 'FINALISED', 'FINALIZED'];
+async function selectOffloadFlights(request, flightId = null, lockForUpdate = false) {
   return request.input('SelectedFlightId', sql.BigInt, flightId).query(`
-    DECLARE @ServerNowUtc datetime2(7) = SYSUTCDATETIME();
-    DECLARE @CurrentMelbourneDate date = CONVERT(date,
-      @ServerNowUtc AT TIME ZONE 'UTC' AT TIME ZONE 'AUS Eastern Standard Time');
     SELECT CONVERT(varchar(20), FlightId) AS FlightId, FlightNumber,
       CONVERT(char(10), OperatingDate, 23) AS OperatingDate,
-      CreatedAtUtc, Direction, FlightStatus,
-      CASE WHEN CreatedAtUtc >= DATEADD(hour,-24,@ServerNowUtc)
-        THEN 'RECENTLY_CREATED'
-        WHEN OperatingDate = @CurrentMelbourneDate THEN 'OPERATING_TODAY'
-        ELSE NULL END AS InclusionReason
-    FROM dbo.Flights ${flightId ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
-    WHERE ${flightId ? 'FlightId = @SelectedFlightId' : `Direction = 'EXPORT' AND FlightStatus = 'ACTIVE'
-      AND (CreatedAtUtc >= DATEADD(hour,-24,@ServerNowUtc) OR OperatingDate = @CurrentMelbourneDate)`}
-    ORDER BY CreatedAtUtc DESC, dbo.Flights.FlightId DESC;
+      CreatedAtUtc, Direction, FlightStatus
+    FROM dbo.Flights ${flightId && lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
+    WHERE ${flightId ? 'FlightId = @SelectedFlightId' : `Direction = 'EXPORT'
+      AND FlightStatus IN (${offloadFlightStatuses.map(status => `'${status}'`).join(',')})`}
+    ${flightId ? '' : 'ORDER BY OperatingDate DESC, dbo.Flights.FlightId DESC'};
   `);
 }
 
@@ -121,9 +116,9 @@ function normalize(row, columns) {
     return col ? row[col] : null;
   };
   return {
-    offloadId: get(['OffloadId', 'Id']),
-    flightId: get(['FlightId']),
-    uldId: get(['UldId']),
+    offloadId: row.__OffloadIdText ?? get(['OffloadId', 'Id']),
+    flightId: row.__FlightIdText ?? get(['FlightId']),
+    uldId: row.__UldIdText ?? get(['UldId']),
     flightNumber: get(['FlightNumber', 'Flight']),
     operatingDate: row.__FlightOperatingDate ?? null,
     uldNumber: get(['UldNumber', 'ULDNumber', 'Uld']),
@@ -179,10 +174,59 @@ module.exports = async function (context, req) {
         const flights = result.recordset.map(f => ({
           flightId: String(f.FlightId), flightNumber: f.FlightNumber,
           operatingDate: f.OperatingDate, createdAtUtc: f.CreatedAtUtc,
-          direction: f.Direction, flightStatus: f.FlightStatus,
-          inclusionReason: f.InclusionReason
+          direction: f.Direction, flightStatus: f.FlightStatus
         }));
         sendJson(context, 200, { ok: true, flights });
+        return;
+      }
+      if (req.query?.flightId !== undefined) {
+        const requestedFlightId = operationalId(req.query.flightId);
+        if (!requestedFlightId) {
+          sendJson(context, 400, { ok: false, error: 'A valid flightId is required' });
+          return;
+        }
+        if (!flightIdCol) {
+          sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Offload FlightId is unavailable' });
+          return;
+        }
+
+        const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
+        if (flightResult.recordset.length !== 1) {
+          sendJson(context, 404, { ok: false, error: 'Flight not found' });
+          return;
+        }
+
+        const uldIdCol = pick(columns, ['UldId']);
+        const requestedAtCol = pick(columns, ['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc']);
+        const identityColumns = `CONVERT(varchar(20), o.${q(idCol)}) AS __OffloadIdText,
+          CONVERT(varchar(20), o.${q(flightIdCol)}) AS __FlightIdText${uldIdCol
+            ? `, CONVERT(varchar(20), o.${q(uldIdCol)}) AS __UldIdText`
+            : ', CAST(NULL AS varchar(20)) AS __UldIdText'}`;
+        const orderBy = requestedAtCol
+          ? `CASE WHEN o.${q(requestedAtCol)} IS NULL THEN 1 ELSE 0 END, o.${q(requestedAtCol)} ASC, o.${q(idCol)} ASC`
+          : `o.${q(idCol)} ASC`;
+        const result = await pool.request()
+          .input('SummaryFlightId', sql.BigInt, requestedFlightId)
+          .query(`
+            SELECT o.*, ${identityColumns}, CONVERT(char(10), f.OperatingDate, 23) AS __FlightOperatingDate
+            FROM dbo.Offloads AS o
+            INNER JOIN dbo.Flights AS f ON f.FlightId = o.${q(flightIdCol)}
+            WHERE o.${q(flightIdCol)} = @SummaryFlightId
+            ORDER BY ${orderBy};
+          `);
+        const selectedFlight = flightResult.recordset[0];
+        sendJson(context, 200, {
+          ok: true,
+          flight: {
+            flightId: String(selectedFlight.FlightId),
+            flightNumber: selectedFlight.FlightNumber,
+            operatingDate: selectedFlight.OperatingDate,
+            direction: selectedFlight.Direction,
+            flightStatus: selectedFlight.FlightStatus
+          },
+          count: result.recordset.length,
+          offloads: result.recordset.map(row => normalize(row, columns))
+        });
         return;
       }
       const result = flightIdCol
@@ -240,7 +284,7 @@ module.exports = async function (context, req) {
       transaction = new sql.Transaction(pool);
       await transaction.begin();
 
-      const flightResult = await selectOffloadFlights(new sql.Request(transaction), requestedFlightId);
+      const flightResult = await selectOffloadFlights(new sql.Request(transaction), requestedFlightId, true);
       const selectedFlight = flightResult.recordset?.[0] || null;
       if (!selectedFlight) {
         await transaction.rollback(); transaction = null;
@@ -251,14 +295,10 @@ module.exports = async function (context, req) {
       const flightId = selectedFlight.FlightId;
       const flightNumber = clean(selectedFlight.FlightNumber, 12)?.toUpperCase();
       const operatingDate = clean(selectedFlight.OperatingDate, 10);
-      if (canonical(selectedFlight.FlightStatus) !== 'ACTIVE') {
+      const flightStatusAtRequest = canonical(selectedFlight.FlightStatus);
+      if (selectedFlight.Direction !== 'EXPORT' || !offloadFlightStatuses.includes(flightStatusAtRequest)) {
         await transaction.rollback(); transaction = null;
-        sendJson(context, 409, { ok: false, error: 'Selected flight is no longer active', code: 'FLIGHT_NOT_ACTIVE' });
-        return;
-      }
-      if (selectedFlight.Direction !== 'EXPORT' || !selectedFlight.InclusionReason) {
-        await transaction.rollback(); transaction = null;
-        sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select a currently eligible export flight' });
+        sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select an ACTIVE, CLOSED or FINALISED export flight' });
         return;
       }
       const contextMismatch =
@@ -358,6 +398,20 @@ module.exports = async function (context, req) {
 
       const created = normalize(insert.recordset[0], columns);
       created.operatingDate = operatingDate;
+      const amendment = await appendOffloadAmendmentIfRequired(transaction, sql, {
+        flightId,
+        offloadId: created.offloadId,
+        uldId: requestedUldId,
+        action: 'OFFLOAD_REQUESTED',
+        previousStatus: null,
+        resultingStatus: 'REQUESTED',
+        reason: requestInstruction,
+        actorProvider: identity.identityProvider,
+        actorReference,
+        actorDisplayName,
+        flightStatus: flightStatusAtRequest,
+        offloadColumns: columns
+      });
       await insertAuditEvent(transaction, sql, {
         type: 'Offload',
         action: 'Offload requested',
@@ -366,18 +420,19 @@ module.exports = async function (context, req) {
         entityType: 'Offload',
         entityId: created.offloadId,
         offloadId: created.offloadId,
-        flightId: created.flightId,
+        flightId,
         uldId: requestedUldId,
         flightNumber: created.flightNumber || flightNumber,
         uldNumber: created.uldNumber || uldNumber,
         toStatus: 'REQUESTED',
-        detail: `Requested from bay ${created.parkingBay || parkingBay}${requestInstruction ? ` • Instruction: ${requestInstruction}` : ''}`
+        detail: `Requested from bay ${created.parkingBay || parkingBay} • Flight ${flightStatusAtRequest}${requestInstruction ? ` • Instruction: ${requestInstruction}` : ''}`,
+        details: { flightStatusAtRequest, operatingDate, amendment }
       });
 
       await transaction.commit();
       transaction = null;
 
-      sendJson(context, 201, { ok: true, offload: created });
+      sendJson(context, 201, { ok: true, offload: created, amendment });
       return;
     }
 
@@ -436,6 +491,22 @@ module.exports = async function (context, req) {
       await transaction.rollback(); transaction = null;
       sendJson(context, 400, { ok: false, error: 'deliveredLocation is required to complete an offload' });
       return;
+    }
+
+    // Serialize every stable-identity transition for a flight before changing
+    // the offload row. Historical amendment writers use the same flight lock,
+    // preventing two different offloads from taking locks in opposite order.
+    let amendmentFlightStatus = null;
+    const amendmentFlightId = operationalId(current.flightId);
+    if (amendmentFlightId) {
+      const amendmentFlight = await new sql.Request(transaction)
+        .input('AmendmentMutationFlightId', sql.BigInt, amendmentFlightId)
+        .query(`SELECT FlightStatus FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)
+          WHERE FlightId=@AmendmentMutationFlightId;`);
+      if (amendmentFlight.recordset.length !== 1) {
+        throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Offload flight identity is missing or ambiguous');
+      }
+      amendmentFlightStatus = amendmentFlight.recordset[0].FlightStatus;
     }
 
     const request = new sql.Request(transaction)
@@ -503,6 +574,20 @@ module.exports = async function (context, req) {
     }
 
     const changed = normalize(updated.recordset[0], columns);
+    const amendment = await appendOffloadAmendmentIfRequired(transaction, sql, {
+      flightId: changed.flightId,
+      offloadId: changed.offloadId,
+      uldId: changed.uldId,
+      action: nextStatus === 'TRANSIT' ? 'OFFLOAD_TRANSIT' : 'OFFLOAD_COMPLETE',
+      previousStatus: current.status,
+      resultingStatus: nextStatus,
+      reason: nextStatus === 'COMPLETE' ? completionNote : null,
+      actorProvider: identity.identityProvider,
+      actorReference,
+      actorDisplayName,
+      flightStatus: amendmentFlightStatus,
+      offloadColumns: columns
+    });
     await insertAuditEvent(transaction, sql, {
       type: 'Offload',
       action: nextStatus === 'TRANSIT' ? 'Offload collected' : 'Offload delivered',
@@ -519,13 +604,18 @@ module.exports = async function (context, req) {
       toStatus: nextStatus,
       detail: nextStatus === 'TRANSIT'
         ? `Collected from bay ${changed.parkingBay || current.parkingBay}${changed.requestInstruction ? ` • ${changed.requestInstruction}` : ''}`
-        : `Delivered to ${changed.deliveredLocation || deliveredLocation}${completionNote ? ` • Note: ${completionNote}` : ''}`
+        : `Delivered to ${changed.deliveredLocation || deliveredLocation}${completionNote ? ` • Note: ${completionNote}` : ''}`,
+      details: { amendment }
     });
 
     await transaction.commit(); transaction = null;
-    sendJson(context, 200, { ok: true, offload: changed });
+    sendJson(context, 200, { ok: true, offload: changed, amendment });
   } catch (err) {
     if (transaction) { try { await transaction.rollback(); } catch {} }
+    if (err instanceof CompletionAmendmentError) {
+      sendJson(context, err.status, { ok: false, code: err.code, error: err.message });
+      return;
+    }
     // Last defence if a competing writer bypassed the flight-lock protocol.
     // Only translate this specific index violation; other SQL errors fail closed.
     if (req.method === 'POST' && [2601, 2627].includes(err.number) &&
