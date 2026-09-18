@@ -47,8 +47,8 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
   };
 
   const columns = {
-    ExportCompletionRecords: completionSchema ? ['ExportCompletionRecordId', 'FlightId', 'SnapshotJson', 'RecordHash'] : [],
-    ExportCompletionAmendments: amendmentSchema ? ['AmendmentId','ExportCompletionRecordId','FlightId','VersionNumber','PreviousHash','RecordHash','VerificationId','OperationId','Action','PreviousStatus','ResultingStatus','Reason','RelatedOffloadId','RelatedUldId','ActorProvider','ActorReference','ActorDisplayName','OccurredAtUtc','SnapshotJson'] : [],
+    ExportCompletionRecords: completionSchema ? ['CompletionId', 'FlightId', 'SnapshotJson', 'RecordHash'] : [],
+    ExportCompletionAmendments: amendmentSchema ? ['AmendmentId','CompletionId','FlightId','VersionNumber','PreviousHash','RecordHash','VerificationId','OperationId','Action','PreviousStatus','ResultingStatus','Reason','RelatedOffloadId','RelatedUldId','ActorProvider','ActorReference','ActorDisplayName','OccurredAtUtc','SnapshotJson'] : [],
     ULDs: [
       'UldId', 'FlightId', 'UldNumber', 'CurrentStatus', 'IdentityVerified',
       'AcceptedAtUtc', 'AcceptedByDisplayName', 'AcceptedByObjectId',
@@ -149,7 +149,7 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
       if(q.includes('FROM dbo.ULDs WITH (UPDLOCK, HOLDLOCK)')) return result(state.offloadUlds.filter(u=>String(u.FlightId)===String(p.FlightId)));
       if(q.includes('FROM dbo.ExportCompletionRecords WITH (UPDLOCK, HOLDLOCK)')) return result(state.completions.filter(c=>String(c.FlightId)===String(p.AmendmentBaseFlightId)));
       if(q.includes('FROM dbo.ExportCompletionAmendments WITH (UPDLOCK, HOLDLOCK)')) {
-        const rows=state.amendments.filter(a=>String(a.ExportCompletionRecordId)===String(p.AmendmentBaseId)).sort((a,b)=>a.VersionNumber-b.VersionNumber);
+        const rows=state.amendments.filter(a=>String(a.CompletionId)===String(p.AmendmentBaseId)).sort((a,b)=>a.VersionNumber-b.VersionNumber);
         return result(rows);
       }
       if(q.includes('FROM dbo.Offloads WITH (UPDLOCK, HOLDLOCK)') && Object.hasOwn(p,'EvidenceFlightId')) {
@@ -165,7 +165,7 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
       if(q.startsWith('DECLARE @OccurredAtUtc')) return result([{OccurredAtUtc:new Date(state.now),OccurredAtIso:state.now}]);
       if(q.startsWith('INSERT INTO dbo.ExportCompletionAmendments')) {
         if(state.failAmendment) throw new Error('forced amendment failure');
-        const row={AmendmentId:String(state.amendments.length+1),ExportCompletionRecordId:String(p.CompletionBaseId),FlightId:String(p.CompletionFlightId),
+        const row={AmendmentId:String(state.amendments.length+1),CompletionId:String(p.CompletionBaseId),FlightId:String(p.CompletionFlightId),
           VersionNumber:p.CompletionVersion,PreviousHash:p.CompletionPreviousHash,RecordHash:p.CompletionRecordHash,VerificationId:p.CompletionVerificationId,
           OperationId:p.CompletionOperationId,Action:p.CompletionAction,PreviousStatus:p.CompletionPreviousStatus,ResultingStatus:p.CompletionResultingStatus,
           Reason:p.CompletionReason,RelatedOffloadId:String(p.CompletionOffloadId),

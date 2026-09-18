@@ -14,8 +14,7 @@ $SqlPath = [System.IO.Path]::GetFullPath(
 $ReportPath = Join-Path $env:TEMP 'CargoRun-live-amendment-preflight.json'
 $ForbiddenKeywords = @('INSERT', 'UPDATE', 'DELETE', 'MERGE', 'CREATE', 'ALTER', 'DROP', 'TRUNCATE')
 
-$securePassword = $null
-$passwordPointer = [IntPtr]::Zero
+$credential = $null
 $plainPassword = $null
 $connectionString = $null
 $connectionBuilder = $null
@@ -24,9 +23,11 @@ $command = $null
 $reader = $null
 $failureMessage = $null
 $preflightClean = $false
+$connectedDatabaseUser = $null
 $staticSummary = @()
 $v1Summary = [ordered]@{ Total = 0; Passed = 0; Failed = 0 }
 $stopSummary = @()
+$stopRowCount = 0
 
 function Get-CommentFreeSql {
     param([Parameter(Mandatory)][string]$Sql)
@@ -197,9 +198,14 @@ try {
     $sqlText = [System.IO.File]::ReadAllText($SqlPath)
     Assert-ReadOnlySql -Sql $sqlText
 
-    $securePassword = Read-Host 'SQL password for CargoRun_Preflight_ReadOnly' -AsSecureString
-    $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($securePassword)
-    $plainPassword = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($passwordPointer)
+    $credential = Get-Credential -UserName $TargetUser -Message 'CargoRun live amendment preflight (read-only SQL user)'
+    if ($null -eq $credential) {
+        throw 'SQL credential entry was cancelled.'
+    }
+    if ([string]$credential.UserName -cne $TargetUser) {
+        throw "Credential user must be '$TargetUser'."
+    }
+    $plainPassword = $credential.GetNetworkCredential().Password
 
     $connectionBuilder = [System.Data.SqlClient.SqlConnectionStringBuilder]::new()
     $connectionBuilder['Data Source'] = "tcp:$TargetServer,1433"
@@ -240,11 +246,10 @@ SELECT
 '@
 
     $connectedServerName = [string]$permissions.ServerName
+    $connectedDatabaseUser = [string]$permissions.DatabaseUser
     if (($connectedServerName -cne $TargetServer -and $connectedServerName -cne $TargetServerName) -or
         [string]$permissions.DatabaseName -cne $TargetDatabase -or
-        [string]$permissions.OriginalLogin -cne $TargetUser -or
-        [string]$permissions.ServerLogin -cne $TargetUser -or
-        [string]$permissions.DatabaseUser -cne $TargetUser) {
+        $connectedDatabaseUser -cne $TargetUser) {
         throw "Connected target identity differs from server '$TargetServer', database '$TargetDatabase', and user '$TargetUser'."
     }
 
@@ -329,7 +334,7 @@ SELECT
                     $v1Summary.Failed++
                     $offlineIssues.Add([ordered]@{
                         Section = 'STOP_V1_OFFLINE_INTEGRITY'
-                        ExportCompletionRecordId = $row['ExportCompletionRecordId']
+                        CompletionId = $row['CompletionId']
                         FlightId = $row['FlightId']
                         HashMatches = $hashMatches
                         SnapshotParsesAsObject = $snapshotParsesAsObject
@@ -364,6 +369,7 @@ SELECT
     $stopRows = @($allRows | Where-Object {
         (Get-RowSection -Row $_).StartsWith('STOP_', [StringComparison]::Ordinal)
     })
+    $stopRowCount = $stopRows.Count
 
     $staticSummary = @($staticRows | ForEach-Object {
         [ordered]@{ CheckName = $_['CheckName']; Result = $_['Result'] }
@@ -397,10 +403,12 @@ SELECT
             User = $TargetUser
         }
         GeneratedAtUtc = [DateTime]::UtcNow.ToString('o')
+        ConnectedDatabaseUser = $connectedDatabaseUser
         Permissions = $permissionReport
         StaticReadiness = $staticSummary
         V1Integrity = $v1Summary
         StopConditions = $stopSummary
+        StopRowCount = $stopRowCount
         PreflightResult = if ($preflightClean) { 'CLEAN' } else { 'STOP' }
         Recordsets = $recordsets.ToArray()
     }
@@ -450,18 +458,16 @@ finally {
         catch {}
         $connectionBuilder = $null
     }
-    if ($passwordPointer -ne [IntPtr]::Zero) {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($passwordPointer)
-        $passwordPointer = [IntPtr]::Zero
-    }
-    if ($null -ne $securePassword) {
-        try { $securePassword.Dispose() } catch {}
-        $securePassword = $null
+    if ($null -ne $credential) {
+        try { $credential.Password.Dispose() } catch {}
+        $credential = $null
     }
     $plainPassword = $null
     $connectionString = $null
 }
 
+$connectedUserOutput = if ($connectedDatabaseUser) { $connectedDatabaseUser } else { 'NOT CONNECTED' }
+Write-Output "Connected database user: $connectedUserOutput"
 Write-Output 'STATIC READINESS'
 if ($failureMessage) {
     Write-Output '  NOT RUN'
@@ -497,6 +503,7 @@ else {
         Write-Output "  $($item.Section): $($item.Count)"
     }
 }
+Write-Output "  Total STOP rows: $stopRowCount"
 
 if ($failureMessage -or -not $preflightClean) {
     Write-Output 'PREFLIGHT RESULT: STOP'

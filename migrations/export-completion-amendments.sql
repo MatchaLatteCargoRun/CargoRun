@@ -19,7 +19,7 @@ BEGIN TRY
     THROW 51100, 'Required Phase B tables are missing.', 1;
   IF OBJECT_ID(N'dbo.ExportCompletionAmendments',N'U') IS NOT NULL
     THROW 51101, 'ExportCompletionAmendments already exists; review migration state.', 1;
-  IF COL_LENGTH(N'dbo.ExportCompletionRecords',N'ExportCompletionRecordId') IS NULL
+  IF COL_LENGTH(N'dbo.ExportCompletionRecords',N'CompletionId') IS NULL
      OR COL_LENGTH(N'dbo.ExportCompletionRecords',N'FlightId') IS NULL
      OR COL_LENGTH(N'dbo.ExportCompletionRecords',N'VerificationId') IS NULL
      OR COL_LENGTH(N'dbo.ExportCompletionRecords',N'SnapshotJson') IS NULL
@@ -28,7 +28,7 @@ BEGIN TRY
     THROW 51102, 'Required completion/offload identity columns are missing.', 1;
 
   -- Freeze relevant ranges and reject ambiguous base records before adding keys.
-  SELECT ExportCompletionRecordId FROM dbo.ExportCompletionRecords WITH (TABLOCKX,HOLDLOCK);
+  SELECT CompletionId FROM dbo.ExportCompletionRecords WITH (TABLOCKX,HOLDLOCK);
   SELECT OffloadId FROM dbo.Offloads WITH (TABLOCKX,HOLDLOCK);
   SELECT UldId FROM dbo.ULDs WITH (TABLOCKX,HOLDLOCK);
   IF EXISTS (SELECT 1 FROM dbo.ExportCompletionRecords WHERE FlightId IS NULL)
@@ -38,13 +38,13 @@ BEGIN TRY
   ALTER TABLE dbo.ExportCompletionRecords ADD CONSTRAINT UQ_ExportCompletionRecords_Flight
     UNIQUE NONCLUSTERED (FlightId);
   ALTER TABLE dbo.ExportCompletionRecords ADD CONSTRAINT UQ_ExportCompletionRecords_Flight_Record
-    UNIQUE NONCLUSTERED (FlightId,ExportCompletionRecordId);
+    UNIQUE NONCLUSTERED (FlightId,CompletionId);
   ALTER TABLE dbo.Offloads ADD CONSTRAINT UQ_Offloads_Flight_Offload
     UNIQUE NONCLUSTERED (FlightId,OffloadId);
 
   CREATE TABLE dbo.ExportCompletionAmendments (
     AmendmentId bigint IDENTITY(1,1) NOT NULL CONSTRAINT PK_ExportCompletionAmendments PRIMARY KEY,
-    ExportCompletionRecordId bigint NOT NULL,
+    CompletionId bigint NOT NULL,
     FlightId bigint NOT NULL,
     VersionNumber int NOT NULL,
     PreviousHash nvarchar(128) NOT NULL,
@@ -72,12 +72,12 @@ BEGIN TRY
       (Action=N'OFFLOAD_TRANSIT' AND PreviousStatus=N'REQUESTED' AND ResultingStatus=N'TRANSIT') OR
       (Action=N'OFFLOAD_COMPLETE' AND PreviousStatus=N'TRANSIT' AND ResultingStatus=N'COMPLETE')
     ),
-    CONSTRAINT UQ_ExportCompletionAmendments_BaseVersion UNIQUE (ExportCompletionRecordId,VersionNumber),
+    CONSTRAINT UQ_ExportCompletionAmendments_BaseVersion UNIQUE (CompletionId,VersionNumber),
     CONSTRAINT UQ_ExportCompletionAmendments_FlightVersion UNIQUE (FlightId,VersionNumber),
     CONSTRAINT UQ_ExportCompletionAmendments_Verification UNIQUE (VerificationId),
     CONSTRAINT UQ_ExportCompletionAmendments_Operation UNIQUE (OperationId),
-    CONSTRAINT FK_ExportCompletionAmendments_BaseFlight FOREIGN KEY (FlightId,ExportCompletionRecordId)
-      REFERENCES dbo.ExportCompletionRecords(FlightId,ExportCompletionRecordId),
+    CONSTRAINT FK_ExportCompletionAmendments_BaseFlight FOREIGN KEY (FlightId,CompletionId)
+      REFERENCES dbo.ExportCompletionRecords(FlightId,CompletionId),
     CONSTRAINT FK_ExportCompletionAmendments_FlightOffload FOREIGN KEY (FlightId,RelatedOffloadId)
       REFERENCES dbo.Offloads(FlightId,OffloadId),
     CONSTRAINT FK_ExportCompletionAmendments_FlightUld FOREIGN KEY (FlightId,RelatedUldId)

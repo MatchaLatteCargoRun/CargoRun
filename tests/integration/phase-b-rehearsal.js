@@ -50,7 +50,7 @@ async function main() {
       const columns = await query(`SELECT name FROM sys.columns WHERE object_id=OBJECT_ID(N'dbo.${table}') ORDER BY column_id;`);
       const projection = columns.filter(c => !omit.includes(c.name)).map(c => quote(c.name)).join(',');
       const order = table === 'Offloads' ? ' ORDER BY OffloadId'
-        : table === 'ExportCompletionRecords' ? ' ORDER BY ExportCompletionRecordId' : '';
+        : table === 'ExportCompletionRecords' ? ' ORDER BY CompletionId' : '';
       return (await query(`SELECT (SELECT ${projection} FROM dbo.${table} WHERE ${where}${order} FOR JSON PATH, INCLUDE_NULL_VALUES) AS Evidence;`))[0].Evidence;
     };
     const schema = async () => JSON.stringify(await query(`

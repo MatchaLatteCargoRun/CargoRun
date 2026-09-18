@@ -10,7 +10,7 @@ const root = path.resolve(__dirname, '..');
 const body = {flightId:'1',uldId:'7',uldNumber:'ake-12345-cx',parkingBay:'F25'};
 const flight = (overrides={}) => ({FlightId:'1',FlightNumber:'CX178',Direction:'EXPORT',FlightStatus:'ACTIVE',OperatingDate:'2026-09-16',CreatedAtUtc:'2026-09-16T00:00:00.000Z',...overrides});
 const setup = (options={}) => {const h=sqlHarness({liveSchema:true,flights:[flight()],...options});return {...h,handler:loadHandler('api/offloads/index.js',h.sql)}};
-const baseCompletion=(overrides={})=>{const SnapshotJson=overrides.SnapshotJson||'{"flight":"CX178","ulds":["AKE-12345-CX"]}';return {ExportCompletionRecordId:'30',FlightId:'1',VerificationId:'v1-verify',SnapshotJson,RecordHash:sha256(SnapshotJson),...overrides}}
+const baseCompletion=(overrides={})=>{const SnapshotJson=overrides.SnapshotJson||'{"flight":"CX178","ulds":["AKE-12345-CX"]}';return {CompletionId:'30',FlightId:'1',VerificationId:'v1-verify',SnapshotJson,RecordHash:sha256(SnapshotJson),...overrides}}
 
 test('selector includes historical CLOSED/finalised exports and excludes imports/unsupported statuses', async()=>{
  const h=setup({flights:[
@@ -73,6 +73,8 @@ test('completion-backed CLOSED and FINALISED flights append V2 and preserve V1 b
   const before=structuredClone({flights:h.state.flights,completions:h.state.completions});
   const r=await call(h.handler,'POST',body);
   assert.equal(r.status,201);assert.equal(r.body.amendment.versionNumber,2);assert.equal(h.state.amendments.length,1);
+  assert.equal(h.state.amendments[0].CompletionId,record.CompletionId);
+  assert.equal(h.state.queries.find(x=>Object.hasOwn(x.p,'CompletionBaseId')).p.CompletionBaseId,record.CompletionId);
   assert.equal(h.state.amendments[0].PreviousHash,record.RecordHash);assert.equal(h.state.amendments[0].Action,'OFFLOAD_REQUESTED');
   assert.equal(h.state.amendments[0].PreviousStatus,null);assert.equal(h.state.amendments[0].ResultingStatus,'REQUESTED');
   assert.equal(h.state.amendments[0].RelatedOffloadId,String(r.body.offload.offloadId));assert.equal(h.state.amendments[0].RelatedUldId,'7');
@@ -125,7 +127,7 @@ test('broken V2 chain blocks progression and rolls back the status mutation',asy
 });
 
 test('invalid or multiple V1 completion evidence blocks creation without repair',async()=>{
- for(const completions of [[baseCompletion({RecordHash:'0'.repeat(64)})],[baseCompletion(),baseCompletion({ExportCompletionRecordId:'31'})]]){
+ for(const completions of [[baseCompletion({RecordHash:'0'.repeat(64)})],[baseCompletion(),baseCompletion({CompletionId:'31'})]]){
   const h=setup({flights:[flight({FlightStatus:'CLOSED'})],completions});const before=structuredClone(completions);
   const r=await call(h.handler,'POST',body);assert.equal(r.body.code,'COMPLETION_EVIDENCE_INVALID');
   assert.equal(h.state.offload,null);assert.equal(h.state.amendments.length,0);assert.equal(h.state.audits.length,0);assert.deepEqual(h.state.completions,before);

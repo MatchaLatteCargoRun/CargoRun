@@ -81,7 +81,7 @@ ORDER BY t.name, c.column_id;
         (N'Offloads', N'UldNumber', NULL),
         (N'Offloads', N'OffloadStatus', NULL),
 
-        (N'ExportCompletionRecords', N'ExportCompletionRecordId', N'bigint'),
+        (N'ExportCompletionRecords', N'CompletionId', N'bigint'),
         (N'ExportCompletionRecords', N'FlightId', N'bigint'),
         (N'ExportCompletionRecords', N'VerificationId', NULL),
         (N'ExportCompletionRecords', N'SnapshotJson', NULL),
@@ -287,7 +287,7 @@ FROM (
 
     SELECT
       N'Required amendment source columns exist',
-      CASE WHEN COL_LENGTH(N'dbo.ExportCompletionRecords', N'ExportCompletionRecordId') IS NOT NULL
+      CASE WHEN COL_LENGTH(N'dbo.ExportCompletionRecords', N'CompletionId') IS NOT NULL
              AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'FlightId') IS NOT NULL
              AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'VerificationId') IS NOT NULL
              AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'SnapshotJson') IS NOT NULL
@@ -674,7 +674,7 @@ END;
 
 IF OBJECT_ID(N'dbo.ExportCompletionRecords', N'U') IS NOT NULL
    AND OBJECT_ID(N'dbo.Flights', N'U') IS NOT NULL
-   AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'ExportCompletionRecordId') IS NOT NULL
+   AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'CompletionId') IS NOT NULL
    AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'FlightId') IS NOT NULL
    AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'VerificationId') IS NOT NULL
    AND COL_LENGTH(N'dbo.ExportCompletionRecords', N'SnapshotJson') IS NOT NULL
@@ -686,9 +686,9 @@ BEGIN
           FlightId,
           COUNT_BIG(*) AS CompletionRecordCount,
           STRING_AGG(
-              CONVERT(nvarchar(max), ExportCompletionRecordId),
+              CONVERT(nvarchar(max), CompletionId),
               N'',''
-          ) WITHIN GROUP (ORDER BY ExportCompletionRecordId) AS CompletionRecordIds
+          ) WITHIN GROUP (ORDER BY CompletionId) AS CompletionIds
       FROM dbo.ExportCompletionRecords
       GROUP BY FlightId
       HAVING FlightId IS NULL OR COUNT_BIG(*) > 1
@@ -696,22 +696,22 @@ BEGIN
 
       SELECT
           N''STOP_V1_ORPHAN_FLIGHT'' AS Section,
-          e.ExportCompletionRecordId,
+          e.CompletionId,
           e.FlightId
       FROM dbo.ExportCompletionRecords e
       LEFT JOIN dbo.Flights f ON f.FlightId = e.FlightId
       WHERE e.FlightId IS NULL
          OR f.FlightId IS NULL
-      ORDER BY e.ExportCompletionRecordId;
+      ORDER BY e.CompletionId;
 
       SELECT
           N''STOP_V1_REQUIRED_DATA'' AS Section,
-          ExportCompletionRecordId,
+          CompletionId,
           FlightId,
           VerificationId,
           RecordHash,
           CASE
-            WHEN ExportCompletionRecordId IS NULL THEN N''ExportCompletionRecordId is NULL''
+            WHEN CompletionId IS NULL THEN N''CompletionId is NULL''
             WHEN FlightId IS NULL THEN N''FlightId is NULL''
             WHEN VerificationId IS NULL THEN N''VerificationId is NULL''
             WHEN SnapshotJson IS NULL THEN N''SnapshotJson is NULL''
@@ -724,7 +724,7 @@ BEGIN
             WHEN LEFT(LTRIM(SnapshotJson), 1) <> N''{'' THEN N''SnapshotJson root is not an object''
           END AS Problem
       FROM dbo.ExportCompletionRecords
-      WHERE ExportCompletionRecordId IS NULL
+      WHERE CompletionId IS NULL
          OR FlightId IS NULL
          OR VerificationId IS NULL
          OR SnapshotJson IS NULL
@@ -735,12 +735,11 @@ BEGIN
               LIKE N''%[^0-9A-Fa-f]%''
          OR ISJSON(SnapshotJson) <> 1
          OR LEFT(LTRIM(SnapshotJson), 1) <> N''{''
-      ORDER BY ExportCompletionRecordId;
+      ORDER BY CompletionId;
 
       SELECT
           N''V1_EVIDENCE'' AS Section,
-          CONVERT(varchar(20), ExportCompletionRecordId)
-              AS ExportCompletionRecordId,
+          CONVERT(varchar(20), CompletionId) AS CompletionId,
           CONVERT(varchar(20), FlightId) AS FlightId,
           CONVERT(nvarchar(100), VerificationId) AS VerificationId,
           RecordHash,
@@ -748,7 +747,7 @@ BEGIN
           LEN(SnapshotJson) AS SnapshotCharacterLength,
           SnapshotJson AS SnapshotJsonForOfflineVerification
       FROM dbo.ExportCompletionRecords
-      ORDER BY ExportCompletionRecordId;
+      ORDER BY CompletionId;
     ';
 END
 ELSE

@@ -46,7 +46,9 @@ function quoteName(name) {
 function amendmentEnvelope(row, snapshot) {
   return {
     schema: 'CargoRun.ExportCompletionAmendment.v1',
-    exportCompletionRecordId: String(row.ExportCompletionRecordId),
+    // Keep the serialized v1 envelope key stable; its value comes from the
+    // authoritative dbo.ExportCompletionRecords.CompletionId column.
+    exportCompletionRecordId: String(row.CompletionId),
     flightId: String(row.FlightId),
     versionNumber: Number(row.VersionNumber),
     previousHash: String(row.PreviousHash),
@@ -114,7 +116,7 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
 
   const baseResult = await new sql.Request(transaction)
     .input('AmendmentBaseFlightId', sql.BigInt, options.flightId)
-    .query(`SELECT CONVERT(varchar(20), ExportCompletionRecordId) AS ExportCompletionRecordId,
+    .query(`SELECT CONVERT(varchar(20), CompletionId) AS CompletionId,
         CONVERT(varchar(20), FlightId) AS FlightId, CONVERT(nvarchar(100), VerificationId) AS VerificationId,
         SnapshotJson, RecordHash
       FROM dbo.ExportCompletionRecords WITH (UPDLOCK, HOLDLOCK)
@@ -137,9 +139,9 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
   }
 
   const amendmentsResult = await new sql.Request(transaction)
-    .input('AmendmentBaseId', sql.BigInt, base.ExportCompletionRecordId)
+    .input('AmendmentBaseId', sql.BigInt, base.CompletionId)
     .query(`SELECT CONVERT(varchar(20), AmendmentId) AS AmendmentId,
-        CONVERT(varchar(20), ExportCompletionRecordId) AS ExportCompletionRecordId,
+        CONVERT(varchar(20), CompletionId) AS CompletionId,
         CONVERT(varchar(20), FlightId) AS FlightId, VersionNumber, PreviousHash, RecordHash,
         VerificationId, OperationId, Action, PreviousStatus, ResultingStatus, Reason,
         CONVERT(varchar(20), RelatedOffloadId) AS RelatedOffloadId,
@@ -147,7 +149,7 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
         ActorProvider, ActorReference, ActorDisplayName,
         CONVERT(varchar(33),OccurredAtUtc,126)+'Z' AS OccurredAtIso, SnapshotJson
       FROM dbo.ExportCompletionAmendments WITH (UPDLOCK, HOLDLOCK)
-      WHERE ExportCompletionRecordId=@AmendmentBaseId ORDER BY VersionNumber ASC;`);
+      WHERE CompletionId=@AmendmentBaseId ORDER BY VersionNumber ASC;`);
 
   let previousSnapshot = parseSnapshot(baseRaw, 'Export completion V1');
   let previousHash = baseHash;
@@ -155,7 +157,7 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
   for (const amendment of amendmentsResult.recordset) {
     const actualVersion = Number(amendment.VersionNumber);
     if (!Number.isSafeInteger(actualVersion) || actualVersion !== versionNumber ||
-        String(amendment.ExportCompletionRecordId) !== String(base.ExportCompletionRecordId) ||
+        String(amendment.CompletionId) !== String(base.CompletionId) ||
         String(amendment.FlightId) !== String(options.flightId) ||
         String(amendment.PreviousHash || '').toLowerCase() !== previousHash) {
       throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', `Export completion V${versionNumber} chain association is invalid`);
@@ -218,7 +220,7 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
     }
   };
   const row = {
-    ExportCompletionRecordId: String(base.ExportCompletionRecordId),
+    CompletionId: String(base.CompletionId),
     FlightId: String(options.flightId),
     VersionNumber: versionNumber,
     PreviousHash: previousHash,
@@ -238,7 +240,7 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
   const snapshotJson = canonicalJson(snapshot);
   const recordHash = sha256(canonicalJson(amendmentEnvelope(row, snapshot)));
   const inserted = await new sql.Request(transaction)
-    .input('CompletionBaseId', sql.BigInt, base.ExportCompletionRecordId)
+    .input('CompletionBaseId', sql.BigInt, base.CompletionId)
     .input('CompletionFlightId', sql.BigInt, options.flightId)
     .input('CompletionVersion', sql.Int, versionNumber)
     .input('CompletionPreviousHash', sql.NVarChar(128), previousHash)
@@ -257,7 +259,7 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
     .input('CompletionOccurredAtUtc', sql.DateTime2(3), occurredAtUtc)
     .input('CompletionSnapshotJson', sql.NVarChar(sql.MAX), snapshotJson)
     .query(`INSERT INTO dbo.ExportCompletionAmendments
-      (ExportCompletionRecordId,FlightId,VersionNumber,PreviousHash,RecordHash,VerificationId,OperationId,
+      (CompletionId,FlightId,VersionNumber,PreviousHash,RecordHash,VerificationId,OperationId,
        Action,PreviousStatus,ResultingStatus,Reason,RelatedOffloadId,RelatedUldId,ActorProvider,ActorReference,
        ActorDisplayName,OccurredAtUtc,SnapshotJson)
       OUTPUT CONVERT(varchar(20),INSERTED.AmendmentId) AS AmendmentId

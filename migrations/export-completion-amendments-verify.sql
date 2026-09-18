@@ -37,21 +37,21 @@ SELECT FlightId,COUNT_BIG(*) AS BaseRecordCount
 FROM dbo.ExportCompletionRecords
 GROUP BY FlightId HAVING FlightId IS NULL OR COUNT_BIG(*)<>1;
 
-SELECT ExportCompletionRecordId,VersionNumber,COUNT_BIG(*) AS DuplicateCount
+SELECT CompletionId,VersionNumber,COUNT_BIG(*) AS DuplicateCount
 FROM dbo.ExportCompletionAmendments
-GROUP BY ExportCompletionRecordId,VersionNumber HAVING COUNT_BIG(*)>1;
+GROUP BY CompletionId,VersionNumber HAVING COUNT_BIG(*)>1;
 
 WITH Versions AS (
   SELECT a.*,
-    ROW_NUMBER() OVER (PARTITION BY a.ExportCompletionRecordId ORDER BY a.VersionNumber) + 1 AS ExpectedVersion,
-    LAG(a.RecordHash) OVER (PARTITION BY a.ExportCompletionRecordId ORDER BY a.VersionNumber) AS PriorAmendmentHash
+    ROW_NUMBER() OVER (PARTITION BY a.CompletionId ORDER BY a.VersionNumber) + 1 AS ExpectedVersion,
+    LAG(a.RecordHash) OVER (PARTITION BY a.CompletionId ORDER BY a.VersionNumber) AS PriorAmendmentHash
   FROM dbo.ExportCompletionAmendments a
 )
-SELECT v.AmendmentId,v.ExportCompletionRecordId,v.FlightId,v.VersionNumber,
+SELECT v.AmendmentId,v.CompletionId,v.FlightId,v.VersionNumber,
   v.ExpectedVersion,v.PreviousHash,
   COALESCE(v.PriorAmendmentHash,b.RecordHash) AS ExpectedPreviousHash
 FROM Versions v
-JOIN dbo.ExportCompletionRecords b ON b.ExportCompletionRecordId=v.ExportCompletionRecordId
+JOIN dbo.ExportCompletionRecords b ON b.CompletionId=v.CompletionId
 WHERE v.VersionNumber<>v.ExpectedVersion
    OR v.FlightId<>b.FlightId
    OR LOWER(v.PreviousHash)<>LOWER(COALESCE(v.PriorAmendmentHash,b.RecordHash));
@@ -59,9 +59,9 @@ WHERE v.VersionNumber<>v.ExpectedVersion
 SELECT a.AmendmentId
 FROM dbo.ExportCompletionAmendments a
 LEFT JOIN dbo.ExportCompletionRecords b
-  ON b.ExportCompletionRecordId=a.ExportCompletionRecordId AND b.FlightId=a.FlightId
+  ON b.CompletionId=a.CompletionId AND b.FlightId=a.FlightId
 LEFT JOIN dbo.Offloads o ON o.OffloadId=a.RelatedOffloadId AND o.FlightId=a.FlightId
 LEFT JOIN dbo.ULDs u ON u.UldId=a.RelatedUldId AND u.FlightId=a.FlightId
-WHERE b.ExportCompletionRecordId IS NULL
+WHERE b.CompletionId IS NULL
    OR (a.RelatedOffloadId IS NOT NULL AND o.OffloadId IS NULL)
    OR (a.RelatedUldId IS NOT NULL AND u.UldId IS NULL);

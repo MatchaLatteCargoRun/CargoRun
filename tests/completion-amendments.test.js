@@ -22,7 +22,7 @@ test('V1 hash is over exact stored bytes and changes after parse/reserialize', (
 
 test('amendment hash envelope excludes RecordHash and is deterministic', () => {
   const row = {
-    ExportCompletionRecordId: '30', FlightId: '1', VersionNumber: 2,
+    CompletionId: '30', FlightId: '1', VersionNumber: 2,
     PreviousHash: 'a'.repeat(64), RecordHash: 'ignored', VerificationId: 'verify', OperationId: 'operation',
     Action: 'OFFLOAD_REQUESTED', PreviousStatus: null, ResultingStatus: 'REQUESTED', Reason: null,
     RelatedOffloadId: '90', RelatedUldId: '7',
@@ -30,6 +30,7 @@ test('amendment hash envelope excludes RecordHash and is deterministic', () => {
   };
   const snapshot = { ulds: ['AKE12345CX'], offloads: { records: [{ status: 'REQUESTED' }] } };
   const first = sha256(canonicalJson(amendmentEnvelope(row, snapshot)));
+  assert.equal(amendmentEnvelope(row,snapshot).exportCompletionRecordId,'30');
   row.RecordHash = 'different ignored value';
   assert.equal(sha256(canonicalJson(amendmentEnvelope(row, snapshot))), first);
 });
@@ -42,10 +43,32 @@ test('migration provides immutable versioned storage with stable identity and ac
   assert.match(sql, /ResultingStatus nvarchar\(30\) NOT NULL/);
   assert.match(sql, /CK_ExportCompletionAmendments_OffloadTransition/);
   assert.match(sql, /UQ_ExportCompletionRecords_Flight\s+UNIQUE NONCLUSTERED \(FlightId\)/);
-  assert.match(sql, /UNIQUE \(ExportCompletionRecordId,VersionNumber\)/);
+  assert.match(sql, /CompletionId bigint NOT NULL/);
+  assert.match(sql, /UNIQUE \(CompletionId,VersionNumber\)/);
+  assert.match(sql, /FOREIGN KEY \(FlightId,CompletionId\)\s+REFERENCES dbo\.ExportCompletionRecords\(FlightId,CompletionId\)/);
+  assert.doesNotMatch(sql, /ExportCompletionRecordId/);
   assert.match(sql, /FOREIGN KEY \(FlightId,RelatedOffloadId\)/);
   assert.match(sql, /FOREIGN KEY \(FlightId,RelatedUldId\)/);
+  assert.doesNotMatch(sql,/ON DELETE CASCADE/i);
   assert.match(sql, /INSTEAD OF UPDATE, DELETE/);
   assert.match(helper, /INSERT INTO dbo\.ExportCompletionAmendments/);
   assert.doesNotMatch(helper, /INSERT INTO dbo\.AuditEvents/);
+  assert.match(helper, /FROM dbo\.ExportCompletionRecords WITH \(UPDLOCK, HOLDLOCK\)/);
+  assert.match(helper, /CONVERT\(varchar\(20\), CompletionId\) AS CompletionId/);
+  assert.match(helper, /\.input\('CompletionBaseId', sql\.BigInt, base\.CompletionId\)/);
+});
+
+test('live preflight extracts V1 evidence by authoritative CompletionId',()=>{
+  const sql=fs.readFileSync(path.join(__dirname,'..','migrations','live-amendment-preflight.sql'),'utf8');
+  const runner=fs.readFileSync(path.join(__dirname,'..','scripts','run-live-amendment-preflight.ps1'),'utf8');
+  const api=fs.readFileSync(path.join(__dirname,'..','api','export-completions','index.js'),'utf8');
+  assert.match(sql,/COL_LENGTH\(N'dbo\.ExportCompletionRecords', N'CompletionId'\) IS NOT NULL/);
+  assert.match(sql,/CONVERT\(varchar\(20\), CompletionId\) AS CompletionId/);
+  assert.match(sql,/SnapshotJson AS SnapshotJsonForOfflineVerification/);
+  assert.doesNotMatch(sql,/ExportCompletionRecordId/);
+  assert.match(runner,/UTF8Encoding\]::new\(\$false, \$true\)/);
+  assert.match(runner,/SHA256\]::Create\(\)/);
+  assert.match(runner,/\$row\.Remove\('SnapshotJsonForOfflineVerification'\)/);
+  assert.match(runner,/CompletionId = \$row\['CompletionId'\]/);
+  assert.match(api,/get\(\['CompletionId','ExportCompletionRecordId','CompletionRecordId','Id'\]\)/);
 });
