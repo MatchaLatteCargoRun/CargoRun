@@ -142,6 +142,7 @@ function frontendHarness() {
     esc: value => String(value ?? ''), slug: value => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
     azureStatusToUi: value => ({ REQUESTED: 'Requested', TRANSIT: 'Transit', COMPLETE: 'Complete' })[String(value).toUpperCase()] || String(value),
     fmtDateTime: value => value ? new Date(value).toISOString() : '—', azureDisplayDate: value => String(value || ''),
+    airlineMeta: () => ({ code: 'CX', name: 'Cathay Pacific', color: '#0d557b' }),
     fetch: async (url, options) => { requests.push({ url, options }); throw new Error('not configured'); },
     encodeURIComponent, URL, Blob, Date, console, setTimeout() {}, document: {}, window: { open: () => null },
     showActionLoader() {}, hideActionLoader() {}, modal() {}, modalHead: value => value, toast() {}, closeModal() {}
@@ -162,17 +163,95 @@ function statementModel(version = 4) {
   };
 }
 
+function statementOffload(number, overrides = {}) {
+  return {
+    offloadId: String(number), flightId: '1', uldId: String(100 + number),
+    uldNumber: `AKE${String(number).padStart(5, '0')}CX`, parkingBay: `F${number}`,
+    status: 'REQUESTED', requestedAtUtc: `2026-09-18T08:${String(number).padStart(2, '0')}:00.000Z`,
+    requestedByDisplayName: `Planner ${number}`, collectedAtUtc: null, collectedByDisplayName: null,
+    deliveredAtUtc: null, deliveredByDisplayName: null, deliveredLocation: null,
+    requestInstruction: null, completionNote: null, ...overrides
+  };
+}
+
+function statementWithOffloads(records, version = 4) {
+  const model = statementModel(version);
+  model.selectedVersion.snapshot = {
+    ...model.selectedVersion.snapshot,
+    offloads: { capturedAtUtc: '2026-09-18T09:00:00.000Z', source: 'dbo.Offloads', records }
+  };
+  return model;
+}
+
+function statementWithVersions(count) {
+  const model = statementWithOffloads([statementOffload(1, { status: 'COMPLETE' })]);
+  model.latestVersion = count;
+  model.versions = Array.from({ length: count }, (_, index) => {
+    const versionNumber = index + 1;
+    return {
+      versionNumber, amendmentId: versionNumber === 1 ? null : String(versionNumber - 1),
+      action: versionNumber === 1 ? 'ORIGINAL_FINALISATION' : 'OFFLOAD_COMPLETE',
+      label: versionNumber === 1 ? 'Original finalisation' : 'Offload completed',
+      relatedUldId: versionNumber === 1 ? null : '101',
+      occurredAtUtc: `2026-09-18T${String(7 + Math.floor(index / 60)).padStart(2, '0')}:${String(index % 60).padStart(2, '0')}:00.000Z`
+    };
+  });
+  model.selectedVersion = { ...model.versions[count - 1], snapshot: model.selectedVersion.snapshot };
+  return model;
+}
+
 test('unified renderer keeps V1 original and renders V2-V4 offload state from selected snapshots', () => {
   const h = frontendHarness();
   const v1 = h.context.flightStatementBody(statementModel(1), true);
-  assert.match(v1, /CargoRun Flight Statement/);
-  assert.doesNotMatch(v1, /OFFLOADS|AKE90999CX|LIVE-OFFLOAD/);
+  assert.match(v1, /CargoRun Export Flight Statement/);
+  assert.match(v1, /No offloads recorded in this version\./);
+  assert.doesNotMatch(v1, /AKE90999CX|LIVE-OFFLOAD/);
   for (const [version, expected] of [[2, 'Requested'], [3, 'Transit'], [4, 'Complete']]) {
     const rendered = h.context.flightStatementBody(statementModel(version), true);
     assert.match(rendered, /OFFLOADS/);
     assert.match(rendered, /AKE90999CX/);
     assert.match(rendered, new RegExp(expected));
   }
+});
+
+test('compact offload table handles zero and one offload with optional detail', () => {
+  const h = frontendHarness();
+  const zero = h.context.flightStatementBody(statementWithOffloads([]), true);
+  assert.match(zero, /No offloads recorded in this version\./);
+  const one = h.context.flightStatementBody(statementWithOffloads([statementOffload(7, {
+    requestInstruction: 'Keep chilled', completionNote: 'Delivered intact', deliveredByDisplayName: 'Runner Two'
+  })]), true);
+  assert.equal((one.match(/class="statement-offload-row"/g) || []).length, 1);
+  assert.match(one, /statement-offload-table/);
+  assert.match(one, /Keep chilled/);
+  assert.match(one, /Delivered intact/);
+  assert.match(one, /Offload #7/);
+  assert.match(one, /ULD ID 107/);
+  assert.doesNotMatch(one, /flight-offload-card/);
+});
+
+test('seven mixed-status offloads sort by requested time then OffloadId', () => {
+  const h = frontendHarness();
+  const records = [
+    statementOffload(12, { requestedAtUtc: '2026-09-18T08:02:00Z', status: 'COMPLETE', deliveredAtUtc: '2026-09-18T08:20:00Z' }),
+    statementOffload(11, { requestedAtUtc: '2026-09-18T08:01:00Z', status: 'TRANSIT', collectedAtUtc: '2026-09-18T08:10:00Z' }),
+    statementOffload(10, { requestedAtUtc: '2026-09-18T08:01:00Z', status: 'REQUESTED' }),
+    statementOffload(13), statementOffload(14), statementOffload(15), statementOffload(16)
+  ];
+  const rendered = h.context.flightStatementBody(statementWithOffloads(records), true);
+  assert.equal((rendered.match(/class="statement-offload-row"/g) || []).length, 7);
+  assert.ok(rendered.indexOf('AKE00010CX') < rendered.indexOf('AKE00011CX'));
+  assert.ok(rendered.indexOf('AKE00011CX') < rendered.indexOf('AKE00012CX'));
+  for (const status of ['Requested', 'Transit', 'Complete']) assert.match(rendered, new RegExp(`>${status}<`));
+});
+
+test('twenty-plus versions use one selector and a compact vertical history disclosure', () => {
+  const h = frontendHarness(), rendered = h.context.flightStatementBody(statementWithVersions(21), true);
+  assert.equal((rendered.match(/<option /g) || []).length, 21);
+  assert.equal((rendered.match(/class="statement-history-row/g) || []).length, 21);
+  assert.match(rendered, /<details class="statement-history-disclosure">/);
+  assert.match(rendered, /View version history \(21\)/);
+  assert.match(rendered, /changeFlightStatementVersion\('1','30','21'\)/);
 });
 
 test('version selector and print use exact FlightId, CompletionId and selected version', async () => {
@@ -183,15 +262,31 @@ test('version selector and print use exact FlightId, CompletionId and selected v
   assert.match(h.context.flightStatementBody(model, true), /changeFlightStatementVersion\('1','30',this\.value\)/);
   const printable = h.context.flightStatementHtml(model);
   assert.match(printable, /Flight Statement/);
-  assert.match(printable, /Version 3/);
+  assert.match(printable, /Version V3/);
   assert.match(printable, /AKE90999CX/);
   const v4Print = h.context.flightStatementHtml(statementModel(4));
-  assert.match(v4Print, /Version 4 • Amended/);
+  assert.match(v4Print, /Version V4 • Amended/);
   assert.match(v4Print, /Original finalisation/);
   assert.match(v4Print, /Latest amendment/);
   const v1Print = h.context.flightStatementHtml(statementModel(1));
-  assert.match(v1Print, /Version 1 • Original/);
+  assert.match(v1Print, /Version V1 • Original/);
   assert.doesNotMatch(v1Print, /AKE90999CX|LIVE-OFFLOAD|Amended/);
+});
+
+test('printing seven offloads includes every row and compact print notes', () => {
+  const h = frontendHarness();
+  const records = Array.from({ length: 7 }, (_, index) => statementOffload(index + 1, {
+    status: index % 3 === 0 ? 'REQUESTED' : index % 3 === 1 ? 'TRANSIT' : 'COMPLETE',
+    requestInstruction: index === 0 ? 'First instruction' : null,
+    completionNote: index === 6 ? 'Final completion note' : null
+  }));
+  const printed = h.context.flightStatementHtml(statementWithOffloads(records));
+  for (const row of records) assert.match(printed, new RegExp(row.uldNumber));
+  assert.equal((printed.match(/class="statement-offload-row"/g) || []).length, 7);
+  assert.match(printed, /statement-print-notes/);
+  assert.match(printed, /First instruction/);
+  assert.match(printed, /Final completion note/);
+  assert.doesNotMatch(printed, /statement-history-list/);
 });
 
 test('view and print implementation remains read-only', () => {
