@@ -1576,7 +1576,7 @@ function adminSectionContent(section,c){
  return '<div class="admin-empty">Select an Admin section.</div>';
 }
 async function loadAdminConfiguration(){
- try{const res=await fetch('/api/admin-config',{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false){const error=new Error(data.error||`Admin configuration API ${res.status}`);error.code=data.code||'';throw error}adminConfigState={status:'ready',configuration:data.configuration||{},error:'',code:''}}
+ try{const res=await fetch('/api/configuration-control',{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false){const error=new Error(data.error||`Admin configuration API ${res.status}`);error.code=data.code||'';throw error}adminConfigState={status:'ready',configuration:data.configuration||{},error:'',code:''}}
  catch(error){adminConfigState={status:'error',configuration:null,error:error?.message||'Admin configuration could not be loaded',code:error?.code||''}}
  finally{if(route.screen==='admin')render()}
 }

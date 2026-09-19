@@ -254,7 +254,7 @@ test('Admin bootstrap verification is read-only, resolves effective decisions an
 test('Admin Centre is a read-only shell and exposes no browser-only security claim', () => {
   assert.match(html, /openScreen\('admin','airlines'\)/);
   for (const label of ['Airlines','SHC Groups','SLA & Escalations','Mail Rules','Document / Intake','Messaging Centre','Employees & Permissions','Stations','Configuration Audit']) assert.match(html, new RegExp(label.replace(/[&]/g, '&')));
-  assert.match(html, /fetch\('\/api\/admin-config',[\s\S]*method !== 'GET'|fetch\('\/api\/admin-config'/);
+  assert.match(html, /fetch\('\/api\/configuration-control',[\s\S]*method !== 'GET'|fetch\('\/api\/configuration-control'/);
   assert.match(html, /No Admin mutation API is exposed/);
   const start = html.indexOf('async function loadAdminConfiguration(');
   const end = html.indexOf('const HOME_ICON_PATH', start);
@@ -273,11 +273,22 @@ test('Admin API is authenticated and GET-only with no configuration mutation sur
 
 test('Admin frontend and function expose the same deployable public route under Node 22', () => {
   const trigger = adminFunction.bindings.find(binding => binding.type === 'httpTrigger');
-  assert.match(html, /fetch\('\/api\/admin-config'/);
-  assert.equal(trigger.route, 'admin-config');
+  assert.match(html, /fetch\('\/api\/configuration-control'/);
+  assert.doesNotMatch(html, /\/api\/admin-config/);
+  assert.equal(trigger.route, 'configuration-control');
   assert.equal(path.basename(adminFunctionDirectory), 'configuration-admin');
   assert.doesNotMatch(path.basename(adminFunctionDirectory), /^admin/i, 'Azure reserves function names beginning with admin');
+  assert.doesNotMatch(trigger.route, /^admin/i, 'Azure reserves routes beginning with admin');
   assert.equal(fs.existsSync(path.join(root, 'api', 'admin-config')), false);
+  for (const entry of fs.readdirSync(path.join(root, 'api'), { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const definitionPath = path.join(root, 'api', entry.name, 'function.json');
+    if (!fs.existsSync(definitionPath)) continue;
+    const definition = JSON.parse(fs.readFileSync(definitionPath, 'utf8'));
+    const httpTrigger = definition.bindings.find(binding => binding.type === 'httpTrigger');
+    assert.doesNotMatch(entry.name, /^admin/i, `function folder ${entry.name} uses Azure's reserved admin prefix`);
+    assert.doesNotMatch(httpTrigger?.route || entry.name, /^admin/i, `function route ${httpTrigger?.route || entry.name} uses Azure's reserved admin prefix`);
+  }
   assert.equal(typeof require('../api/configuration-admin'), 'function');
 });
 
