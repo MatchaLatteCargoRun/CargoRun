@@ -99,6 +99,15 @@ requests for the same canonical flight/date identity and verify one flight,
 preserved endpoint conflict/reuse semantics, ULD/link creation, inactive-flight
 handling, and rollback after a forced post-flight failure.
 
+The export-manifest-FINAL checks cover canonical XLSX membership, matched/added/
+excluded reconciliation, preservation of progressed status and identity evidence,
+immutable schema constraints, FINAL expected-count filtering, stable FlightId UI
+confirmation, post-FINAL writer gates, repeat confirmation, and the FOW/Confirm
+Final race under the shared transaction-owned flight identity lock. The additive
+`export-manifest-final.sql` migration must pass its read-only preflight and an
+isolated rehearsal before application code that references the new tables is
+deployed.
+
 Before deployment, use an isolated SQL test database with the existing schema
 and indexes to run simultaneous manual/FOW requests against the same existing
 flight, including one with no ULDs. Verify one ULD, independent message links,

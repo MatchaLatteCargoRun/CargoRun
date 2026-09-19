@@ -180,6 +180,7 @@ function apiHarness(initialRows = []) {
         return result(['OffloadId', 'FlightId', 'UldId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
       if (q.includes('FROM dbo.IncomingMachMessages')) return result(state.messages.filter(x => x.DocumentCorID === p.DocumentCorID));
+      if (q.includes('FROM dbo.ExportManifestFinals')) return result([]);
       if (q.includes('FROM dbo.MachFowShipments')) return result(state.links.filter(x => x.MachMessageId === p.MachMessageId));
       if (q.startsWith('INSERT INTO dbo.IncomingMachMessages')) {
         const row = { ...p, MachMessageId: state.messages.length + 1 }; state.messages.push(row); return result([row]);

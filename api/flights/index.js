@@ -68,7 +68,17 @@ module.exports = async function (context, req) {
     pool = await new sql.ConnectionPool(connectionString).connect();
 
     if (req.method === 'GET') {
-      const result = await pool.request().query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,AirlineCode,OriginAirport,DestinationAirport,FlightStatus,ScheduledArrivalUtc,EstimatedArrivalUtc,LandedAtUtc,InBlockAtUtc,ScheduledDepartureUtc,EstimatedDepartureUtc,SourceType,CreatedAtUtc FROM dbo.Flights ORDER BY OperatingDate DESC,FlightNumber ASC;`);
+      const result = await pool.request().query(`SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.Direction,f.AirlineCode,f.OriginAirport,f.DestinationAirport,f.FlightStatus,f.ScheduledArrivalUtc,f.EstimatedArrivalUtc,f.LandedAtUtc,f.InBlockAtUtc,f.ScheduledDepartureUtc,f.EstimatedDepartureUtc,f.SourceType,f.CreatedAtUtc,
+        mf.FinalManifestId AS ExportFinalManifestId,
+        mf.ConfirmedAtUtc AS ExportFinalConfirmedAtUtc,
+        mf.ConfirmedByDisplayName AS ExportFinalConfirmedByDisplayName,
+        mf.FinalUldCount AS ExportFinalUldCount,
+        mf.MatchedCount AS ExportFinalMatchedCount,
+        mf.AddedCount AS ExportFinalAddedCount,
+        mf.ExcludedCount AS ExportFinalExcludedCount
+        FROM dbo.Flights f
+        LEFT JOIN dbo.ExportManifestFinals mf ON mf.FlightId=f.FlightId
+        ORDER BY f.OperatingDate DESC,f.FlightNumber ASC;`);
       sendJson(context, 200, { ok: true, count: result.recordset.length, flights: result.recordset });
       return;
     }

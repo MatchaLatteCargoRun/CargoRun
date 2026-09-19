@@ -210,6 +210,24 @@ module.exports = async function (context, req) {
     }
 
     if (existingFlights.length === 1) {
+      const existingFlightId = existingFlights[0].FlightId;
+      if (direction === 'EXPORT') {
+        const finalResult = await new sql.Request(transaction)
+          .input('ExistingFinalFlightId', sql.BigInt, existingFlightId)
+          .query(`SELECT FinalManifestId FROM dbo.ExportManifestFinals WITH (UPDLOCK,HOLDLOCK)
+            WHERE FlightId=@ExistingFinalFlightId;`);
+        if (finalResult.recordset.length) {
+          await transaction.rollback();
+          transaction = null;
+          sendJson(context, 409, {
+            ok: false,
+            code: 'EXPORT_MANIFEST_ALREADY_FINAL',
+            error: 'This flight is FINAL.',
+            flightId: existingFlightId
+          });
+          return;
+        }
+      }
       await transaction.rollback();
       transaction = null;
       sendJson(context, 409, {

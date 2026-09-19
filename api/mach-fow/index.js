@@ -5,6 +5,7 @@ const {
   findFlightsByIdentity
 } = require('../shared/flight');
 const crypto = require('crypto');
+const { insertAuditEvent } = require('../shared/audit');
 
 /* ============================================================
    CargoRun MACH FOW Receiver
@@ -1428,12 +1429,12 @@ module.exports = async function(
     }
 
 
-    let createdFlight =
-      false;
-
-
     /* --------------------------------------------------------
        EXISTING FINALISED FLIGHT
+
+       Manifest FINAL does not reopen or weaken the existing
+       operational flight lifecycle. Preserve the established
+       rejection before applying post-manifest FOW handling.
        -------------------------------------------------------- */
 
     if (
@@ -1486,6 +1487,128 @@ module.exports = async function(
       return;
     }
 
+
+    /* --------------------------------------------------------
+       FINAL EXPORT MANIFEST
+
+       The inbound MACH message remains durable evidence, but a
+       final build must not be extended or mutate an existing ULD.
+       This check runs under the same flight identity application
+       lock used by FINAL confirmation.
+       -------------------------------------------------------- */
+
+    if (flight) {
+      const finalResult = await new sql.Request(tx)
+        .input('ManifestFinalFlightId', sql.BigInt, flight.FlightId)
+        .query(`
+          SELECT FinalManifestId
+          FROM dbo.ExportManifestFinals WITH (UPDLOCK,HOLDLOCK)
+          WHERE FlightId=@ManifestFinalFlightId;
+        `);
+
+      if (finalResult.recordset.length) {
+        const existingResult = await new sql.Request(tx)
+          .input('PostFinalFlightId', sql.BigInt, flight.FlightId)
+          .query(`
+            SELECT UldId,UldNumber,CurrentStatus
+            FROM dbo.ULDs WITH (UPDLOCK,HOLDLOCK)
+            WHERE FlightId=@PostFinalFlightId;
+          `);
+        const postFinalProcessed = [];
+
+        for (const item of ulds) {
+          const normalizedUld = normalizeUldNumber(item.number);
+          if (!normalizedUld) continue;
+          const matches = existingResult.recordset.filter(
+            row => normalizeUldNumber(row.UldNumber) === normalizedUld
+          );
+          if (matches.length > 1) {
+            await tx.rollback();
+            tx = null;
+            sendJson(context, 409, {
+              ok: false,
+              error: 'Multiple existing ULDs on this flight have the same normalized number',
+              conflictingUldIds: matches.map(row => row.UldId)
+            });
+            return;
+          }
+          const existingUld = matches[0] || null;
+          if (existingUld) {
+            await new sql.Request(tx)
+              .input('PostFinalMachMessageId', sql.BigInt, machMessageId)
+              .input('PostFinalFlightLinkId', sql.BigInt, flight.FlightId)
+              .input('PostFinalUldId', sql.BigInt, existingUld.UldId)
+              .input('PostFinalUldNumber', sql.NVarChar(30), normalizedUld)
+              .input('PostFinalMawbNumber', sql.NVarChar(20), mawb)
+              .input('PostFinalPieces', sql.Int, pieces)
+              .query(`INSERT INTO dbo.MachFowShipments
+                (MachMessageId,FlightId,UldId,UldNumber,MawbNumber,Pieces)
+                VALUES(@PostFinalMachMessageId,@PostFinalFlightLinkId,@PostFinalUldId,
+                  @PostFinalUldNumber,@PostFinalMawbNumber,@PostFinalPieces);`);
+          }
+          postFinalProcessed.push({
+            uldId: existingUld ? existingUld.UldId : null,
+            uldNumber: normalizedUld,
+            created: false,
+            ignoredPostFinal: true,
+            currentStatus: existingUld?.CurrentStatus || null
+          });
+        }
+
+        await new sql.Request(tx)
+          .input('IgnoredMachMessageId', sql.BigInt, machMessageId)
+          .input('IgnoredMatchedFlightId', sql.BigInt, flight.FlightId)
+          .query(`UPDATE dbo.IncomingMachMessages
+            SET ProcessingStatus='PROCESSED_POST_FINAL',ProcessedAtUtc=SYSUTCDATETIME(),
+              MatchedFlightId=@IgnoredMatchedFlightId,CreatedFlight=0
+            WHERE MachMessageId=@IgnoredMachMessageId;`);
+
+        await insertAuditEvent(tx, sql, {
+          type: 'MACH FOW',
+          action: 'POST_FINAL_FOW_IGNORED',
+          actorDisplayName: processor?.displayName || 'MACH Feed',
+          actorReference: processor?.reference || null,
+          entityType: 'Flight',
+          entityId: flight.FlightId,
+          flightId: flight.FlightId,
+          flightNumber: flight.FlightNumber,
+          detail: `Post-FINAL FOW ${documentCorId} retained without changing expected membership`,
+          details: {
+            documentCorId,
+            finalManifestId: String(finalResult.recordset[0].FinalManifestId),
+            uldNumbers: postFinalProcessed.map(item => item.uldNumber),
+            existingUldCount: postFinalProcessed.filter(item => item.uldId).length,
+            ignoredNewUldCount: postFinalProcessed.filter(item => !item.uldId).length
+          }
+        });
+
+        await tx.commit();
+        tx = null;
+        sendJson(context, 201, {
+          ok: true,
+          duplicate: false,
+          sourceType: source,
+          live,
+          messageId: machMessageId,
+          flightId: flight.FlightId,
+          flightNumber: flight.FlightNumber,
+          operatingDate,
+          createdFlight: false,
+          newUldCount: 0,
+          existingUldCount: postFinalProcessed.filter(item => item.uldId).length,
+          ignoredPostFinal: true,
+          ulds: postFinalProcessed,
+          mawb,
+          pieces,
+          eventLocalDateTime: eventLocal
+        });
+        return;
+      }
+    }
+
+
+    let createdFlight =
+      false;
 
     /* --------------------------------------------------------
        CREATE FLIGHT IF REQUIRED

@@ -27,6 +27,10 @@ function harness(initialFlights = []) {
     messages: [],
     links: [],
     uploads: [],
+    finals: [],
+    finalMembers: [],
+    audits: [],
+    shcs: [],
     calls: [],
     commits: 0,
     rollbacks: 0,
@@ -53,14 +57,14 @@ function harness(initialFlights = []) {
     async begin() { this.active = true; }
     async commit() {
       this.active = false;
-      for (const collection of [state.flights, state.ulds, state.messages, state.links, state.uploads]) {
+      for (const collection of [state.flights, state.ulds, state.messages, state.links, state.uploads, state.finals, state.finalMembers, state.audits, state.shcs]) {
         for (const row of collection) delete row.__tx;
       }
       state.commits++;
       this.releaseLock?.();
     }
     async rollback() {
-      for (const name of ['flights', 'ulds', 'messages', 'links', 'uploads']) {
+      for (const name of ['flights', 'ulds', 'messages', 'links', 'uploads', 'finals', 'finalMembers', 'audits', 'shcs']) {
         state[name] = state[name].filter(row => row.__tx !== this.id);
       }
       this.active = false;
@@ -89,6 +93,48 @@ function harness(initialFlights = []) {
       if (q.includes('FROM dbo.IncomingMachMessages')) {
         return result(state.messages.filter(row => row.DocumentCorID === p.DocumentCorID));
       }
+      if (q.includes('FROM dbo.ExportManifestFinals')) {
+        const id = p.ManifestFinalFlightId ?? p.ExistingFinalFlightId ?? p.ManualFinalFlightId ?? p.LockedFinalFlightId ?? p.FinalFlightId;
+        return result(state.finals.filter(row => String(row.FlightId) === String(id)));
+      }
+      if (q.startsWith('INSERT INTO dbo.ExportManifestFinals')) {
+        const row = {
+          FinalManifestId: state.finals.length + 1,
+          FlightId: p.ManifestFlightId,
+          ConfirmedAtUtc: '2026-09-17T01:00:00.000Z',
+          ConfirmedByObjectId: p.ConfirmedByObjectId,
+          ConfirmedByDisplayName: p.ConfirmedByDisplayName,
+          SourceFileName: p.SourceFileName,
+          ManifestHash: p.ManifestHash,
+          FinalUldCount: p.FinalUldCount,
+          MatchedCount: p.MatchedCount,
+          AddedCount: p.AddedCount,
+          ExcludedCount: p.ExcludedCount,
+          __tx: this.tx.id
+        };
+        state.finals.push(row);
+        return result([row]);
+      }
+      if (q.startsWith('INSERT INTO dbo.ExportManifestFinalUlds')) {
+        state.finalMembers.push({
+          FinalManifestId: p.MemberFinalManifestId,
+          FlightId: p.MemberFlightId,
+          UldId: p.MemberUldId,
+          UldNumber: p.MemberUldNumber,
+          ManifestOrdinal: p.MemberOrdinal,
+          __tx: this.tx.id
+        });
+        return result();
+      }
+      if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS') && p.AuditTableName === 'AuditEvents') {
+        return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson']
+          .map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
+      }
+      if (q.startsWith('INSERT INTO dbo.AuditEvents')) {
+        const row = { ...p, __tx: this.tx.id };
+        state.audits.push(row);
+        return result([row]);
+      }
       if (q.startsWith('INSERT INTO dbo.IncomingMachMessages')) {
         const row = { ...p, MachMessageId: state.messages.length + 1, __tx: this.tx.id };
         state.messages.push(row);
@@ -99,14 +145,19 @@ function harness(initialFlights = []) {
         return result();
       }
       if (q.startsWith('UPDATE dbo.IncomingMachMessages')) {
-        const row = state.messages.find(item => item.MachMessageId === p.MachMessageId);
-        if (row) Object.assign(row, { MatchedFlightId: p.FlightId, ProcessingStatus: 'PROCESSED' });
+        const messageId = p.MachMessageId ?? p.IgnoredMachMessageId;
+        const row = state.messages.find(item => item.MachMessageId === messageId);
+        if (row) Object.assign(row, {
+          MatchedFlightId: p.FlightId ?? p.IgnoredMatchedFlightId,
+          ProcessingStatus: p.IgnoredMachMessageId ? 'PROCESSED_POST_FINAL' : 'PROCESSED'
+        });
         return result();
       }
       if (q.includes('FROM dbo.Flights')) {
-        return result(state.flights.filter(row =>
-          !p.OperatingDate ||
-          String(row.OperatingDate) === String(p.OperatingDate)
+        const exactId = p.SelectedFlightId ?? p.LockedFlightId;
+        return result(state.flights.filter(row => exactId
+          ? String(row.FlightId) === String(exactId)
+          : (!p.OperatingDate || String(row.OperatingDate) === String(p.OperatingDate))
         ));
       }
       if (q.startsWith('INSERT INTO dbo.Flights')) {
@@ -125,11 +176,14 @@ function harness(initialFlights = []) {
         return result();
       }
       if (q.includes('FROM dbo.ULDs')) {
-        return result(state.ulds.filter(row => String(row.FlightId) === String(p.FlightId)));
+        const id = p.FlightId ?? p.PostFinalFlightId ?? p.LockedUldFlightId ?? p.PreviewUldFlightId;
+        return result(state.ulds.filter(row => String(row.FlightId) === String(id)));
       }
       if (q.startsWith('INSERT INTO dbo.ULDs')) {
         const row = {
           ...p,
+          FlightId: p.FlightId ?? p.AddedFlightId,
+          UldNumber: p.UldNumber ?? p.AddedUldNumber,
           UldId: state.ulds.length + 1,
           CurrentStatus: p.CurrentStatus || 'WAREHOUSE',
           IdentityVerified: 0,
@@ -138,7 +192,11 @@ function harness(initialFlights = []) {
         state.ulds.push(row);
         return result([row]);
       }
-      if (q.startsWith('UPDATE dbo.ULDs') || q.startsWith('INSERT INTO dbo.UldSpecialHandlingCodes')) {
+      if (q.startsWith('INSERT INTO dbo.UldSpecialHandlingCodes')) {
+        state.shcs.push({ ...p, __tx: this.tx.id });
+        return result();
+      }
+      if (q.startsWith('UPDATE dbo.ULDs')) {
         return result();
       }
       if (q.includes('FROM dbo.MachFowShipments')) {
@@ -170,6 +228,7 @@ function harness(initialFlights = []) {
     Bit: 'bit',
     Date: 'date',
     DateTime2: 'datetime2',
+    Char: () => 'char',
     MAX: 'max'
   };
 
@@ -190,6 +249,8 @@ function harness(initialFlights = []) {
               ? { normalizeUldNumber }
               : name === '../shared/audit'
                 ? { insertAuditEvent }
+              : name === '../shared/export-manifest-final'
+                ? require('../api/shared/export-manifest-final')
               : require(name)
       },
       { filename: endpoint + '/index.js' }
@@ -346,6 +407,16 @@ test('inactive FOW identity remains rejected without creating a bypass flight', 
   assert.equal(api.state.flights[0].FlightStatus, 'FINALISED');
 });
 
+test('manifest FINAL does not let FOW reopen an operationally finalised flight', async () => {
+  const api = harness([{ FlightId: 9, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', Direction: 'EXPORT', FlightStatus: 'FINALISED' }]);
+  api.state.finals.push({ FlightId: 9, FinalManifestId: 3 });
+  const response = await api.call('mach-fow', fow('FOW-CLOSED-FINAL'));
+  assert.equal(response.status, 409);
+  assert.equal(api.state.messages.length, 0);
+  assert.equal(api.state.audits.length, 0);
+  assert.equal(api.state.flights[0].FlightStatus, 'FINALISED');
+});
+
 test('failure after flight creation rolls back the flight and all upload data', async () => {
   const api = harness();
   api.state.failAfterFlight = true;
@@ -440,4 +511,101 @@ test('all flight writers use the shared transaction-owned identity lock', () => 
   const helper = fs.readFileSync(path.join(root, 'api/shared/flight.js'), 'utf8');
   assert.match(helper, /sys\.sp_getapplock/);
   assert.match(helper, /@LockOwner = 'Transaction'/);
+});
+
+const finalManifest = (flightId, ulds) => ({
+  action: 'CONFIRM',
+  flightId,
+  sourceFileName: 'Final Export Unit List.xlsx',
+  ulds: ulds.map(uldNumber => ({ uldNumber }))
+});
+
+test('FINAL reconciliation preserves operational truth, adds only missing ULDs, and retains exclusions', async () => {
+  const api = harness([{ FlightId: 41, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', Direction: 'EXPORT', FlightStatus: 'ACTIVE' }]);
+  api.state.ulds.push(
+    { FlightId: 41, UldId: 11, UldNumber: 'AKE11111CX', CurrentStatus: 'AT_AIRCRAFT', IdentityVerified: 1 },
+    { FlightId: 41, UldId: 12, UldNumber: 'AKE22222CX', CurrentStatus: 'TRANSIT', IdentityVerified: 1 }
+  );
+
+  const response = await api.call('export-manifest-final', finalManifest('41', ['ake-11111-cx', 'PMC33333CX']));
+  assert.equal(response.status, 201);
+  assert.deepEqual(
+    {
+      final: response.body.reconciliation.finalUldCount,
+      matched: response.body.reconciliation.matchedCount,
+      added: response.body.reconciliation.addedCount,
+      excluded: response.body.reconciliation.excludedCount
+    },
+    { final: 2, matched: 1, added: 1, excluded: 1 }
+  );
+  assert.equal(api.state.ulds.find(row => row.UldId === 11).CurrentStatus, 'AT_AIRCRAFT');
+  assert.equal(api.state.ulds.find(row => row.UldId === 11).IdentityVerified, 1);
+  assert.equal(api.state.ulds.find(row => row.UldId === 12).CurrentStatus, 'TRANSIT');
+  assert.equal(api.state.ulds.find(row => row.UldId === 12).IdentityVerified, 1);
+  assert.equal(api.state.ulds.find(row => row.UldNumber === 'PMC33333CX').CurrentStatus, 'WAREHOUSE');
+  assert.deepEqual(api.state.finalMembers.map(row => row.UldNumber), ['AKE11111CX', 'PMC33333CX']);
+  assert.equal(api.state.audits.at(-1).AuditAction, 'EXPORT_MANIFEST_FINAL_CONFIRMED');
+
+  const repeated = await api.call('export-manifest-final', finalManifest('41', ['AKE11111CX', 'PMC33333CX']));
+  assert.equal(repeated.status, 409);
+  assert.equal(repeated.body.code, 'EXPORT_MANIFEST_ALREADY_FINAL');
+  assert.equal(api.state.finals.length, 1);
+});
+
+test('post-FINAL FOW remains idempotent evidence and cannot add or reset ULDs', async () => {
+  const api = harness([{ FlightId: 41, FlightNumber: 'CX178', OperatingDate: '2026-09-17', Direction: 'EXPORT', FlightStatus: 'ACTIVE' }]);
+  api.state.ulds.push({ FlightId: 41, UldId: 11, UldNumber: 'AKE11111CX', CurrentStatus: 'AT_AIRCRAFT', IdentityVerified: 1 });
+  assert.equal((await api.call('export-manifest-final', finalManifest('41', ['AKE11111CX']))).status, 201);
+
+  const manualAdd = await api.call('ulds', { flightId: '41', uldNumber: 'AKE99999CX' });
+  assert.equal(manualAdd.status, 409);
+  assert.equal(manualAdd.body.code, 'EXPORT_MANIFEST_ALREADY_FINAL');
+  const repeatedUpload = await api.call('manifest-upload', upload('CX178', '2026-09-17', '99999'));
+  assert.equal(repeatedUpload.status, 409);
+  assert.equal(repeatedUpload.body.code, 'EXPORT_MANIFEST_ALREADY_FINAL');
+
+  const response = await api.call('mach-fow', fow('FOW-AFTER-FINAL', ['11111', '99999']));
+  assert.equal(response.status, 201);
+  assert.equal(response.body.ignoredPostFinal, true);
+  assert.equal(api.state.ulds.length, 1);
+  assert.equal(api.state.ulds[0].CurrentStatus, 'AT_AIRCRAFT');
+  assert.equal(api.state.ulds[0].IdentityVerified, 1);
+  assert.deepEqual(api.state.finalMembers.map(row => row.UldNumber), ['AKE11111CX']);
+  assert.equal(api.state.audits.at(-1).AuditAction, 'POST_FINAL_FOW_IGNORED');
+
+  const duplicate = await api.call('mach-fow', fow('FOW-AFTER-FINAL', ['99999']));
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(api.state.messages.length, 1);
+});
+
+test('concurrent FOW and Confirm Final share the flight lock and never leak a non-final ULD into membership', async () => {
+  const api = harness([{ FlightId: 41, FlightNumber: 'CX178', OperatingDate: '2026-09-17', Direction: 'EXPORT', FlightStatus: 'ACTIVE' }]);
+  api.state.ulds.push({ FlightId: 41, UldId: 11, UldNumber: 'AKE11111CX', CurrentStatus: 'WAREHOUSE', IdentityVerified: 0 });
+  const [confirmed, fowResult] = await Promise.all([
+    api.call('export-manifest-final', finalManifest('41', ['AKE11111CX', 'PMC33333CX'])),
+    api.call('mach-fow', fow('FOW-FINAL-RACE', ['99999']))
+  ]);
+  assert.equal(confirmed.status, 201);
+  assert.equal(fowResult.status, 201);
+  assert.deepEqual(api.state.finalMembers.map(row => row.UldNumber), ['AKE11111CX', 'PMC33333CX']);
+  assert.equal(api.state.finalMembers.some(row => row.UldNumber === 'AKE99999CX'), false);
+  const finalLock = api.state.calls.find(call => call.q.includes('sys.sp_getapplock') && call.p.FlightIdentityLockResource);
+  assert.equal(finalLock.p.FlightIdentityLockResource, 'CargoRun:Flight:2026-09-17:CX178');
+});
+
+test('FINAL uses exact FlightId when the visible flight number repeats on different dates', async () => {
+  const api = harness([
+    { FlightId: 41, FlightNumber: 'CX178', OperatingDate: '2026-09-17', Direction: 'EXPORT', FlightStatus: 'ACTIVE' },
+    { FlightId: 42, FlightNumber: 'CX0178', OperatingDate: '2026-09-18', Direction: 'EXPORT', FlightStatus: 'ACTIVE' }
+  ]);
+  api.state.ulds.push(
+    { FlightId: 41, UldId: 11, UldNumber: 'AKE11111CX', CurrentStatus: 'WAREHOUSE', IdentityVerified: 0 },
+    { FlightId: 42, UldId: 12, UldNumber: 'AKE22222CX', CurrentStatus: 'WAREHOUSE', IdentityVerified: 0 }
+  );
+  const response = await api.call('export-manifest-final', finalManifest('42', ['AKE22222CX']));
+  assert.equal(response.status, 201);
+  assert.equal(String(api.state.finals[0].FlightId), '42');
+  assert.deepEqual(api.state.finalMembers.map(row => String(row.UldId)), ['12']);
+  assert.equal(api.state.ulds.length, 2);
 });

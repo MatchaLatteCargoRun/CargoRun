@@ -1,5 +1,6 @@
 const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
+const { acquireFlightIdentityLock } = require('../shared/flight');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -52,12 +53,17 @@ module.exports = async function (context, req) {
             u.*,
             CONVERT(varchar(20), u.UldId) AS __UldIdText,
             CONVERT(varchar(20), u.FlightId) AS __FlightIdText,
+            CONVERT(bit,CASE WHEN mf.FinalManifestId IS NULL THEN 0 ELSE 1 END) AS IsExportManifestFinal,
+            CONVERT(bit,CASE WHEN m.UldId IS NULL THEN 0 ELSE 1 END) AS IsFinalManifestMember,
             (
               SELECT STRING_AGG(s.Code, ',')
               FROM dbo.UldSpecialHandlingCodes s
               WHERE s.UldId = u.UldId
             ) AS SHCs
           FROM dbo.ULDs u
+          LEFT JOIN dbo.ExportManifestFinals mf ON mf.FlightId=u.FlightId
+          LEFT JOIN dbo.ExportManifestFinalUlds m
+            ON m.FinalManifestId=mf.FinalManifestId AND m.FlightId=u.FlightId AND m.UldId=u.UldId
           WHERE u.FlightId = @FlightId
           ORDER BY u.UldNumber;
         `);
@@ -127,7 +133,8 @@ module.exports = async function (context, req) {
     const flightResult = await pool.request()
       .input('FlightId', sql.BigInt, flightId)
       .query(`
-        SELECT FlightId, Direction
+        SELECT FlightId,FlightNumber,OperatingDate,
+          CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction
         FROM dbo.Flights
         WHERE FlightId = @FlightId;
       `);
@@ -140,13 +147,44 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const direction = String(flightResult.recordset[0].Direction || '').toUpperCase();
+    const selectedFlight = flightResult.recordset[0];
+    const direction = String(selectedFlight.Direction || '').toUpperCase();
     const currentStatus = direction === 'EXPORT' ? 'WAREHOUSE' : 'UNARRIVED';
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
 
     try {
+      await acquireFlightIdentityLock(
+        transaction,
+        sql,
+        selectedFlight.OperatingDateIso || selectedFlight.OperatingDate,
+        selectedFlight.FlightNumber
+      );
+      const lockedFlight = await new sql.Request(transaction)
+        .input('LockedFlightId', sql.BigInt, flightId)
+        .query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,FlightStatus
+          FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
+      if (!lockedFlight.recordset.length) {
+        await transaction.rollback();
+        sendJson(context, 404, { ok: false, error: 'Flight not found' });
+        return;
+      }
+      if (direction === 'EXPORT') {
+        const finalResult = await new sql.Request(transaction)
+          .input('ManualFinalFlightId', sql.BigInt, flightId)
+          .query(`SELECT FinalManifestId FROM dbo.ExportManifestFinals WITH (UPDLOCK,HOLDLOCK)
+            WHERE FlightId=@ManualFinalFlightId;`);
+        if (finalResult.recordset.length) {
+          await transaction.rollback();
+          sendJson(context, 409, {
+            ok: false,
+            code: 'EXPORT_MANIFEST_ALREADY_FINAL',
+            error: 'This flight is FINAL.'
+          });
+          return;
+        }
+      }
       // Keep the flight's ULD range locked through commit, including an empty range.
       // Compare legacy values without rewriting them or duplicating whitespace rules in SQL.
       const candidates = await new sql.Request(transaction)
