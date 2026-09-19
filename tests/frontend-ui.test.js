@@ -27,6 +27,7 @@ test('desktop operational navigation exposes real routes and active state', () =
   assert.match(html, /aria-label="Primary operations"/);
   assert.match(html, /navIsActive\(screen,type\)\?'active':''/);
   assert.match(html, /<\/div>\$\{desktopNav\(\)\}<div class="topbar-account">/);
+  assert.match(html, /class="request-offload-nav" onclick="showRequestOffload\(\)"/);
 });
 
 test('desktop Home is lookup-first and keeps upload and operational routes', () => {
@@ -37,7 +38,19 @@ test('desktop Home is lookup-first and keeps upload and operational routes', () 
   assert.match(html, /showUploadFlightData\(\)/);
   assert.match(html, /openScreen\('offloads'\)/);
   assert.match(html, /function homeGreetingName\([^)]*\).*name\.includes\('@'\)/);
-  assert.match(html, /Welcome, \$\{esc\(homeGreetingName\(u\)\)\}/);
+  assert.match(html, /Welcome\$\{greeting\?`, \$\{esc\(greeting\)\}`:''\}/);
+  assert.doesNotMatch(html, /:'User'\}/);
+});
+
+test('approved CargoRun Home icon assets are present and referenced', () => {
+  const names = ['flight-lookup', 'uld-lookup', 'flight-board', 'priority', 'imports', 'exports', 'offloads', 'supervisor', 'history', 'upload'];
+  for (const name of names) {
+    const file = path.resolve(__dirname, '..', 'assets', 'home-icons', `icon-${name}.png`);
+    assert.equal(fs.existsSync(file), true, `${name} icon should exist`);
+    assert.ok(fs.statSync(file).size > 1000, `${name} icon should not be empty`);
+    assert.match(html, new RegExp(`icon-${name}\\.png`));
+  }
+  assert.match(html, /\.home-op-card \.home-card-icon\{width:70px;height:70px\}/);
 });
 
 test('desktop ULD rows preserve DHL and strong handling and priority tokens', () => {
@@ -73,6 +86,11 @@ test('Import and Export split selectors carry and resolve exact FlightId', () =>
   assert.match(html, /selectDesktopFlightByStableId\('\$\{type\}','\$\{esc\(f\.azureFlightId\|\|''\)\}'\)/);
   assert.match(html, /const f=findFlightByStableId\(type,flightId\)/);
   assert.match(html, /data-selected-flight-id="\$\{esc\(f\.azureFlightId\|\|''\)\}"/);
+  const start = html.indexOf('function desktopFlightSelector(');
+  const end = html.indexOf('function desktopFlightActions(', start);
+  const selectorSource = html.slice(start, end);
+  assert.doesNotMatch(selectorSource, /<input/);
+  assert.doesNotMatch(selectorSource, /filterDesktopFlights/);
 });
 
 test('ULD workspace actions retain exact FlightId and UldId', () => {
@@ -103,7 +121,10 @@ test('desktop lookup normalizes zero-padded flight numbers and limits default re
       { flightId: '1', flightNumber: 'CX0178', operatingDate: '2026-09-19', direction: 'EXPORT', flightStatus: 'ACTIVE' },
       { flightId: '2', flightNumber: 'CX178', operatingDate: '2026-09-18', direction: 'EXPORT', flightStatus: 'CLOSED' },
       { flightId: '3', flightNumber: 'CX0178', operatingDate: '2026-09-17', direction: 'IMPORT', flightStatus: 'FINALISED' },
-      { flightId: '4', flightNumber: 'CX178', operatingDate: '2026-09-16', direction: 'EXPORT', flightStatus: 'CLOSED' }
+      { flightId: '4', flightNumber: 'CX178', operatingDate: '2026-09-16', direction: 'EXPORT', flightStatus: 'CLOSED' },
+      { flightId: '5', flightNumber: 'CX105', operatingDate: '2026-09-10', direction: 'EXPORT', flightStatus: 'CLOSED' },
+      { flightId: '6', flightNumber: 'MH147', operatingDate: '2026-09-19', direction: 'IMPORT', flightStatus: 'ACTIVE' },
+      { flightId: '7', flightNumber: 'CX998', operatingDate: '2026-08-01', direction: 'EXPORT', flightStatus: 'CLOSED' }
     ] },
     Intl,
     Date,
@@ -115,7 +136,10 @@ test('desktop lookup normalizes zero-padded flight numbers and limits default re
   assert.equal(context.normalizeFlightLookup('CX0178'), 'CX178');
   assert.equal(context.normalizeFlightLookup('cx 178'), 'CX178');
   assert.deepEqual(Array.from(context.flightLookupMatches('CX0178', false, now), x => x.flightId), ['1', '2', '3']);
+  assert.deepEqual(Array.from(context.flightLookupMatches('CX', '3', now), x => x.flightId), ['1', '2', '3']);
+  assert.deepEqual(Array.from(context.flightLookupMatches('CX', '14', now), x => x.flightId), ['1', '2', '3', '4', '5']);
   assert.deepEqual(Array.from(context.flightLookupMatches('CX178', true, now), x => x.flightId), ['1', '2', '3', '4']);
+  assert.deepEqual(Array.from(context.flightLookupMatches('CX', 'all', now), x => x.flightId), ['1', '2', '3', '4', '5', '7']);
 });
 
 test('ULD lookup supports serial containment while retaining canonical full-code matching', () => {
@@ -142,4 +166,67 @@ test('lookup result actions and shift report retain stable identity and statemen
   assert.match(html, /class="shift-document"/);
   assert.match(html, /CargoRun MEL Shift Report/);
   assert.match(html, /Print \/ Save PDF/);
+});
+
+test('priority rendering groups SHCs and suppresses invalid display values', () => {
+  const start = html.indexOf('const PRIORITY_TAG_META=');
+  const end = html.indexOf('function flightBoardState(', start);
+  const context = vm.createContext({ Set, esc: value => String(value ?? '') });
+  vm.runInContext(html.slice(start, end), context);
+  const tags = context.priorityTagsFor(
+    { flight: 'CX178' },
+    { shcs: ['COL', 'ICE', 'PER', 'AVI', 'VAL', 'DGR', 'PIL', 'AOG', 'HUM', 'MAL', undefined, null, {}] },
+    'imports'
+  );
+  assert.deepEqual(Array.from(tags, tag => tag.label), ['AVI', 'TEMP', 'PHARMA', 'AOG', 'VAL', 'HUM', 'DGR', 'MAIL']);
+  assert.equal(Array.from(tags, tag => tag.label).filter(label => label === 'TEMP').length, 1);
+  assert.doesNotMatch(context.priorityBadges(tags), /undefined|null|\[object Object\]/i);
+  assert.match(html, /\.ops-table \.uld-flag\.intact,\.ops-table \.uld-flag\.breakdown\{box-shadow:none!important\}/);
+});
+
+test('History exposes completed-flight and stable actor filters', () => {
+  const start = html.indexOf('function historyActorKey(');
+  const end = html.indexOf('function completionsForDate(', start);
+  const context = vm.createContext({
+    state: { history: [
+      { ts: 3, type: 'ULD', user: 'Alex', actorReference: 'actor-1' },
+      { ts: 2, type: 'Offload', user: 'Alex', actorReference: 'actor-2' },
+      { ts: 1, type: 'Flight', user: 'CargoRun', actorReference: '' }
+    ] },
+    historySearch: '',
+    historyFilter: 'All',
+    historyUserFilter: 'All'
+  });
+  vm.runInContext(html.slice(start, end), context);
+  assert.deepEqual(Array.from(context.historyUsers(), user => user.key), ['id:actor-1', 'id:actor-2']);
+  context.historyUserFilter = 'id:actor-2';
+  assert.deepEqual(Array.from(context.historyFilteredEvents(), event => event.type), ['Offload']);
+  context.historyFilter = 'Completed Flights';
+  assert.equal(context.historyFilteredEvents().length, 0);
+  assert.match(html, /\['All','Completed Flights','ULD','Offload','Flight','Upload','FFM','Mail'\]/);
+  assert.match(html, /setHistoryUserFilter\(this\.value\)/);
+  assert.match(html, /actorReference:String\(e\.actorReference\|\|''\)/);
+});
+
+test('History API exposes stable actor and entity references without changing audit storage', () => {
+  const api = fs.readFileSync(path.resolve(__dirname, '..', 'api', 'history', 'index.js'), 'utf8');
+  assert.match(api, /actorReference: String\(get\(\['ActorObjectId', 'ActorId', 'ActorReference'\]\)/);
+  assert.match(api, /entityType: get\(\['EntityType'\]\)/);
+  assert.match(api, /entityId: String\(get\(\['EntityId'\]\)/);
+  assert.match(api, /detailsJson = JSON\.stringify\(\{ type:payload\.type, action:payload\.action, user:payload\.user, actorReference:payload\.actorReference, entityType:payload\.entityType, entityId:payload\.entityId/);
+});
+
+test('Shift Report renders imports, exports, offloads, users and exceptions in order', () => {
+  const start = html.indexOf('function shiftReportBody(');
+  const end = html.indexOf('function shiftReportDocument(', start);
+  const source = html.slice(start, end);
+  const labels = ['<strong>Imports</strong>', '<strong>Exports</strong>', '<strong>Offloads</strong>', '<strong>Runner / User Activity</strong>', '<strong>Exceptions / Notes</strong>'];
+  let previous = -1;
+  for (const label of labels) {
+    const index = source.indexOf(label);
+    assert.ok(index > previous, `${label} should follow the previous report section`);
+    previous = index;
+  }
+  assert.match(source, /Offload #\$\{esc\(o\.offloadId\)\}/);
+  assert.match(source, /<th>Requested<\/th><th>Collected<\/th><th>Completed<\/th><th>Bay<\/th><th>Location<\/th>/);
 });

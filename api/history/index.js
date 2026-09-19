@@ -56,6 +56,9 @@ function normalize(row, columns) {
     type: get(['EventType', 'Type']) || details.type || 'Activity',
     action: get(['Action', 'EventAction']) || details.action || 'Activity',
     user: get(['ActorDisplayName', 'UserDisplayName', 'ActorName']) || details.user || '',
+    actorReference: String(get(['ActorObjectId', 'ActorId', 'ActorReference']) || details.actorReference || ''),
+    entityType: get(['EntityType']) || details.entityType || '',
+    entityId: String(get(['EntityId']) || details.entityId || ''),
     flight: get(['FlightNumber', 'Flight']) || details.flight || '',
     uld: get(['UldNumber', 'ULDNumber', 'Uld']) || details.uld || '',
     from: get(['FromStatus']) || details.from || '',
@@ -99,7 +102,7 @@ module.exports = async function(context, req) {
       actorReference: actor.reference, flight: clean(b.flight,20), uld: clean(b.uld,30), from: clean(b.from,40), to: clean(b.to,40),
       detail: clean(b.detail,1000), entityType: clean(b.entityType,50), entityId: clean(b.entityId,100), details: b.details || null
     };
-    const detailsJson = JSON.stringify({ type:payload.type, action:payload.action, user:payload.user, flight:payload.flight, uld:payload.uld, from:payload.from, to:payload.to, detail:payload.detail, ...(payload.details||{}) });
+    const detailsJson = JSON.stringify({ type:payload.type, action:payload.action, user:payload.user, actorReference:payload.actorReference, entityType:payload.entityType, entityId:payload.entityId, flight:payload.flight, uld:payload.uld, from:payload.from, to:payload.to, detail:payload.detail, ...(payload.details||{}) });
     const request = pool.request()
       .input('EventType',sql.NVarChar(50),payload.type).input('Action',sql.NVarChar(150),payload.action)
       .input('ActorDisplayName',sql.NVarChar(150),payload.user).input('ActorReference',sql.NVarChar(150),payload.actorReference)
