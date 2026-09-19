@@ -147,13 +147,13 @@ test('compact and full loaders constrain canvas width on mobile without horizont
   assert.match(mobile, /\.action-loader-runner\{width:min\(94px,32vw\)\}/);
 });
 
-test('bulk offload action supplies the requested count and validation detail', () => {
-  assert.match(html, /showActionLoader\(`Creating \$\{uldIds\.length\} Offload\$\{uldIds\.length===1\?'':'s'\}…`,`Validating ULDs and \$\{flight\.flightNumber\}`\)/);
+test('multi-select offload action supplies singular and plural loading copy', () => {
+  assert.ok(html.includes("showActionLoader(uldIds.length===1?'Creating Offload\\u2026':`Creating ${uldIds.length} Offloads\\u2026`"));
+  assert.ok(html.includes("`Validating ULD and ${flight.flightNumber}\\u2026`:`Validating ULDs and ${flight.flightNumber}\\u2026`"));
 });
-
 test('meaningful existing workflows use the shared loader while its component has no business calls', () => {
   assert.match(html, /showDataLoader\('Starting CargoRun…','Checking your Microsoft sign-in'\)/);
-  assert.match(html, /showActionLoader\('Creating offload…'/);
+  assert.ok(html.includes("showActionLoader(uldIds.length===1?'Creating Offload\\u2026'"));
   assert.match(html, /showActionLoader\('Finalising export…'/);
   assert.match(html, /showActionLoader\('Finalising import…'/);
   assert.doesNotMatch(source, /\bfetch\s*\(|XMLHttpRequest|WebSocket/);

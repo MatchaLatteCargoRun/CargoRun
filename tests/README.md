@@ -37,10 +37,11 @@ empty/optional-field rendering, lifecycle labels and printable live summaries.
 Flight Statement tests cover read-only exact FlightId/CompletionId/version reads,
 V1 exact-byte verification, contiguous V2+ chain validation, immutable selected
 snapshots, version selection, offload rendering and matching print output.
-Bulk offload tests cover permanent all-status duplicate exclusion, shared single
-and bulk eligibility, preselected/deselectable stable ULD IDs, atomic one/seven
-row creation, stale-preview/audit/amendment rollback, concurrent batches,
-individual physical transitions, and completion-backed statement verification.
+Bulk offload tests cover permanent all-status duplicate exclusion, the unified
+one/several/all multi-select request workflow, native Select All and indeterminate
+states, stable ULD IDs, blocked-record explanations, atomic one/seven-row creation,
+stale-response/conflict rollback, concurrent batches, individual physical
+transitions, and completion-backed statement verification.
 Mascot loader tests verify the approved rig bytes, accessible compact/large
 markup, frame lifecycle cleanup, visibility pausing, reduced-motion fallback,
 responsive constraints, and bulk-offload loading copy.

@@ -134,6 +134,7 @@ async function loadOffloadEligibility(requestSource, flightId, columns, lockForU
   const idCol = pick(columns, ['OffloadId', 'Id']);
   const flightIdCol = pick(columns, ['FlightId']);
   const uldIdCol = pick(columns, ['UldId']);
+  const statusCol = pick(columns, ['Status', 'OffloadStatus']);
   if (!idCol || !flightIdCol || !uldIdCol) throw new Error('Offload identity schema is unavailable');
   const lock = lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : '';
   const makeRequest = () => typeof requestSource.request === 'function'
@@ -146,7 +147,8 @@ async function loadOffloadEligibility(requestSource, flightId, columns, lockForU
   const offloads = await makeRequest()
     .input('EligibilityFlightId', sql.BigInt, flightId)
     .query(`SELECT CONVERT(varchar(20), ${q(idCol)}) AS OffloadId,
-      CONVERT(varchar(20), ${q(uldIdCol)}) AS UldId, UldNumber
+      CONVERT(varchar(20), ${q(uldIdCol)}) AS UldId, UldNumber,
+      ${statusCol ? `${q(statusCol)} AS OffloadStatus` : 'CAST(NULL AS varchar(30)) AS OffloadStatus'}
     FROM dbo.Offloads ${lock} WHERE ${q(flightIdCol)} = @EligibilityFlightId;`);
   return evaluateOffloadEligibility(ulds.recordset, offloads.recordset);
 }
@@ -263,6 +265,12 @@ module.exports = async function (context, req) {
           FlightId: requestedFlightId, UldId: item.uldId,
           UldNumber: item.uldNumber, CurrentStatus: item.currentStatus
         }));
+        const blockedUlds = eligibility.filter(item => !item.eligible).map(item => ({
+          FlightId: requestedFlightId, UldId: item.uldId,
+          UldNumber: item.uldNumber, CurrentStatus: item.currentStatus,
+          ReasonCode: item.code, ExistingOffloadId: item.existingOffloadId,
+          ExistingOffloadStatus: item.existingOffloadStatus || null
+        }));
         sendJson(context, 200, {
           ok: true,
           flight: {
@@ -271,7 +279,8 @@ module.exports = async function (context, req) {
             flightStatus: selectedFlight.FlightStatus
           },
           count: ulds.length,
-          ulds
+          ulds,
+          blockedUlds
         });
         return;
       }

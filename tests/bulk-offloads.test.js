@@ -103,6 +103,14 @@ test('shared preview excludes REQUESTED, TRANSIT, COMPLETE, and legacy canonical
   const response = await call(h.handler, 'GET', null, { eligibleUlds: 'true', flightId: '1' });
   assert.equal(response.status, 200);
   assert.deepEqual(response.body.ulds.map(row => row.UldId), ['11']);
+  assert.deepEqual(response.body.blockedUlds.map(row => ({
+    uldId: row.UldId, status: row.ExistingOffloadStatus, offloadId: row.ExistingOffloadId
+  })), [
+    { uldId: '7', status: 'REQUESTED', offloadId: '40' },
+    { uldId: '8', status: 'TRANSIT', offloadId: '41' },
+    { uldId: '9', status: 'COMPLETE', offloadId: '42' },
+    { uldId: '10', status: 'COMPLETE', offloadId: '43' }
+  ]);
   assert.equal(response.body.flight.flightId, '1');
 });
 
@@ -250,98 +258,181 @@ const html = fs.readFileSync(path.resolve(__dirname, '..', 'index.html'), 'utf8'
 function frontendHarness() {
   const elements = {};
   for (const id of [
-    'bulkFlightId', 'bulkFlightContext', 'bulkOffloadCandidates', 'bulkOffloadMessage',
-    'bulkOffloadBay', 'bulkOffloadInstruction', 'bulkOffloadSubmit'
-  ]) elements[id] = { value: '', disabled: false, innerHTML: '', textContent: '' };
+    'offFlightId', 'offFlightContext', 'offSelectAll', 'offUldCandidates', 'offBlockedUlds',
+    'offRequestMessage', 'offBay', 'offInstruction', 'offSubmit'
+  ]) elements[id] = { value: '', disabled: false, innerHTML: '', textContent: '', checked: false, indeterminate: false };
   elements.modal = { classList: { contains: () => true } };
-  const requests = [], notices = [];
+  const requests = [], notices = [], loaders = [];
+  let modalMarkup = '';
   const context = vm.createContext({
     document: { getElementById: id => elements[id] || null },
-    modal() {}, modalHead: () => '', esc: value => String(value ?? ''),
+    modal: markup => { modalMarkup = markup; }, modalHead: () => '', esc: value => String(value ?? ''),
     azureDisplayDate: value => String(value || ''),
     stableOperationalId: value => /^[1-9]\d*$/.test(String(value ?? '').trim()) ? String(value).trim() : '',
     encodeURIComponent,
     fetch: (url, options) => new Promise(resolve => requests.push({ url, options, resolve })),
-    toast: message => notices.push(message), showActionLoader() {}, hideActionLoader() {},
+    toast: message => notices.push(message),
+    showActionLoader: (title, detail) => loaders.push({ title, detail }), hideActionLoader() {},
     closeModal() {}, openScreen() {}, syncAzureOffloads: async () => true
   });
-  const start = html.indexOf('let bulkOffloadSession=');
+  const start = html.indexOf('let offloadRequestSession=');
   const end = html.indexOf('function handleOffload(', start);
   assert.ok(start >= 0 && end > start);
   vm.runInContext(html.slice(start, end), context);
   const respond = (index, body, status = 200) => requests[index].resolve({
     ok: status < 400, status, json: async () => body
   });
-  return { context, elements, requests, notices, respond };
+  return { context, elements, requests, notices, loaders, respond, get modalMarkup() { return modalMarkup; } };
 }
-async function openBulkUi(h) {
-  const pending = h.context.showBulkOffload();
-  h.respond(0, { ok: true, flights: [{
-    flightId: '1', flightNumber: 'CX178', operatingDate: '2026-09-17', flightStatus: 'CLOSED'
-  }] });
+async function openRequestUi(h, flights = [{
+  flightId: '1', flightNumber: 'CX178', operatingDate: '2026-09-17', flightStatus: 'CLOSED'
+}]) {
+  const pending = h.context.showRequestOffload();
+  h.respond(0, { ok: true, flights });
   await pending;
-  h.elements.bulkFlightId.value = '1';
+  h.elements.offFlightId.value = flights[0]?.flightId || '';
+}
+async function loadCandidates(h, rows, blocked = []) {
+  const pending = h.context.loadOffloadUlds();
+  h.respond(h.requests.length - 1, {
+    ok: true,
+    ulds: rows.map(row => ({ ...row, FlightId: h.elements.offFlightId.value })),
+    blockedUlds: blocked.map(row => ({ ...row, FlightId: h.elements.offFlightId.value }))
+  });
+  await pending;
 }
 
-test('bulk UI preselects eligible ULDs, updates its count, and submits only stable selected IDs', async () => {
+test('Request Offload is one multi-select workflow with bounded responsive native checkboxes', async () => {
   const h = frontendHarness();
-  await openBulkUi(h);
-  const loading = h.context.loadBulkOffloadUlds();
-  assert.equal(h.requests[1].url, '/api/offloads?eligibleUlds=true&flightId=1');
-  h.respond(1, { ok: true, ulds: ulds(3).map(row => ({ ...row, FlightId: '1' })) });
-  await loading;
-  assert.match(h.elements.bulkFlightContext.textContent, /CX178.*2026-09-17.*CLOSED.*FlightId 1/);
-  assert.equal((h.elements.bulkOffloadCandidates.innerHTML.match(/type="checkbox"/g) || []).length, 3);
-  h.elements.bulkOffloadBay.value = 'f25';
-  h.elements.bulkOffloadInstruction.value = 'Move together';
-  h.context.updateBulkOffloadSubmit();
-  assert.equal(h.elements.bulkOffloadSubmit.textContent, 'Create 3 Offloads');
-  h.context.toggleBulkOffloadUld('8', false);
-  assert.equal(h.elements.bulkOffloadSubmit.textContent, 'Create 2 Offloads');
-  const creating = h.context.createBulkOffloads();
-  const sent = JSON.parse(h.requests[2].options.body);
-  assert.deepEqual(sent, {
-    action: 'BULK_CREATE', flightId: '1', uldIds: ['7', '9'],
-    parkingBay: 'F25', requestInstruction: 'Move together'
-  });
-  h.respond(2, { ok: true, count: 2, message: '2 offloads requested' }, 201);
-  await creating;
-  assert.ok(h.notices.includes('2 offloads requested'));
+  await openRequestUi(h);
+  assert.match(html, /modalHead\('Request Offload'\)/);
+  assert.match(h.modalMarkup, /Select All Eligible/);
+  assert.match(h.modalMarkup, /id="offSelectAll" type="checkbox"/);
+  assert.doesNotMatch(html, /Offload All Eligible/);
+  await loadCandidates(h, ulds(20));
+  assert.equal((h.elements.offUldCandidates.innerHTML.match(/type="checkbox"/g) || []).length, 20);
+  assert.equal(h.elements.offSubmit.textContent, 'Create Offloads');
+  assert.equal(h.elements.offSubmit.disabled, true);
+  assert.match(html, /\.bulk-offload-list\{[^}]*max-height:310px[^}]*overflow:auto/);
+  assert.match(html, /@media\(max-width:700px\)[\s\S]*\.bulk-offload-list\{grid-template-columns:1fr/);
 });
 
-test('bulk UI shows the exact zero state and stale conflicts refresh all candidates without success', async () => {
-  const empty = frontendHarness();
-  await openBulkUi(empty);
-  const emptyLoad = empty.context.loadBulkOffloadUlds();
-  empty.respond(1, { ok: true, ulds: [] });
-  await emptyLoad;
-  assert.match(empty.elements.bulkOffloadCandidates.innerHTML, /No ULDs on this flight are eligible for a new offload\./);
-  assert.equal(empty.elements.bulkOffloadSubmit.disabled, true);
-
+test('Select All selects only eligible ULDs, supports indeterminate state, and clears selection', async () => {
   const h = frontendHarness();
-  await openBulkUi(h);
-  let loading = h.context.loadBulkOffloadUlds();
-  h.respond(1, { ok: true, ulds: ulds(2).map(row => ({ ...row, FlightId: '1' })) });
-  await loading;
-  h.elements.bulkOffloadBay.value = 'F25';
-  h.elements.bulkOffloadInstruction.value = 'Move together';
-  h.context.updateBulkOffloadSubmit();
-  const creating = h.context.createBulkOffloads();
-  h.respond(2, { ok: false, code: 'BULK_OFFLOAD_CONFLICT', failures: [{ uldId: '8', existingOffloadId: '55' }] }, 409);
+  await openRequestUi(h);
+  await loadCandidates(h, ulds(7), [{
+    UldId: '99', UldNumber: 'AKE99999CX', CurrentStatus: 'WAREHOUSE',
+    ReasonCode: 'OFFLOAD_EXISTS', ExistingOffloadId: '21', ExistingOffloadStatus: 'COMPLETE'
+  }]);
+  assert.match(h.elements.offBlockedUlds.innerHTML, /AKE99999CX/);
+  assert.match(h.elements.offBlockedUlds.innerHTML, /COMPLETE \/ Offload #21/);
+  assert.doesNotMatch(h.elements.offBlockedUlds.innerHTML, /type="checkbox"/);
+  h.context.toggleAllEligible(true);
+  assert.equal(h.elements.offSelectAll.checked, true);
+  assert.equal(h.elements.offSubmit.textContent, 'Create 7 Offloads');
+  h.context.toggleOffloadUld('8', false);
+  assert.equal(h.elements.offSelectAll.checked, false);
+  assert.equal(h.elements.offSelectAll.indeterminate, true);
+  assert.equal(h.elements.offSubmit.textContent, 'Create 6 Offloads');
+  h.context.toggleAllEligible(false);
+  assert.equal(h.elements.offSelectAll.indeterminate, false);
+  assert.equal(h.elements.offSubmit.textContent, 'Create Offloads');
+  assert.equal(h.elements.offSubmit.disabled, true);
+});
+
+test('one and seven selections use the same atomic bulk request and exact stable IDs', async () => {
+  for (const count of [1, 7]) {
+    const h = frontendHarness();
+    await openRequestUi(h);
+    await loadCandidates(h, ulds(count));
+    h.context.toggleAllEligible(true);
+    h.elements.offBay.value = 'f25';
+    h.elements.offInstruction.value = 'Return selected ULDs';
+    h.context.updateOffloadSubmit();
+    assert.equal(h.elements.offSubmit.textContent, count === 1 ? 'Create 1 Offload' : 'Create 7 Offloads');
+    const creating = h.context.createOffloads();
+    const sent = JSON.parse(h.requests[2].options.body);
+    assert.deepEqual(sent, {
+      action: 'BULK_CREATE', flightId: '1',
+      uldIds: ulds(count).map(row => String(row.UldId)),
+      parkingBay: 'F25', requestInstruction: 'Return selected ULDs'
+    });
+    assert.deepEqual(h.loaders[0], count === 1
+      ? { title: 'Creating Offload\u2026', detail: 'Validating ULD and CX178\u2026' }
+      : { title: 'Creating 7 Offloads\u2026', detail: 'Validating ULDs and CX178\u2026' });
+    h.respond(2, { ok: true, count }, 201);
+    await creating;
+    assert.ok(h.notices.includes(`${count} offload${count === 1 ? '' : 's'} created`));
+  }
+});
+
+test('parking bay and handling instruction are both required', async () => {
+  const h = frontendHarness();
+  await openRequestUi(h);
+  await loadCandidates(h, ulds(1));
+  h.context.toggleAllEligible(true);
+  h.context.updateOffloadSubmit();
+  assert.equal(h.elements.offSubmit.disabled, true);
+  h.elements.offBay.value = 'F25';
+  h.context.updateOffloadSubmit();
+  assert.equal(h.elements.offSubmit.disabled, true);
+  h.elements.offInstruction.value = 'Return to terminal';
+  h.context.updateOffloadSubmit();
+  assert.equal(h.elements.offSubmit.disabled, false);
+});
+
+test('flight switching clears selection and ignores a late response from the prior FlightId', async () => {
+  const h = frontendHarness();
+  await openRequestUi(h, [
+    { flightId: '1', flightNumber: 'CX178', operatingDate: '2026-09-17', flightStatus: 'ACTIVE' },
+    { flightId: '2', flightNumber: 'CX178', operatingDate: '2026-09-18', flightStatus: 'CLOSED' }
+  ]);
+  const first = h.context.loadOffloadUlds();
+  h.elements.offFlightId.value = '2';
+  const second = h.context.loadOffloadUlds();
+  assert.equal(h.elements.offSubmit.disabled, true);
+  h.respond(2, { ok: true, ulds: [{ ...ulds(1)[0], FlightId: '2', UldId: '20', UldNumber: 'PMC22222CX' }], blockedUlds: [] });
+  await second;
+  h.context.toggleAllEligible(true);
+  h.respond(1, { ok: true, ulds: [{ ...ulds(1)[0], FlightId: '1' }], blockedUlds: [] });
+  await first;
+  assert.match(h.elements.offUldCandidates.innerHTML, /PMC22222CX/);
+  assert.doesNotMatch(h.elements.offUldCandidates.innerHTML, /AKE10000CX/);
+  assert.equal(h.elements.offSubmit.textContent, 'Create 1 Offload');
+});
+
+test('a stale conflict reports details, creates no UI success, clears selection, and refreshes eligibility', async () => {
+  const h = frontendHarness();
+  await openRequestUi(h);
+  await loadCandidates(h, ulds(2));
+  h.context.toggleAllEligible(true);
+  h.elements.offBay.value = 'F25';
+  h.elements.offInstruction.value = 'Return together';
+  h.context.updateOffloadSubmit();
+  const creating = h.context.createOffloads();
+  h.respond(2, { ok: false, code: 'BULK_OFFLOAD_CONFLICT', failures: [{
+    uldId: '8', uldNumber: 'AKE10001CX', code: 'OFFLOAD_EXISTS', existingOffloadId: '55'
+  }] }, 409);
   while (h.requests.length < 4) await new Promise(resolve => setImmediate(resolve));
   assert.equal(h.requests[3].url, '/api/offloads?eligibleUlds=true&flightId=1');
-  h.respond(3, { ok: true, ulds: [{ ...ulds(1)[0], FlightId: '1' }] });
+  h.respond(3, { ok: true, ulds: [{ ...ulds(1)[0], FlightId: '1' }], blockedUlds: [{
+    FlightId: '1', UldId: '8', UldNumber: 'AKE10001CX', ReasonCode: 'OFFLOAD_EXISTS',
+    ExistingOffloadId: '55', ExistingOffloadStatus: 'COMPLETE'
+  }] });
   await creating;
-  assert.ok(h.notices.includes('One or more ULDs already have an offload. No new requests were created.'));
-  assert.equal(h.elements.bulkOffloadSubmit.textContent, 'Create 1 Offload');
+  assert.match(h.elements.offRequestMessage.textContent, /No offloads were created/);
+  assert.match(h.elements.offRequestMessage.textContent, /AKE12346CX.*Offload #55/);
+  assert.equal(h.elements.offSubmit.textContent, 'Create Offloads');
+  assert.equal(h.elements.offSubmit.disabled, true);
+  assert.ok(!h.notices.some(message => /offload(s)? created/.test(message)));
 });
 
-test('operational UI offers bulk request only and keeps physical actions individual', () => {
-  const source = html.slice(html.indexOf('let bulkOffloadSession='), html.indexOf('function showScan('));
-  assert.match(html, /Offload All Eligible/);
+test('operational UI keeps Collect and Complete individual and Flight Statement code untouched', () => {
+  const source = html.slice(html.indexOf('let offloadRequestSession='), html.indexOf('function showScan('));
   assert.match(source, /action:'BULK_CREATE'/);
   assert.doesNotMatch(html, /Collect All|Complete All/);
-  assert.match(source, /uldIds=\[\.\.\.s\.selected\]\.filter/);
-  assert.match(html, /confirmOffloadTransit\('\$\{o\.azureOffloadId\}','Requested'\)/);
-  assert.match(html, /completeOffload\('\$\{o\.azureOffloadId\}','Transit'\)/);
+  assert.match(source, /confirmOffloadTransit\('\$\{o\.azureOffloadId\}','Requested'\)/);
+  assert.match(source, /completeOffload\('\$\{o\.azureOffloadId\}','Transit'\)/);
+  assert.match(source, /offloadId:o\.azureOffloadId/);
+  assert.doesNotMatch(source, /renderFlightStatement|selectedVersion|CompletionId/);
 });

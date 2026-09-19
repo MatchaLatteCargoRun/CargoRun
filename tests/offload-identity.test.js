@@ -271,71 +271,57 @@ test('ULD GET scopes SQL by selected FlightId and preserves BIGINT IDs as string
 
 const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
 function ui(){
- const elements={};for(const id of ['offFlightId','offUldId','offSubmit','offBay','offInstruction','offRequestMessage'])elements[id]={value:'',disabled:false,innerHTML:'',textContent:''};
- elements.modal={classList:{contains:()=>true}};const requests=[],notices=[],opened=[];
+ const elements={};for(const id of ['offFlightId','offFlightContext','offSelectAll','offUldCandidates','offBlockedUlds','offSubmit','offBay','offInstruction','offRequestMessage'])elements[id]={value:'',disabled:false,innerHTML:'',textContent:'',checked:false,indeterminate:false};
+ elements.modal={classList:{contains:()=>true}};const requests=[],notices=[];
  const context=vm.createContext({document:{getElementById:id=>elements[id]},modal(){},modalHead:()=>'',esc:String,azureDisplayDate:String,
-  stableOperationalId:x=>x==null?'':String(x),normalizeULD:s=>s.trim().toUpperCase().replace(/[\s-]/g,''),
-  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},
-  syncAzureOffloads:async()=>true,selectQuickScanCandidate:(...args)=>opened.push(args)});
+  stableOperationalId:x=>/^[1-9]\d*$/.test(String(x??'').trim())?String(x).trim():'',
+  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},syncAzureOffloads:async()=>true});
  vm.runInContext(html.slice(html.indexOf('let offloadRequestSession='),html.indexOf('function handleOffload(')),context);
  const respond=(i,data,status=200)=>requests[i].resolve({ok:status<400,status,json:async()=>data});
- return {context,elements,requests,respond,notices,opened};
+ return {context,elements,requests,respond,notices};
 }
-async function startUi(){const h=ui();const pending=h.context.showRequestOffload();h.respond(0,{flights:[{flightId:'1',flightNumber:'CX178',operatingDate:'2026-09-17',flightStatus:'ACTIVE'},{flightId:'2',flightNumber:'TG462',operatingDate:'2026-09-17',flightStatus:'CLOSED'}]});await pending;return h}
+async function startUi(){const h=ui();const pending=h.context.showRequestOffload();h.respond(0,{flights:[{flightId:'1',flightNumber:'CX178',operatingDate:'2026-09-17',flightStatus:'ACTIVE'},{flightId:'2',flightNumber:'CX178',operatingDate:'2026-09-18',flightStatus:'CLOSED'}]});await pending;return h}
 
-test('historical flight choices show date/status/ID and submit only the explicitly selected flight',async()=>{
- const h=ui();const pending=h.context.showRequestOffload();
- h.respond(0,{flights:[{flightId:'1',flightNumber:'CX178',operatingDate:'2025-01-01',flightStatus:'CLOSED'},
- {flightId:'2',flightNumber:'CX178',operatingDate:'2025-01-02',flightStatus:'FINALISED'}]});await pending;
- assert.match(h.elements.offFlightId.innerHTML,/CX178 • 2025-01-01 • Closed • Flight #1/);
- assert.match(h.elements.offFlightId.innerHTML,/CX178 • 2025-01-02 • Finalised • Flight #2/);
- assert.equal(h.elements.offFlightId.value,'');assert.equal(h.requests.length,1);
+test('historical same-number flight choices expose date/status/FlightId and keep exact selection',async()=>{
+ const h=await startUi();
+ assert.match(h.elements.offFlightId.innerHTML,/CX178.*2026-09-17.*Active.*FlightId 1/);
+ assert.match(h.elements.offFlightId.innerHTML,/CX178.*2026-09-18.*Closed.*FlightId 2/);
  h.elements.offFlightId.value='2';const loading=h.context.loadOffloadUlds();
  assert.equal(h.requests[1].url,'/api/offloads?eligibleUlds=true&flightId=2');
- h.respond(1,{ulds:[{FlightId:'2',UldId:'8',UldNumber:'AKE-12345-CX'}]});await loading;
- h.elements.offUldId.value='8';h.elements.offBay.value='F25';const create=h.context.createOffload();
- const payload=JSON.parse(h.requests[2].options.body);
- assert.equal(payload.flightId,'2');assert.equal(payload.uldId,'8');assert.equal(payload.operatingDate,'2025-01-02');assert.equal(payload.uldNumber,'AKE12345CX');
- h.respond(2,{ok:true},201);await create;
+ h.respond(1,{ulds:[{FlightId:'2',UldId:'8',UldNumber:'AKE12345CX',CurrentStatus:'AT_AIRCRAFT'}],blockedUlds:[]});await loading;
+ h.context.toggleAllEligible(true);h.elements.offBay.value='F25';h.elements.offInstruction.value='Return to terminal';h.context.updateOffloadSubmit();
+ const creating=h.context.createOffloads();const payload=JSON.parse(h.requests[2].options.body);
+ assert.deepEqual(payload,{action:'BULK_CREATE',flightId:'2',uldIds:['8'],parkingBay:'F25',requestInstruction:'Return to terminal'});
+ h.respond(2,{ok:true,count:1},201);await creating;
 });
 
-test('flight switching clears ULDs and late flight A response cannot populate flight B',async()=>{
- const h=await startUi();h.elements.offFlightId.value='1';const a=h.context.loadOffloadUlds();
- h.elements.offUldId.value='7';h.elements.offFlightId.value='2';const b=h.context.loadOffloadUlds();
- assert.equal(h.elements.offUldId.value,'');assert.equal(h.elements.offSubmit.disabled,true);
- assert.equal(h.requests[1].url,'/api/offloads?eligibleUlds=true&flightId=1');assert.equal(h.requests[2].url,'/api/offloads?eligibleUlds=true&flightId=2');
- h.respond(2,{ulds:[{FlightId:'2',UldId:'8',UldNumber:'PMC22222TG',CurrentStatus:'TRANSIT'}]});await b;
- h.respond(1,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE12345CX',CurrentStatus:'WAREHOUSE'}]});await a;
- assert.match(h.elements.offUldId.innerHTML,/PMC22222TG/);assert.doesNotMatch(h.elements.offUldId.innerHTML,/AKE12345CX/);
+test('flight switching clears stable UldIds and ignores the prior flight response',async()=>{
+ const h=await startUi();h.elements.offFlightId.value='1';const first=h.context.loadOffloadUlds();
+ h.elements.offFlightId.value='2';const second=h.context.loadOffloadUlds();
+ assert.equal(h.elements.offSubmit.disabled,true);
+ h.respond(2,{ulds:[{FlightId:'2',UldId:'8',UldNumber:'PMC22222CX'}],blockedUlds:[]});await second;
+ h.context.toggleAllEligible(true);
+ h.respond(1,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE12345CX'}],blockedUlds:[]});await first;
+ assert.match(h.elements.offUldCandidates.innerHTML,/PMC22222CX/);assert.doesNotMatch(h.elements.offUldCandidates.innerHTML,/AKE12345CX/);
+ assert.equal(h.elements.offSubmit.textContent,'Create 1 Offload');
 });
 
-test('empty or wrong-flight ULD responses keep submission disabled',async()=>{
- for(const rows of [[],[{FlightId:'2',UldId:'8',UldNumber:'PMC22222TG'}]]){
-  const h=await startUi();h.elements.offFlightId.value='1';const p=h.context.loadOffloadUlds();h.respond(1,{ulds:rows});await p;
-  assert.equal(h.elements.offSubmit.disabled,true);assert.equal(h.elements.offUldId.disabled,true);
-  assert.match(h.elements.offRequestMessage.textContent,rows.length?/does not match/:/No ULDs on this flight are eligible/);
- }
+test('wrong-flight eligibility response and tampered selected UldId cannot submit',async()=>{
+ const h=await startUi();h.elements.offFlightId.value='1';let loading=h.context.loadOffloadUlds();
+ h.respond(1,{ulds:[{FlightId:'2',UldId:'8',UldNumber:'PMC22222CX'}],blockedUlds:[]});await loading;
+ assert.equal(h.elements.offSubmit.disabled,true);assert.match(h.elements.offRequestMessage.textContent,/does not match/);
+ h.elements.offFlightId.value='1';loading=h.context.loadOffloadUlds();h.respond(2,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE12345CX'}],blockedUlds:[]});await loading;
+ h.context.toggleOffloadUld('999',true);h.elements.offBay.value='F25';h.elements.offInstruction.value='Return';await h.context.createOffloads();
+ assert.equal(h.requests.length,3);
 });
 
-test('late response from a closed/reopened request cannot populate the new modal',async()=>{
- const h=await startUi();h.elements.offFlightId.value='1';const old=h.context.loadOffloadUlds();
- const reopened=h.context.showRequestOffload();h.respond(2,{flights:[]});await reopened;
- h.respond(1,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE12345CX',CurrentStatus:'WAREHOUSE'}]});await old;
- assert.doesNotMatch(h.elements.offUldId.innerHTML,/AKE12345CX/);
-});
-
-test('tampered ULD selector value cannot submit an arbitrary ULD',async()=>{
- const h=await startUi();h.elements.offFlightId.value='1';const p=h.context.loadOffloadUlds();h.respond(1,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE12345CX'}]});await p;
- h.elements.offUldId.value='999';h.elements.offBay.value='F25';await h.context.createOffload();
- assert.equal(h.requests.length,2);assert.match(h.notices[0],/Select a flight/);
-});
-
-test('UI submits selected stable IDs and opens exact duplicate OffloadId',async()=>{
- const h=await startUi();h.elements.offFlightId.value='1';const p=h.context.loadOffloadUlds();h.respond(1,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE-12345-CX',CurrentStatus:'AT_AIRCRAFT'}]});await p;
- h.elements.offUldId.value='7';h.elements.offBay.value='F25';const create=h.context.createOffload();
- assert.deepEqual(JSON.parse(h.requests[2].options.body),{flightId:'1',uldId:'7',uldNumber:'AKE12345CX',flightNumber:'CX178',operatingDate:'2026-09-17',parkingBay:'F25',requestInstruction:''});
- h.respond(2,{code:'OFFLOAD_EXISTS',offloadId:'40'},409);await create;
- assert.deepEqual(h.opened,[['offload','','','','40']]);
- const source=html.slice(html.indexOf('let offloadRequestSession='),html.indexOf('function handleOffload('));
- assert.doesNotMatch(source,/Date\.now|new Date|id="offUld"/);
+test('blocked legacy and exact offload evidence is explanatory and never selectable',async()=>{
+ const h=await startUi();h.elements.offFlightId.value='1';const loading=h.context.loadOffloadUlds();
+ h.respond(1,{ulds:[],blockedUlds:[
+  {FlightId:'1',UldId:'7',UldNumber:'AKE12345CX',ReasonCode:'OFFLOAD_EXISTS',ExistingOffloadId:'40',ExistingOffloadStatus:'COMPLETE'},
+  {FlightId:'1',UldId:'8',UldNumber:'PMC22222CX',ReasonCode:'OFFLOAD_IDENTITY_CONFLICT'}
+ ]});await loading;
+ assert.match(h.elements.offBlockedUlds.innerHTML,/AKE12345CX/);assert.match(h.elements.offBlockedUlds.innerHTML,/COMPLETE \/ Offload #40/);
+ assert.match(h.elements.offBlockedUlds.innerHTML,/PMC22222CX/);assert.doesNotMatch(h.elements.offBlockedUlds.innerHTML,/type="checkbox"/);
+ assert.equal(h.elements.offSubmit.disabled,true);
 });

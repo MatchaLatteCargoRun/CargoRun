@@ -66,7 +66,8 @@ function evaluateOffloadEligibility(uldRows, offloadRows) {
       return {
         uldId, uldNumber, currentStatus: row?.CurrentStatus || null, eligible: false,
         code: exact ? 'OFFLOAD_EXISTS' : 'OFFLOAD_IDENTITY_CONFLICT',
-        existingOffloadId: exact ? operationalId(matches[0]?.OffloadId) : null
+        existingOffloadId: exact ? operationalId(matches[0]?.OffloadId) : null,
+        existingOffloadStatus: exact ? (matches[0]?.OffloadStatus || matches[0]?.Status || null) : null
       };
     }
     return { uldId, uldNumber, currentStatus: row?.CurrentStatus || null, eligible: true, code: null, existingOffloadId: null };
