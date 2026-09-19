@@ -29,8 +29,9 @@ const verify = fs.readFileSync(path.join(root, 'migrations', 'admin-configuratio
 const bootstrap = fs.readFileSync(path.join(root, 'migrations', 'admin-bootstrap-user.sql'), 'utf8');
 const bootstrapVerify = fs.readFileSync(path.join(root, 'migrations', 'admin-bootstrap-user-verify.sql'), 'utf8');
 const foundation = fs.readFileSync(path.join(root, 'docs', 'admin-configuration-foundation.md'), 'utf8');
-const adminApi = fs.readFileSync(path.join(root, 'api', 'admin-config', 'index.js'), 'utf8');
-const adminFunction = JSON.parse(fs.readFileSync(path.join(root, 'api', 'admin-config', 'function.json'), 'utf8'));
+const adminFunctionDirectory = path.join(root, 'api', 'configuration-admin');
+const adminApi = fs.readFileSync(path.join(adminFunctionDirectory, 'index.js'), 'utf8');
+const adminFunction = JSON.parse(fs.readFileSync(path.join(adminFunctionDirectory, 'function.json'), 'utf8'));
 
 const context = { airlineCode: 'CX', stationCode: 'MEL', operatingDate: '2026-09-19', direction: 'IMPORT' };
 const row = (extra = {}) => ({ EffectiveFrom: '2020-01-01', EffectiveTo: null, ...extra });
@@ -263,10 +264,21 @@ test('Admin Centre is a read-only shell and exposes no browser-only security cla
 test('Admin API is authenticated and GET-only with no configuration mutation surface', () => {
   const trigger = adminFunction.bindings.find(binding => binding.type === 'httpTrigger');
   assert.deepEqual(trigger.methods, ['get']);
+  assert.equal(trigger.authLevel, 'anonymous', 'Static Web Apps authenticates the route before the handler validates x-ms-client-principal');
   assert.match(adminApi, /roles\.includes\('authenticated'\)/);
   assert.match(adminApi, /req\.method !== 'GET'/);
   assert.doesNotMatch(adminApi, /\b(INSERT|UPDATE|DELETE|MERGE)\s+(INTO\s+)?dbo\.CargoRun/i);
   assert.doesNotMatch(adminApi, /userRoleAssignments|roleCapabilities|ConfigurationAudit/);
+});
+
+test('Admin frontend and function expose the same deployable public route under Node 22', () => {
+  const trigger = adminFunction.bindings.find(binding => binding.type === 'httpTrigger');
+  assert.match(html, /fetch\('\/api\/admin-config'/);
+  assert.equal(trigger.route, 'admin-config');
+  assert.equal(path.basename(adminFunctionDirectory), 'configuration-admin');
+  assert.doesNotMatch(path.basename(adminFunctionDirectory), /^admin/i, 'Azure reserves function names beginning with admin');
+  assert.equal(fs.existsSync(path.join(root, 'api', 'admin-config')), false);
+  assert.equal(typeof require('../api/configuration-admin'), 'function');
 });
 
 test('foundation inventory keeps FINAL, FOW, stable identity and evidence protections in code', () => {
