@@ -84,7 +84,7 @@ test('Import and Export split selectors carry and resolve exact FlightId', () =>
   assert.match(html, /class="ops-split"/);
   assert.match(html, /data-flight-selector="\$\{type\}" data-flight-id="\$\{esc\(f\.azureFlightId\|\|''\)\}"/);
   assert.match(html, /selectDesktopFlightByStableId\('\$\{type\}','\$\{esc\(f\.azureFlightId\|\|''\)\}'\)/);
-  assert.match(html, /const f=findFlightByStableId\(type,flightId\)/);
+  assert.match(html, /const id=stableOperationalId\(flightId\),f=findFlightByStableId\(type,id\)/);
   assert.match(html, /data-selected-flight-id="\$\{esc\(f\.azureFlightId\|\|''\)\}"/);
   const start = html.indexOf('function desktopFlightSelector(');
   const end = html.indexOf('function desktopFlightActions(', start);
@@ -99,11 +99,56 @@ test('ULD workspace actions retain exact FlightId and UldId', () => {
   assert.doesNotMatch(html, /showConfirmULD\([^)]*,\s*i\s*\)/);
 });
 
-test('desktop flight route survives reorder by retaining FlightId and fails closed when stale', () => {
-  assert.match(html, /route=\{screen,type,id:selected\?\.id\|\|id,flightId:selected\?stableOperationalId\(selected\.azureFlightId\):null\}/);
+test('desktop ULD rows hide internal ULD IDs and show priority marker only for grouped priority cargo', () => {
+  const start = html.indexOf('function desktopUldPriorityMarker(');
+  const end = html.indexOf('function flights(type)', start);
+  const source = html.slice(start, end);
+  assert.match(source, /class="uld-priority-marker"/);
+  assert.match(source, /icon-priority\.png/);
+  assert.match(source, /tokens\.length\?/);
+  assert.match(source, /desktopPriorityInfo\(f,u,type\)/);
+  assert.doesNotMatch(source, /ULD ID \$\{esc\(u\.azureUldId/);
+  assert.match(html, /\.uld-priority-marker\{[^}]*font-size:8px/);
+});
+
+test('duplicate-number desktop flights retain exact FlightId through route and detail selection', () => {
+  const state = { imports: [
+    { id: 'duplicate-local-id', azureFlightId: '101', flight: 'CX0163', flightDate: '15 Sep 2026', ulds: [], closed: false },
+    { id: 'duplicate-local-id', azureFlightId: '102', flight: 'CX0163', flightDate: '14 Sep 2026', ulds: [], closed: false }
+  ] };
+  const context = vm.createContext({
+    state,
+    route: {},
+    stableOperationalId: value => /^[1-9]\d*$/.test(String(value || '')) ? String(value) : '',
+    window: { scrollTo() {} },
+    render() {},
+    toast() {},
+    activeFlights: type => state[type].filter(flight => !flight.closed),
+    desktopFlightSelector: () => '',
+    desktopFlightDetailPanel: (_type, flight) => `<detail data-flight-id="${flight.azureFlightId}">${flight.flightDate}</detail>`
+  });
+  const findStart = html.indexOf('function findFlightByStableId(');
+  vm.runInContext(html.slice(findStart, html.indexOf('function findUldById(', findStart)), context);
+  const openStart = html.indexOf('function openScreen(');
+  vm.runInContext(html.slice(openStart, html.indexOf('\n', openStart)), context);
+  const selectStart = html.indexOf('function selectDesktopFlightByStableId(');
+  vm.runInContext(html.slice(selectStart, html.indexOf('\n', selectStart)), context);
+  const workspaceStart = html.indexOf('function desktopFlightWorkspace(');
+  vm.runInContext(html.slice(workspaceStart, html.indexOf('\n', workspaceStart)), context);
+
+  assert.equal(context.selectDesktopFlightByStableId('imports', '102'), true);
+  assert.equal(context.route.flightId, '102');
+  assert.equal(context.route.id, 'duplicate-local-id');
+  const rendered = context.desktopFlightWorkspace('imports', context.route.id, context.route.flightId);
+  assert.match(rendered, /data-flight-id="102">14 Sep 2026/);
+  assert.doesNotMatch(rendered, /15 Sep 2026/);
+
+  assert.match(html, /route=\{screen,type,id:selected\?\.id\|\|id,flightId\}/);
   assert.match(html, /rows\.find\(f=>String\(f\.azureFlightId\)===String\(stableFlightId\)\)\|\|null/);
   assert.match(html, /The selected flight is no longer active\. Select another exact flight\./);
   assert.match(html, /flightDetail\(route\.type,route\.id,route\.flightId\)/);
+  assert.match(html, /id:`az-\$\{type==='imports'\?'imp':'exp'\}-\$\{apiFlight\.FlightId\}`/);
+  assert.match(html, /if\(localFlight\.azureFlightId!=null\)return String\(localFlight\.azureFlightId\)===String\(apiFlight\.FlightId\)/);
 });
 
 test('mobile route renderers and bottom navigation remain in place', () => {

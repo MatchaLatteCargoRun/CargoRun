@@ -30,12 +30,20 @@ function harness() {
   const focused = [];
   const elements = { scanUld: { value: '' } };
   const state = { imports: [], exports: [], offloads: [] };
+  const selectDesktopFlightByStableId = (type, flightId) => {
+    const stableId = String(flightId ?? '').trim();
+    const selected = (state[type] || []).find(item => String(item.azureFlightId ?? '') === stableId);
+    if (!selected) return false;
+    routes.push(['flight', type, stableId]);
+    return true;
+  };
   const context = vm.createContext({
     state,
     document: { getElementById: id => elements[id] || null, querySelector: selector => ({ scrollIntoView() {}, focus() { focused.push(selector); } }) },
     toast: message => notices.push(message),
     closeModal() {},
     openScreen: (...args) => routes.push(args),
+    selectDesktopFlightByStableId,
     modal: value => modals.push(value),
     modalHead: value => `<h2>${value}</h2>`,
     esc: value => String(value),
@@ -60,7 +68,7 @@ test('exact full ULD scan selects its one canonical match', () => {
   assert.equal(candidates[0].uldId, '10');
   h.elements.scanUld.value = 'PMC48921R7';
   h.context.doQuickScan();
-  assert.deepEqual(h.routes, [['flight', 'imports', 'local-1']]);
+  assert.deepEqual(h.routes, [['flight', 'imports', '50']]);
 });
 
 test('serial-only scan selects normally when exactly one item matches', () => {
@@ -68,7 +76,7 @@ test('serial-only scan selects normally when exactly one item matches', () => {
   h.state.exports = [flight('local-2', 60, 'QF11', '2026-09-17', [uld(20, 'AKE12345CX', 'Warehouse')])];
   h.elements.scanUld.value = '12345';
   h.context.doQuickScan();
-  assert.deepEqual(h.routes, [['flight', 'exports', 'local-2']]);
+  assert.deepEqual(h.routes, [['flight', 'exports', '60']]);
   assert.equal(h.modals.length, 0);
 });
 
@@ -181,7 +189,7 @@ test('chosen candidate re-resolves by FlightId and UldId after polling reorder',
   h.state.exports = [flight('new-local-2', 60, 'QF11', '2026-09-18', [uld(21, 'AKE00001CX'), uld(20, 'PMC48921CX', 'Warehouse')])];
   const opened = h.context.selectQuickScanCandidate(candidate.kind, candidate.type, candidate.flightId, candidate.uldId, candidate.offloadId);
   assert.equal(opened, true);
-  assert.deepEqual(h.routes, [['flight', 'exports', 'new-local-2']]);
+  assert.deepEqual(h.routes, [['flight', 'exports', '60']]);
 });
 
 test('stale stable IDs fail closed instead of redirecting to a matching serial', () => {
