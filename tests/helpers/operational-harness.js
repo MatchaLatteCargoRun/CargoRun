@@ -5,9 +5,11 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { normalizeUldNumber } = require('../../api/shared/uld');
-const { normalizeFlightNumber } = require('../../api/shared/flight');
+const flightHelpers = require('../../api/shared/flight');
+const { normalizeFlightNumber } = flightHelpers;
 const { insertAuditEvent } = require('../../api/shared/audit');
 const completionAmendments = require('../../api/shared/completion-amendments');
+const flightStatementEvidence = require('../../api/shared/flight-statement-evidence');
 const offloadEligibility = require('../../api/shared/offload-eligibility');
 
 const root = path.resolve(__dirname, '..', '..');
@@ -26,7 +28,8 @@ function loadHandler(relativePath, sqlMock) {
     require(name) {
       if (name === 'mssql') return sqlMock;
       if (name === '../shared/uld') return { normalizeUldNumber };
-      if (name === '../shared/flight') return { normalizeFlightNumber };
+      if (name === '../shared/flight') return flightHelpers;
+      if (name === '../shared/flight-statement-evidence') return flightStatementEvidence;
       if (name === '../shared/audit') return { insertAuditEvent };
       if (name === '../shared/completion-amendments') return completionAmendments;
       if (name === '../shared/offload-eligibility') return offloadEligibility;

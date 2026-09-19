@@ -200,6 +200,24 @@ function statementWithVersions(count) {
   return model;
 }
 
+function statementWithFinalEvidence(version = 1) {
+  const model = statementModel(version);
+  model.selectedVersion.snapshot = {
+    ...model.selectedVersion.snapshot,
+    exportManifestFinal: {
+      status: 'FINAL', finalManifestId: '81', confirmedAtUtc: '2026-09-19T08:51:00.000Z',
+      confirmedByObjectId: 'aad-final-operator', confirmedByDisplayName: 'Final Operator', finalUldCount: 4,
+      reconciliation: { matchedCount: 3, addedCount: 1, excludedCount: 2 }
+    },
+    fowTimeline: { source: 'dbo.IncomingMachMessages + dbo.MachFowShipments', events: [
+      { eventType: 'FOW_RECEIVED', machMessageId: '101', documentCorId: 'DOC-PRE', occurredAtUtc: '2026-09-19T08:12:00.000Z', messageLocalDateTime: '2026-09-19T18:10:00', uldNumbers: ['PMC73805QR'], ignoredAfterFinal: false },
+      { eventType: 'EXPORT_MANIFEST_FINAL_CONFIRMED', finalManifestId: '81', occurredAtUtc: '2026-09-19T08:51:00.000Z', confirmedByDisplayName: 'Final Operator', finalUldCount: 4 },
+      { eventType: 'FOW_RECEIVED', machMessageId: '102', documentCorId: 'DOC-POST', occurredAtUtc: '2026-09-19T08:55:00.000Z', uldNumbers: ['PMC77777QR'], ignoredAfterFinal: true, manifestChanged: false, operationalStatusChanged: false }
+    ] }
+  };
+  return model;
+}
+
 test('unified renderer keeps V1 original and renders V2-V4 offload state from selected snapshots', () => {
   const h = frontendHarness();
   const v1 = h.context.flightStatementBody(statementModel(1), true);
@@ -212,6 +230,39 @@ test('unified renderer keeps V1 original and renders V2-V4 offload state from se
     assert.match(rendered, /AKE90999CX/);
     assert.match(rendered, new RegExp(expected));
   }
+});
+
+test('new immutable statement renders authoritative FINAL metadata and chronological FOW evidence', () => {
+  const h = frontendHarness();
+  const rendered = h.context.flightStatementBody(statementWithFinalEvidence(), true);
+  assert.match(rendered, /FINAL BUILD INFORMATION/);
+  assert.match(rendered, /Final Confirmed/);
+  assert.match(rendered, /18:51/);
+  assert.match(rendered, /Final Operator/);
+  assert.match(rendered, /Final ULDs/);
+  assert.match(rendered, />4</);
+  assert.match(rendered, /FOW TIMELINE/);
+  assert.ok(rendered.indexOf('PMC73805QR') < rendered.indexOf('FINAL confirmed'));
+  assert.ok(rendered.indexOf('FINAL confirmed') < rendered.indexOf('PMC77777QR'));
+  assert.match(rendered, /FOW RECEIVED AFTER FINAL — IGNORED/);
+  assert.match(rendered, /DocumentCorID: DOC-POST/);
+  assert.doesNotMatch(rendered, /undefined|null/);
+});
+
+test('screen, print, and downloaded HTML path use the same selected immutable FINAL and FOW snapshot', () => {
+  const h = frontendHarness(), model = statementWithFinalEvidence(4);
+  const screen = h.context.flightStatementBody(model, true);
+  const printable = h.context.flightStatementHtml(model);
+  for (const evidence of ['FINAL BUILD INFORMATION', 'Final Operator', 'PMC73805QR', 'PMC77777QR', 'FOW RECEIVED AFTER FINAL — IGNORED']) {
+    assert.match(screen, new RegExp(evidence));
+    assert.match(printable, new RegExp(evidence));
+  }
+});
+
+test('historical snapshot without FINAL or FOW evidence omits both sections cleanly', () => {
+  const h = frontendHarness(), rendered = h.context.flightStatementBody(statementModel(1), true);
+  assert.doesNotMatch(rendered, /FINAL BUILD INFORMATION|FOW TIMELINE/);
+  assert.doesNotMatch(rendered, /undefined|null/);
 });
 
 test('compact offload table handles zero and one offload with optional detail', () => {
