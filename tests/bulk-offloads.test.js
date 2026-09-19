@@ -317,6 +317,25 @@ test('Request Offload is one multi-select workflow with bounded responsive nativ
   assert.match(html, /@media\(max-width:700px\)[\s\S]*\.bulk-offload-list\{grid-template-columns:1fr/);
 });
 
+test('Export workspace entry preselects the exact FlightId and loads only its eligible ULDs', async () => {
+  const h = frontendHarness();
+  const opening = h.context.showRequestOffload('2');
+  h.respond(0, { ok: true, flights: [
+    { flightId: '1', flightNumber: 'CX178', operatingDate: '2026-09-17', flightStatus: 'ACTIVE' },
+    { flightId: '2', flightNumber: 'CX178', operatingDate: '2026-09-18', flightStatus: 'CLOSED' }
+  ] });
+  while (h.requests.length < 2) await new Promise(resolve => setImmediate(resolve));
+  assert.equal(h.elements.offFlightId.value, '2');
+  assert.equal(h.requests[1].url, '/api/offloads?eligibleUlds=true&flightId=2');
+  h.respond(1, { ok: true, ulds: [{
+    FlightId: '2', UldId: '20', UldNumber: 'AKE20000CX', CurrentStatus: 'WAREHOUSE'
+  }], blockedUlds: [] });
+  await opening;
+  assert.match(h.elements.offFlightContext.textContent, /FlightId 2/);
+  assert.match(h.elements.offUldCandidates.innerHTML, /AKE20000CX/);
+  assert.match(h.elements.offUldCandidates.innerHTML, /ULD ID 20/);
+});
+
 test('Select All selects only eligible ULDs, supports indeterminate state, and clears selection', async () => {
   const h = frontendHarness();
   await openRequestUi(h);

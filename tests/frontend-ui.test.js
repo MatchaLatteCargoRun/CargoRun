@@ -35,6 +35,33 @@ test('desktop Home is lookup-first and keeps upload and operational routes', () 
   assert.match(html, /runDesktopUldLookup\(\)/);
   assert.match(html, /showUploadFlightData\(\)/);
   assert.match(html, /openScreen\('offloads'\)/);
+  assert.match(html, /function homeGreetingName\([^)]*\).*name\.includes\('@'\)/);
+  assert.match(html, /Welcome, \$\{esc\(homeGreetingName\(u\)\)\}/);
+});
+
+test('desktop ULD rows preserve DHL and strong handling and priority tokens', () => {
+  assert.match(html, /function isDhlUnit\(u\)/);
+  assert.match(html, /uld-flag dhl">DHL EXPRESS/);
+  assert.match(html, /desktopHandlingInfo\(u,isImport,f\)/);
+  assert.match(html, /uld-flag \\?\$\{handling\.toLowerCase\(\)\}/);
+  assert.match(html, /\.ops-table \.uld-flag\.intact\{/);
+  assert.match(html, /\.ops-table \.uld-flag\.breakdown\{/);
+  assert.match(html, /desktopPriorityInfo\(f,u,type\)/);
+  assert.match(html, /priorityBadges\(priorityTagsFor\(f,u,type\)\)/);
+});
+
+test('desktop Import table avoids duplicated status and keeps acceptance timing', () => {
+  assert.match(html, /<th>Handling \/ weight<\/th><th>Priority \/ SHC<\/th><th>\$\{isImport\?'Acceptance timing':'Movement evidence'\}<\/th><th>Action<\/th>/);
+  assert.match(html, /if\(type==='imports'\)return acceptanceBadge\(f,u\)/);
+  assert.doesNotMatch(html, /<th>ULD<\/th><th>Status<\/th>/);
+  assert.match(html, /Accepted \$\{s\.minutes\}m after arrival/);
+});
+
+test('Request Offload is visible on the queue and selected Export workspace', () => {
+  assert.match(html, /<h1>Offloads<\/h1>[\s\S]*showRequestOffload\(\)">Request Offload/);
+  assert.match(html, /data-flight-id="\$\{esc\(f\.azureFlightId\|\|''\)\}" onclick="showRequestOffload\('\$\{esc\(f\.azureFlightId\|\|''\)\}'\)">Request Offload/);
+  assert.match(html, /async function showRequestOffload\(preselectedFlightId=''\)/);
+  assert.match(html, /stableOperationalId\(preselectedFlightId\)/);
 });
 
 test('Import and Export split selectors carry and resolve exact FlightId', () => {
