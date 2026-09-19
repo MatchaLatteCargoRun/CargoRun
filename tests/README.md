@@ -14,6 +14,7 @@ node --test tests/completion-amendments.test.js
 node --test tests/flight-summary-offloads.test.js
 node --test tests/flight-statement.test.js
 node --test tests/mascot-loader.test.js
+node --test tests/admin-configuration.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
@@ -23,6 +24,13 @@ Run the complete suite with `node --test tests/*.test.js`. If the sandbox blocks
 child-process isolation with `spawn EPERM`, use
 `node --test --test-isolation=none tests/*.test.js` on a Node version supporting
 that option. Record the actual local runtime separately from Azure Node 22.
+
+Admin configuration tests cover the Phase A foundation: exact Global → Station
+→ Airline → Airline+Station precedence, effective-date history, many-to-many
+SHC grouping, unassigned SHCs, priority/SLA/mail/document fallbacks, capability
+staging, additive migration gates, the read-only Admin shell, and the transactional
+single-identity bootstrap template. Tests do not execute SQL, apply the migration,
+enable capability enforcement, or change the compatibility rules used by operations.
 
 Phase B tests execute the real offload handler against both legacy aliases and
 the live `OffloadStatus`/`Bay` schema. They cover historical ACTIVE/CLOSED/FINALISED
