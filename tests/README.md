@@ -13,6 +13,7 @@ node --test tests/bulk-offloads.test.js
 node --test tests/completion-amendments.test.js
 node --test tests/flight-summary-offloads.test.js
 node --test tests/flight-statement.test.js
+node --test tests/mascot-loader.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
