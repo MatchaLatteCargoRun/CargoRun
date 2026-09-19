@@ -112,7 +112,7 @@ test('offload request attaches to the explicitly selected flight instance, never
   const handler = loadHandler('api/offloads/index.js', h.sql);
   const response = await call(handler, 'POST', { uldId: '7', uldNumber: 'PMC48921R7', flightId: 100, flightNumber: 'CX178', operatingDate: '2026-09-17', parkingBay: 'F25' });
   assert.equal(response.status, 201);
-  assert.equal(h.state.offload.FlightId, 100);
+  assert.equal(h.state.offload.FlightId, '100');
   assert.equal(h.state.offload.FlightNumber, 'CX0178');
   assert.equal(response.body.offload.operatingDate, '2026-09-17');
   assert.equal(h.state.queries.some(call => /TOP 1|ORDER BY OperatingDate DESC/.test(call.q)), false);

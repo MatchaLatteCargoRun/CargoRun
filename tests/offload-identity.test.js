@@ -45,7 +45,7 @@ test('Flight Summary GET returns only exact FlightId offloads in deterministic o
  assert.deepEqual({offload:h.state.offload,extraOffloads:h.state.extraOffloads,flights:h.state.flights,audits:h.state.audits},before);
  const scoped=h.state.queries.find(x=>Object.hasOwn(x.p,'SummaryFlightId'));
  assert.equal(scoped.p.SummaryFlightId,'1');assert.match(scoped.q,/WHERE o\.\[FlightId\] = @SummaryFlightId/);
- assert.match(scoped.q,/ORDER BY o\.\[OffloadId\] ASC/);assert.doesNotMatch(scoped.q,/INSERT|UPDATE|DELETE/);
+ assert.match(scoped.q,/ORDER BY CASE WHEN o\.\[RequestedAtUtc\] IS NULL THEN 1 ELSE 0 END, o\.\[RequestedAtUtc\] ASC, o\.\[OffloadId\] ASC/);assert.doesNotMatch(scoped.q,/INSERT|UPDATE|DELETE/);
 });
 
 test('Flight Summary GET handles no offloads and rejects invalid or unknown FlightId',async()=>{
@@ -82,7 +82,7 @@ test('completion-backed CLOSED and FINALISED flights append V2 and preserve V1 b
   assert.deepEqual(h.state.flights,before.flights);assert.deepEqual(h.state.completions,before.completions);
   assert.equal(h.state.audits.length,1);assert.equal(JSON.parse(h.state.audits[0].DetailsJson).amendment.versionNumber,2);
   const retry=await call(h.handler,'POST',body);
-  assert.equal(retry.body.code,'ACTIVE_OFFLOAD_EXISTS');assert.equal(h.state.amendments.length,1);assert.equal(h.state.audits.length,1);
+  assert.equal(retry.body.code,'OFFLOAD_EXISTS');assert.equal(h.state.amendments.length,1);assert.equal(h.state.audits.length,1);
  }
 });
 
@@ -177,10 +177,10 @@ test('wrong-flight UldId and multiple canonical ULD identities fail closed',asyn
  ]){const h=setup({offloadUlds:rows});const r=await call(h.handler,'POST',body);assert.equal(r.status,409);assert.equal(h.state.audits.length,0)}
 });
 
-test('active exact/legacy duplicate returns stable existing OffloadId; corrupt matches require review',async()=>{
+test('permanent exact/legacy duplicate returns stable existing OffloadId; corrupt matches require review',async()=>{
  for(const uldId of [null,'7']){
   const h=setup({offload:{OffloadId:'40',FlightId:'1',UldId:uldId,UldNumber:'AKE 12345 CX',OffloadStatus:'TRANSIT'}});
-  const r=await call(h.handler,'POST',body);assert.equal(r.status,409);assert.equal(r.body.code,'ACTIVE_OFFLOAD_EXISTS');assert.equal(r.body.offloadId,'40');assert.equal(h.state.audits.length,0);
+  const r=await call(h.handler,'POST',body);assert.equal(r.status,409);assert.equal(r.body.code,'OFFLOAD_EXISTS');assert.equal(r.body.offloadId,'40');assert.equal(h.state.audits.length,0);
  }
  const h=setup({offload:{OffloadId:'40',FlightId:'1',UldId:null,UldNumber:'AKE12345CX',OffloadStatus:'REQUESTED'}});
  h.state.extraOffloads.push({...h.state.offload,OffloadId:'41'});
@@ -204,7 +204,7 @@ test('closed flight rejects wrong ownership and keeps concurrent duplicates to o
  assert.equal(results.find(r=>r.status===409).body.offloadId,'90');
  assert.equal(h.state.audits.length,1);assert.equal(h.state.commits,1);assert.equal(h.state.flights[0].FlightStatus,'CLOSED');
  const retry=await call(h.handler,'POST',body);
- assert.equal(retry.body.code,'ACTIVE_OFFLOAD_EXISTS');assert.equal(retry.body.offloadId,'90');assert.equal(h.state.audits.length,1);
+ assert.equal(retry.body.code,'OFFLOAD_EXISTS');assert.equal(retry.body.offloadId,'90');assert.equal(h.state.audits.length,1);
 });
 
 test('same historical flight number on different dates uses exact FlightId and owned UldId',async()=>{
@@ -217,10 +217,11 @@ test('same historical flight number on different dates uses exact FlightId and o
  assert.equal(wrongDate.body.code,'FLIGHT_CONTEXT_MISMATCH');
 });
 
-test('COMPLETE history including mismatched Offload 12 stays untouched and permits new request',async()=>{
+test('COMPLETE history permanently blocks a matching ULD while mismatched legacy Offload 12 stays untouched',async()=>{
  const h=setup();h.state.extraOffloads.push({OffloadId:'12',FlightId:'25',UldId:null,UldNumber:'AKE88888CX',OffloadStatus:'COMPLETE'}, {OffloadId:'11',FlightId:'1',UldId:'7',UldNumber:'AKE12345CX',OffloadStatus:'COMPLETE'});
  const before=structuredClone(h.state.extraOffloads);const r=await call(h.handler,'POST',body);
- assert.equal(r.status,201);assert.deepEqual(h.state.extraOffloads,before);
+ assert.equal(r.status,409);assert.equal(r.body.code,'OFFLOAD_EXISTS');assert.equal(r.body.offloadId,'11');
+ assert.equal(h.state.offload,null);assert.equal(h.state.audits.length,0);assert.deepEqual(h.state.extraOffloads,before);
 });
 
 test('legacy Offload 9 progresses by ID without flight/ULD inference or eligibility and rejects stale retry',async()=>{
@@ -290,7 +291,7 @@ test('historical flight choices show date/status/ID and submit only the explicit
  assert.match(h.elements.offFlightId.innerHTML,/CX178 • 2025-01-02 • Finalised • Flight #2/);
  assert.equal(h.elements.offFlightId.value,'');assert.equal(h.requests.length,1);
  h.elements.offFlightId.value='2';const loading=h.context.loadOffloadUlds();
- assert.equal(h.requests[1].url,'/api/ulds?flightId=2');
+ assert.equal(h.requests[1].url,'/api/offloads?eligibleUlds=true&flightId=2');
  h.respond(1,{ulds:[{FlightId:'2',UldId:'8',UldNumber:'AKE-12345-CX'}]});await loading;
  h.elements.offUldId.value='8';h.elements.offBay.value='F25';const create=h.context.createOffload();
  const payload=JSON.parse(h.requests[2].options.body);
@@ -302,7 +303,7 @@ test('flight switching clears ULDs and late flight A response cannot populate fl
  const h=await startUi();h.elements.offFlightId.value='1';const a=h.context.loadOffloadUlds();
  h.elements.offUldId.value='7';h.elements.offFlightId.value='2';const b=h.context.loadOffloadUlds();
  assert.equal(h.elements.offUldId.value,'');assert.equal(h.elements.offSubmit.disabled,true);
- assert.equal(h.requests[1].url,'/api/ulds?flightId=1');assert.equal(h.requests[2].url,'/api/ulds?flightId=2');
+ assert.equal(h.requests[1].url,'/api/offloads?eligibleUlds=true&flightId=1');assert.equal(h.requests[2].url,'/api/offloads?eligibleUlds=true&flightId=2');
  h.respond(2,{ulds:[{FlightId:'2',UldId:'8',UldNumber:'PMC22222TG',CurrentStatus:'TRANSIT'}]});await b;
  h.respond(1,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE12345CX',CurrentStatus:'WAREHOUSE'}]});await a;
  assert.match(h.elements.offUldId.innerHTML,/PMC22222TG/);assert.doesNotMatch(h.elements.offUldId.innerHTML,/AKE12345CX/);
@@ -312,7 +313,7 @@ test('empty or wrong-flight ULD responses keep submission disabled',async()=>{
  for(const rows of [[],[{FlightId:'2',UldId:'8',UldNumber:'PMC22222TG'}]]){
   const h=await startUi();h.elements.offFlightId.value='1';const p=h.context.loadOffloadUlds();h.respond(1,{ulds:rows});await p;
   assert.equal(h.elements.offSubmit.disabled,true);assert.equal(h.elements.offUldId.disabled,true);
-  assert.match(h.elements.offRequestMessage.textContent,rows.length?/does not match/:/No ULDs available/);
+  assert.match(h.elements.offRequestMessage.textContent,rows.length?/does not match/:/No ULDs on this flight are eligible/);
  }
 });
 
@@ -333,7 +334,7 @@ test('UI submits selected stable IDs and opens exact duplicate OffloadId',async(
  const h=await startUi();h.elements.offFlightId.value='1';const p=h.context.loadOffloadUlds();h.respond(1,{ulds:[{FlightId:'1',UldId:'7',UldNumber:'AKE-12345-CX',CurrentStatus:'AT_AIRCRAFT'}]});await p;
  h.elements.offUldId.value='7';h.elements.offBay.value='F25';const create=h.context.createOffload();
  assert.deepEqual(JSON.parse(h.requests[2].options.body),{flightId:'1',uldId:'7',uldNumber:'AKE12345CX',flightNumber:'CX178',operatingDate:'2026-09-17',parkingBay:'F25',requestInstruction:''});
- h.respond(2,{code:'ACTIVE_OFFLOAD_EXISTS',offloadId:'40'},409);await create;
+ h.respond(2,{code:'OFFLOAD_EXISTS',offloadId:'40'},409);await create;
  assert.deepEqual(h.opened,[['offload','','','','40']]);
  const source=html.slice(html.indexOf('let offloadRequestSession='),html.indexOf('function handleOffload('));
  assert.doesNotMatch(source,/Date\.now|new Date|id="offUld"/);

@@ -3,6 +3,7 @@ const { normalizeUldNumber } = require('../shared/uld');
 const { normalizeFlightNumber } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
 const { appendOffloadAmendmentIfRequired, CompletionAmendmentError } = require('../shared/completion-amendments');
+const { operationalId, acquireOffloadFlightLock, evaluateOffloadEligibility } = require('../shared/offload-eligibility');
 
 
 function getHeader(req, name) {
@@ -53,13 +54,6 @@ function clean(value, max = 150) {
 
 function canonical(value) {
   return String(value || '').trim().toUpperCase().replace(/[\s-]+/g, '_');
-}
-
-function operationalId(value) {
-  if (typeof value !== 'string' && typeof value !== 'number') return null;
-  if (typeof value === 'number' && !Number.isSafeInteger(value)) return null;
-  const id = String(value ?? '').trim();
-  return /^[1-9]\d*$/.test(id) && BigInt(id) <= 9223372036854775807n ? id : null;
 }
 
 // Historical export flights remain eligible without changing their lifecycle.
@@ -136,6 +130,74 @@ function normalize(row, columns) {
   };
 }
 
+async function loadOffloadEligibility(requestSource, flightId, columns, lockForUpdate = false) {
+  const idCol = pick(columns, ['OffloadId', 'Id']);
+  const flightIdCol = pick(columns, ['FlightId']);
+  const uldIdCol = pick(columns, ['UldId']);
+  if (!idCol || !flightIdCol || !uldIdCol) throw new Error('Offload identity schema is unavailable');
+  const lock = lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : '';
+  const makeRequest = () => typeof requestSource.request === 'function'
+    ? requestSource.request()
+    : new sql.Request(requestSource);
+  const ulds = await makeRequest()
+    .input('EligibilityFlightId', sql.BigInt, flightId)
+    .query(`SELECT CONVERT(varchar(20), UldId) AS UldId, UldNumber, CurrentStatus
+      FROM dbo.ULDs ${lock} WHERE FlightId = @EligibilityFlightId;`);
+  const offloads = await makeRequest()
+    .input('EligibilityFlightId', sql.BigInt, flightId)
+    .query(`SELECT CONVERT(varchar(20), ${q(idCol)}) AS OffloadId,
+      CONVERT(varchar(20), ${q(uldIdCol)}) AS UldId, UldNumber
+    FROM dbo.Offloads ${lock} WHERE ${q(flightIdCol)} = @EligibilityFlightId;`);
+  return evaluateOffloadEligibility(ulds.recordset, offloads.recordset);
+}
+
+function offloadInsertPlan(columns) {
+  const names = [];
+  const values = [];
+  const add = (candidates, expression) => {
+    const col = pick(columns, candidates);
+    if (!col || names.includes(col)) return;
+    names.push(col);
+    values.push(expression);
+  };
+  add(['FlightId'], '@FlightId');
+  add(['UldId'], '@UldId');
+  add(['FlightNumber', 'Flight'], '@FlightNumber');
+  add(['UldNumber', 'ULDNumber', 'Uld'], '@UldNumber');
+  add(['ParkingBay', 'Bay'], '@ParkingBay');
+  add(['Status', 'OffloadStatus'], '@Status');
+  add(['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc'], 'SYSUTCDATETIME()');
+  add(['RequestedByDisplayName', 'RequestedByName'], '@ActorDisplayName');
+  add(['RequestedByObjectId', 'RequestedById', 'RequestedByReference'], '@ActorReference');
+  add(['RequestInstruction', 'RequestedInstruction', 'RequestNote', 'HandlingInstruction'], '@RequestInstruction');
+  const mapped = new Set(names.map(name => name.toLowerCase()));
+  const requiredUnknown = columns.filter(column =>
+    column.IS_NULLABLE === 'NO' && !column.COLUMN_DEFAULT && Number(column.IS_IDENTITY) !== 1 &&
+    !mapped.has(String(column.COLUMN_NAME).toLowerCase())
+  );
+  return { names, values, requiredUnknown };
+}
+
+async function insertOffloadRow(transaction, columns, values) {
+  const plan = offloadInsertPlan(columns);
+  if (plan.requiredUnknown.length) {
+    throw new Error(`Offloads schema has unmapped required columns: ${plan.requiredUnknown.map(c => c.COLUMN_NAME).join(', ')}`);
+  }
+  const request = new sql.Request(transaction)
+    .input('FlightId', sql.BigInt, values.flightId)
+    .input('UldId', sql.BigInt, values.uldId)
+    .input('FlightNumber', sql.NVarChar(12), values.flightNumber)
+    .input('UldNumber', sql.NVarChar(20), values.uldNumber)
+    .input('ParkingBay', sql.NVarChar(20), values.parkingBay)
+    .input('RequestInstruction', sql.NVarChar(300), values.requestInstruction)
+    .input('Status', sql.VarChar(20), 'REQUESTED')
+    .input('ActorDisplayName', sql.NVarChar(150), values.actorDisplayName)
+    .input('ActorReference', sql.NVarChar(150), values.actorReference);
+  const inserted = await request.query(`INSERT INTO dbo.Offloads (${plan.names.map(q).join(', ')})
+    OUTPUT INSERTED.* VALUES (${plan.values.join(', ')});`);
+  return normalize(inserted.recordset[0], columns);
+}
+
 module.exports = async function (context, req) {
   let pool;
   let transaction;
@@ -177,6 +239,40 @@ module.exports = async function (context, req) {
           direction: f.Direction, flightStatus: f.FlightStatus
         }));
         sendJson(context, 200, { ok: true, flights });
+        return;
+      }
+      if (req.query?.eligibleUlds === 'true') {
+        const requestedFlightId = operationalId(req.query.flightId);
+        if (!requestedFlightId) {
+          sendJson(context, 400, { ok: false, error: 'A valid flightId is required' });
+          return;
+        }
+        if (!flightIdCol || !pick(columns, ['UldId'])) {
+          sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Offload eligibility requires the Phase B identity migration' });
+          return;
+        }
+        const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
+        const selectedFlight = flightResult.recordset?.[0] || null;
+        const flightStatus = canonical(selectedFlight?.FlightStatus);
+        if (!selectedFlight || selectedFlight.Direction !== 'EXPORT' || !offloadFlightStatuses.includes(flightStatus)) {
+          sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select an ACTIVE, CLOSED or FINALISED export flight' });
+          return;
+        }
+        const eligibility = await loadOffloadEligibility(pool, requestedFlightId, columns, false);
+        const ulds = eligibility.filter(item => item.eligible).map(item => ({
+          FlightId: requestedFlightId, UldId: item.uldId,
+          UldNumber: item.uldNumber, CurrentStatus: item.currentStatus
+        }));
+        sendJson(context, 200, {
+          ok: true,
+          flight: {
+            flightId: String(selectedFlight.FlightId), flightNumber: selectedFlight.FlightNumber,
+            operatingDate: selectedFlight.OperatingDate, direction: selectedFlight.Direction,
+            flightStatus: selectedFlight.FlightStatus
+          },
+          count: ulds.length,
+          ulds
+        });
         return;
       }
       if (req.query?.flightId !== undefined) {
@@ -251,38 +347,46 @@ module.exports = async function (context, req) {
     const actorReference = identity.reference;
 
     if (req.method === 'POST') {
-      let uldNumber = normalizeUldNumber(body.uldNumber);
+      const isBulk = String(body.action || '').toUpperCase() === 'BULK_CREATE';
       const requestedFlightId = operationalId(body.flightId);
-      const requestedUldId = operationalId(body.uldId);
       const requestedFlightNumber = clean(body.flightNumber, 12)?.toUpperCase() || null;
       const requestedOperatingDate = body.operatingDate === null || body.operatingDate === undefined
         ? null
         : String(body.operatingDate).trim();
       const parkingBay = clean(body.parkingBay, 21)?.toUpperCase();
       const requestInstruction = clean(body.requestInstruction, 300);
+      const requestedUldIds = isBulk
+        ? (Array.isArray(body.uldIds) ? body.uldIds.map(operationalId) : [])
+        : [operationalId(body.uldId)];
+      const requestedUldNumber = isBulk ? null : normalizeUldNumber(body.uldNumber);
 
-      if (!uldNumber || !requestedFlightId || !requestedUldId || !parkingBay || parkingBay.length > 20) {
-        sendJson(context, 400, { ok: false, error: 'Valid flightId, uldId, uldNumber and parkingBay (at most 20 characters) are required' });
+      if (!requestedFlightId || !parkingBay || parkingBay.length > 20 || !requestedUldIds.length ||
+          requestedUldIds.some(id => !id) || new Set(requestedUldIds).size !== requestedUldIds.length ||
+          requestedUldIds.length > 100 || (!isBulk && !requestedUldNumber) || (isBulk && !requestInstruction)) {
+        sendJson(context, 400, { ok: false, error: 'Valid flightId, unique uldIds and parkingBay (at most 20 characters) are required; bulk requests also require an instruction' });
         return;
       }
-
       if (requestedOperatingDate && !/^\d{4}-\d{2}-\d{2}$/.test(requestedOperatingDate)) {
         sendJson(context, 400, { ok: false, error: 'operatingDate must use YYYY-MM-DD' });
         return;
       }
-
       if (!flightIdCol || !pick(columns, ['UldId'])) {
         sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Offload creation requires the Phase B identity migration' });
         return;
       }
-
-      if (uldNumber.length > 20) {
+      if (requestedUldNumber && requestedUldNumber.length > 20) {
         sendJson(context, 400, { ok: false, error: 'uldNumber exceeds 20 characters after normalization' });
+        return;
+      }
+      const insertPlan = offloadInsertPlan(columns);
+      if (insertPlan.requiredUnknown.length) {
+        sendJson(context, 500, { ok: false, error: `Offloads schema has unmapped required columns: ${insertPlan.requiredUnknown.map(c => c.COLUMN_NAME).join(', ')}` });
         return;
       }
 
       transaction = new sql.Transaction(pool);
       await transaction.begin();
+      await acquireOffloadFlightLock(transaction, sql, requestedFlightId);
 
       const flightResult = await selectOffloadFlights(new sql.Request(transaction), requestedFlightId, true);
       const selectedFlight = flightResult.recordset?.[0] || null;
@@ -292,7 +396,7 @@ module.exports = async function (context, req) {
         return;
       }
 
-      const flightId = selectedFlight.FlightId;
+      const flightId = String(selectedFlight.FlightId);
       const flightNumber = clean(selectedFlight.FlightNumber, 12)?.toUpperCase();
       const operatingDate = clean(selectedFlight.OperatingDate, 10);
       const flightStatusAtRequest = canonical(selectedFlight.FlightStatus);
@@ -310,132 +414,90 @@ module.exports = async function (context, req) {
         return;
       }
 
-      // Lock the whole flight ULD range to detect canonical legacy collisions.
-      const ulds = await new sql.Request(transaction)
-        .input('FlightId', sql.BigInt, flightId)
-        .query(`SELECT CONVERT(varchar(20), UldId) AS UldId, UldNumber
-          FROM dbo.ULDs WITH (UPDLOCK, HOLDLOCK) WHERE FlightId = @FlightId;`);
-      const selectedUld = ulds.recordset.find(u => String(u.UldId) === requestedUldId);
-      const canonicalMatches = ulds.recordset.filter(u => normalizeUldNumber(u.UldNumber) === uldNumber);
-      if (!selectedUld || normalizeUldNumber(selectedUld.UldNumber) !== uldNumber || canonicalMatches.length !== 1) {
-        await transaction.rollback(); transaction = null;
-        sendJson(context, 409, { ok: false, code: 'ULD_CONTEXT_MISMATCH', error: 'Selected ULD does not uniquely match this flight and number; review again' });
-        return;
+      const eligibility = await loadOffloadEligibility(transaction, flightId, columns, true);
+      const eligibilityById = new Map(eligibility.map(item => [item.uldId, item]));
+      const selected = requestedUldIds.map(uldId => eligibilityById.get(uldId) || {
+        uldId, uldNumber: null, eligible: false, code: 'ULD_NOT_FOUND', existingOffloadId: null
+      });
+      if (!isBulk && selected[0]?.uldNumber !== requestedUldNumber) {
+        selected[0] = { ...selected[0], eligible: false, code: 'ULD_CONTEXT_MISMATCH', existingOffloadId: null };
       }
-      uldNumber = normalizeUldNumber(selectedUld.UldNumber);
-
-      const active = await new sql.Request(transaction)
-        .input('FlightId', sql.BigInt, flightId)
-        .query(`SELECT CONVERT(varchar(20), ${q(idCol)}) AS OffloadId,
-            CONVERT(varchar(20), UldId) AS UldId, UldNumber
-          FROM dbo.Offloads WITH (UPDLOCK, HOLDLOCK)
-          WHERE ${q(flightIdCol)} = @FlightId AND ${q(statusCol)} IN ('REQUESTED','TRANSIT');`);
-      const duplicates = active.recordset.filter(o => String(o.UldId) === requestedUldId || normalizeUldNumber(o.UldNumber) === uldNumber);
-      if (duplicates.length) {
-        const conflict = duplicates.length !== 1 ||
-          (duplicates[0].UldId != null && String(duplicates[0].UldId) !== requestedUldId) ||
-          normalizeUldNumber(duplicates[0].UldNumber) !== uldNumber;
+      const failures = selected.filter(item => !item.eligible).map(item => ({
+        uldId: item.uldId, uldNumber: item.uldNumber,
+        code: item.code || 'ULD_NOT_ELIGIBLE', existingOffloadId: item.existingOffloadId || null
+      }));
+      if (failures.length) {
         await transaction.rollback(); transaction = null;
-        sendJson(context, 409, conflict
-          ? { ok: false, code: 'OFFLOAD_IDENTITY_CONFLICT', error: 'Conflicting active offload identities require review' }
-          : { ok: false, code: 'ACTIVE_OFFLOAD_EXISTS', error: 'An active offload already exists', offloadId: String(duplicates[0].OffloadId) });
+        if (isBulk) {
+          sendJson(context, 409, {
+            ok: false, code: 'BULK_OFFLOAD_CONFLICT',
+            error: 'One or more ULDs already have an offload or are no longer eligible. No new requests were created.',
+            failures
+          });
+        } else {
+          const failure = failures[0];
+          sendJson(context, 409, failure.code === 'OFFLOAD_EXISTS'
+            ? { ok: false, code: 'OFFLOAD_EXISTS', error: 'An offload already exists for this flight and ULD', offloadId: failure.existingOffloadId }
+            : { ok: false, code: failure.code, error: 'Selected ULD is not eligible for a new offload; review again' });
+        }
         return;
       }
 
-      const request = new sql.Request(transaction)
-        .input('FlightId', sql.BigInt, flightId)
-        .input('UldId', sql.BigInt, requestedUldId)
-        .input('FlightNumber', sql.NVarChar(12), flightNumber)
-        .input('UldNumber', sql.NVarChar(20), uldNumber)
-        .input('ParkingBay', sql.NVarChar(20), parkingBay)
-        .input('RequestInstruction', sql.NVarChar(300), requestInstruction)
-        .input('Status', sql.VarChar(20), 'REQUESTED')
-        .input('ActorDisplayName', sql.NVarChar(150), actorDisplayName)
-        .input('ActorReference', sql.NVarChar(150), actorReference);
-
-      const names = [];
-      const values = [];
-      const add = (candidates, expression) => {
-        const col = pick(columns, candidates);
-        if (!col || names.includes(col)) return;
-        names.push(col);
-        values.push(expression);
-      };
-
-      add(['FlightId'], '@FlightId');
-      add(['UldId'], '@UldId');
-      add(['FlightNumber', 'Flight'], '@FlightNumber');
-      add(['UldNumber', 'ULDNumber', 'Uld'], '@UldNumber');
-      add(['ParkingBay', 'Bay'], '@ParkingBay');
-      add(['Status', 'OffloadStatus'], '@Status');
-      add(['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc'], 'SYSUTCDATETIME()');
-      add(['RequestedByDisplayName', 'RequestedByName'], '@ActorDisplayName');
-      add(['RequestedByObjectId', 'RequestedById', 'RequestedByReference'], '@ActorReference');
-      add(['RequestInstruction', 'RequestedInstruction', 'RequestNote', 'HandlingInstruction'], '@RequestInstruction');
-
-      const mapped = new Set(names.map(n => n.toLowerCase()));
-      const requiredUnknown = columns.filter(c =>
-        c.IS_NULLABLE === 'NO' &&
-        !c.COLUMN_DEFAULT &&
-        Number(c.IS_IDENTITY) !== 1 &&
-        !mapped.has(String(c.COLUMN_NAME).toLowerCase())
-      );
-      if (requiredUnknown.length) {
-        await transaction.rollback();
-        transaction = null;
-        sendJson(context, 500, {
-          ok: false,
-          error: `Offloads schema has unmapped required columns: ${requiredUnknown.map(c => c.COLUMN_NAME).join(', ')}`
+      const createdOffloads = [];
+      const amendments = [];
+      for (let index = 0; index < selected.length; index += 1) {
+        const candidate = selected[index];
+        const created = await insertOffloadRow(transaction, columns, {
+          flightId, uldId: candidate.uldId, flightNumber, uldNumber: candidate.uldNumber,
+          parkingBay, requestInstruction, actorDisplayName, actorReference
         });
-        return;
+        created.operatingDate = operatingDate;
+        const amendment = await appendOffloadAmendmentIfRequired(transaction, sql, {
+          flightId,
+          offloadId: created.offloadId,
+          uldId: candidate.uldId,
+          action: 'OFFLOAD_REQUESTED',
+          previousStatus: null,
+          resultingStatus: 'REQUESTED',
+          reason: requestInstruction,
+          actorProvider: identity.identityProvider,
+          actorReference,
+          actorDisplayName,
+          flightStatus: flightStatusAtRequest,
+          offloadColumns: columns
+        });
+        await insertAuditEvent(transaction, sql, {
+          type: 'Offload',
+          action: 'Offload requested',
+          actorDisplayName,
+          actorReference,
+          entityType: 'Offload',
+          entityId: created.offloadId,
+          offloadId: created.offloadId,
+          flightId,
+          uldId: candidate.uldId,
+          flightNumber: created.flightNumber || flightNumber,
+          uldNumber: created.uldNumber || candidate.uldNumber,
+          toStatus: 'REQUESTED',
+          detail: `Requested from bay ${created.parkingBay || parkingBay} • Flight ${flightStatusAtRequest}${requestInstruction ? ` • Instruction: ${requestInstruction}` : ''}`,
+          details: { flightStatusAtRequest, operatingDate, amendment, bulkCount: isBulk ? selected.length : null, bulkIndex: isBulk ? index + 1 : null }
+        });
+        createdOffloads.push(created);
+        amendments.push(amendment);
       }
-
-      const insert = await request.query(`
-        INSERT INTO dbo.Offloads (${names.map(q).join(', ')})
-        OUTPUT INSERTED.*
-        VALUES (${values.join(', ')});
-      `);
-
-      const created = normalize(insert.recordset[0], columns);
-      created.operatingDate = operatingDate;
-      const amendment = await appendOffloadAmendmentIfRequired(transaction, sql, {
-        flightId,
-        offloadId: created.offloadId,
-        uldId: requestedUldId,
-        action: 'OFFLOAD_REQUESTED',
-        previousStatus: null,
-        resultingStatus: 'REQUESTED',
-        reason: requestInstruction,
-        actorProvider: identity.identityProvider,
-        actorReference,
-        actorDisplayName,
-        flightStatus: flightStatusAtRequest,
-        offloadColumns: columns
-      });
-      await insertAuditEvent(transaction, sql, {
-        type: 'Offload',
-        action: 'Offload requested',
-        actorDisplayName,
-        actorReference,
-        entityType: 'Offload',
-        entityId: created.offloadId,
-        offloadId: created.offloadId,
-        flightId,
-        uldId: requestedUldId,
-        flightNumber: created.flightNumber || flightNumber,
-        uldNumber: created.uldNumber || uldNumber,
-        toStatus: 'REQUESTED',
-        detail: `Requested from bay ${created.parkingBay || parkingBay} • Flight ${flightStatusAtRequest}${requestInstruction ? ` • Instruction: ${requestInstruction}` : ''}`,
-        details: { flightStatusAtRequest, operatingDate, amendment }
-      });
 
       await transaction.commit();
       transaction = null;
-
-      sendJson(context, 201, { ok: true, offload: created, amendment });
+      if (isBulk) {
+        sendJson(context, 201, {
+          ok: true, count: createdOffloads.length, offloads: createdOffloads,
+          amendments, message: `${createdOffloads.length} offload${createdOffloads.length === 1 ? '' : 's'} requested`
+        });
+      } else {
+        sendJson(context, 201, { ok: true, offload: createdOffloads[0], amendment: amendments[0] });
+      }
       return;
     }
-
     // PATCH
     const offloadId = String(body.offloadId || '').trim();
     const expectedCurrentStatus = canonical(body.expectedCurrentStatus);
@@ -621,15 +683,25 @@ module.exports = async function (context, req) {
     if (req.method === 'POST' && [2601, 2627].includes(err.number) &&
         String(err.message).includes('UX_Offloads_ActiveFlightUld')) {
       try {
+        const isBulk = String(req.body?.action || '').toUpperCase() === 'BULK_CREATE';
+        const selectedIds = isBulk && Array.isArray(req.body?.uldIds)
+          ? req.body.uldIds.map(operationalId).filter(Boolean)
+          : [operationalId(req.body?.uldId)].filter(Boolean);
         const existing = await pool.request()
           .input('ConflictFlightId', sql.BigInt, operationalId(req.body?.flightId))
-          .input('ConflictUldId', sql.BigInt, operationalId(req.body?.uldId))
-          .query(`SELECT CONVERT(varchar(20), OffloadId) AS OffloadId
-            FROM dbo.Offloads WHERE FlightId = @ConflictFlightId AND UldId = @ConflictUldId
-              AND OffloadStatus IN ('REQUESTED','TRANSIT');`);
-        sendJson(context, 409, existing.recordset.length === 1
-          ? { ok: false, code: 'ACTIVE_OFFLOAD_EXISTS', error: 'An active offload already exists', offloadId: existing.recordset[0].OffloadId }
-          : { ok: false, code: 'OFFLOAD_IDENTITY_CONFLICT', error: 'Offload state changed; refresh and review again' });
+          .query(`SELECT CONVERT(varchar(20), OffloadId) AS OffloadId,
+              CONVERT(varchar(20), UldId) AS UldId
+            FROM dbo.Offloads WHERE FlightId = @ConflictFlightId;`);
+        const conflicts = existing.recordset.filter(row => selectedIds.includes(String(row.UldId)));
+        sendJson(context, 409, isBulk
+          ? {
+              ok: false, code: 'BULK_OFFLOAD_CONFLICT',
+              error: 'One or more ULDs already have an offload. No new requests were created.',
+              failures: conflicts.map(row => ({ uldId: String(row.UldId), code: 'OFFLOAD_EXISTS', existingOffloadId: String(row.OffloadId) }))
+            }
+          : conflicts.length === 1
+            ? { ok: false, code: 'OFFLOAD_EXISTS', error: 'An offload already exists for this flight and ULD', offloadId: String(conflicts[0].OffloadId) }
+            : { ok: false, code: 'OFFLOAD_IDENTITY_CONFLICT', error: 'Offload state changed; refresh and review again' });
         return;
       } catch (lookupError) { context.log.error('Offload conflict lookup failed', lookupError); }
     }

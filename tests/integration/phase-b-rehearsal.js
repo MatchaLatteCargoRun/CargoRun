@@ -203,7 +203,7 @@ async function main() {
     assert.deepEqual(responses.map(r => r.status).sort(), [201,409]);
     const created = responses.find(r => r.status === 201).body.offload;
     const duplicate = responses.find(r => r.status === 409).body;
-    assert.equal(duplicate.code, 'ACTIVE_OFFLOAD_EXISTS');
+    assert.equal(duplicate.code, 'OFFLOAD_EXISTS');
     assert.equal(String(duplicate.offloadId), String(created.offloadId));
     const afterConcurrent = await state();
     assert.equal(afterConcurrent.Active, 1);

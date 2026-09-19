@@ -9,6 +9,7 @@ node --test tests/scan-ambiguity.test.js
 node --test tests/atomic-status.test.js
 node --test tests/flight-concurrency.test.js
 node --test tests/offload-identity.test.js
+node --test tests/bulk-offloads.test.js
 node --test tests/completion-amendments.test.js
 node --test tests/flight-summary-offloads.test.js
 node --test tests/flight-statement.test.js
@@ -35,6 +36,13 @@ empty/optional-field rendering, lifecycle labels and printable live summaries.
 Flight Statement tests cover read-only exact FlightId/CompletionId/version reads,
 V1 exact-byte verification, contiguous V2+ chain validation, immutable selected
 snapshots, version selection, offload rendering and matching print output.
+Bulk offload tests cover permanent all-status duplicate exclusion, shared single
+and bulk eligibility, preselected/deselectable stable ULD IDs, atomic one/seven
+row creation, stale-preview/audit/amendment rollback, concurrent batches,
+individual physical transitions, and completion-backed statement verification.
+Mascot loader tests verify the approved rig bytes, accessible compact/large
+markup, frame lifecycle cleanup, visibility pausing, reduced-motion fallback,
+responsive constraints, and bulk-offload loading copy.
 The SQL fixture models eligibility and locking; it does not execute T-SQL or
 prove Azure SQL DST, FK, CHECK, or filtered-index behavior. Run the isolated SQL
 checks in `migrations/phase-b-review.md` before applying the review-only migration.

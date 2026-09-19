@@ -197,7 +197,8 @@ function apiHarness(initialRows = []) {
       if (q.includes('FROM dbo.ULDs')) {
         assert.ok(this.tx?.active, 'ULD identity lookup must be inside the transaction');
         assert.match(q, /UPDLOCK/); assert.match(q, /HOLDLOCK/);
-        return result(state.rows.filter(x => String(x.FlightId) === String(p.FlightId)));
+        const flightId = p.EligibilityFlightId ?? p.FlightId;
+        return result(state.rows.filter(x => String(x.FlightId) === String(flightId)));
       }
       if (q.startsWith('INSERT INTO dbo.ULDs')) {
         assert.ok(this.tx?.active);
@@ -232,6 +233,8 @@ function apiHarness(initialRows = []) {
               ? { insertAuditEvent }
             : name === '../shared/completion-amendments'
               ? require('../api/shared/completion-amendments')
+            : name === '../shared/offload-eligibility'
+              ? require('../api/shared/offload-eligibility')
             : require(name)
     }, { filename: endpoint + '/index.js' });
     const log = Object.assign(() => {}, { error() {}, warn() {} });
