@@ -94,7 +94,7 @@ function harness(initialFlights = []) {
         return result(state.messages.filter(row => row.DocumentCorID === p.DocumentCorID));
       }
       if (q.includes('FROM dbo.ExportManifestFinals')) {
-        const id = p.ManifestFinalFlightId ?? p.ExistingFinalFlightId ?? p.ManualFinalFlightId ?? p.LockedFinalFlightId ?? p.FinalFlightId;
+        const id = p.ManifestFinalFlightId ?? p.ExistingFinalFlightId ?? p.ManualFinalFlightId ?? p.LockedFinalFlightId ?? p.FinalFlightId ?? p.UwsFinalFlightId ?? p.LockedUwsFinalFlightId;
         return result(state.finals.filter(row => String(row.FlightId) === String(id)));
       }
       if (q.startsWith('INSERT INTO dbo.ExportManifestFinals')) {
@@ -155,9 +155,10 @@ function harness(initialFlights = []) {
       }
       if (q.includes('FROM dbo.Flights')) {
         const exactId = p.SelectedFlightId ?? p.LockedFlightId;
+        const operatingDate = p.OperatingDate ?? p.UwsOperatingDate ?? p.LockedUwsOperatingDate;
         return result(state.flights.filter(row => exactId
           ? String(row.FlightId) === String(exactId)
-          : (!p.OperatingDate || String(row.OperatingDate) === String(p.OperatingDate))
+          : (!operatingDate || String(row.OperatingDate) === String(operatingDate))
         ));
       }
       if (q.startsWith('INSERT INTO dbo.Flights')) {
@@ -176,7 +177,7 @@ function harness(initialFlights = []) {
         return result();
       }
       if (q.includes('FROM dbo.ULDs')) {
-        const id = p.FlightId ?? p.PostFinalFlightId ?? p.LockedUldFlightId ?? p.PreviewUldFlightId;
+        const id = p.FlightId ?? p.PostFinalFlightId ?? p.LockedUldFlightId ?? p.PreviewUldFlightId ?? p.UwsUldFlightId ?? p.LockedUwsUldFlightId;
         return result(state.ulds.filter(row => String(row.FlightId) === String(id)));
       }
       if (q.startsWith('INSERT INTO dbo.ULDs')) {
@@ -251,6 +252,8 @@ function harness(initialFlights = []) {
                 ? { insertAuditEvent }
               : name === '../shared/export-manifest-final'
                 ? require('../api/shared/export-manifest-final')
+              : name === '../shared/export-uws'
+                ? require('../api/shared/export-uws')
               : require(name)
       },
       { filename: endpoint + '/index.js' }
@@ -608,4 +611,83 @@ test('FINAL uses exact FlightId when the visible flight number repeats on differ
   assert.equal(String(api.state.finals[0].FlightId), '42');
   assert.deepEqual(api.state.finalMembers.map(row => String(row.UldId)), ['12']);
   assert.equal(api.state.ulds.length, 2);
+});
+
+function exportUwsBody(action = 'PARSE_EXPORT_UWS') {
+  const sparse = (size, values) => {
+    const row = Array(size).fill('');
+    for (const [index, value] of Object.entries(values)) row[Number(index)] = value;
+    return row;
+  };
+  return {
+    action,
+    sourceFileName: 'renamed-document.xlsx',
+    workbook: { sheets: [{ name: 'Sheet1', rows: [
+      sparse(28, { 1: 'CX', 5: 'ULD/BULK LOAD WEIGHT STATEMENT' }),
+      sparse(28, { 1: 'STATION', 5: 'FLIGHT NO', 24: 'DATE' }),
+      sparse(28, { 1: 'MEL', 5: 'CX0134', 24: '19-Sep-2026' }),
+      sparse(28, { 1: 'UNIT LOAD DEVICES(ULD)' }),
+      sparse(28, { 2: 'Number', 4: 'Unload Station', 5: 'Pcs', 7: 'Tare Weight', 9: 'Net Weight', 11: 'Gross Weight', 25: 'SHC', 27: 'Remarks' }),
+      sparse(28, { 2: 'AKE47186CX', 4: 'HKG', 5: 1, 7: 86, 9: 1384, 11: 1470, 25: 'ICE,PER', 27: 'DRY ICE 30 KG' }),
+      sparse(28, { 1: 'ULD TOTAL' })
+    ] }] }
+  };
+}
+
+test('manual UWS parse resolves exact dated FlightId and remains read-only', async () => {
+  const api = harness([
+    { FlightId: 81, FlightNumber: 'CX0134', OperatingDate: '2026-09-18', Direction: 'EXPORT', FlightStatus: 'ACTIVE', OriginAirport: 'MEL', DestinationAirport: 'HKG' },
+    { FlightId: 82, FlightNumber: 'CX134', OperatingDate: '2026-09-19', Direction: 'EXPORT', FlightStatus: 'ACTIVE', OriginAirport: 'MEL', DestinationAirport: 'HKG' }
+  ]);
+  api.state.ulds.push({ FlightId: 82, UldId: 22, UldNumber: 'AKE47186CX', CurrentStatus: 'AT_AIRCRAFT', IdentityVerified: 1 });
+  const before = structuredClone(api.state.ulds);
+  const response = await api.call('manifest-upload', exportUwsBody());
+  assert.equal(response.status, 200);
+  assert.equal(response.body.document.documentType, 'EXPORT_UWS');
+  assert.equal(response.body.exactMatch.flightId, '82');
+  assert.equal(response.body.reconciliation.matched[0].currentStatus, 'AT_AIRCRAFT');
+  assert.deepEqual(api.state.ulds, before);
+  assert.equal(api.state.uploads.length, 0);
+  assert.equal(api.state.finals.length, 0);
+});
+
+test('explicit UWS review records source and audit atomically without confirming FINAL or changing status', async () => {
+  const api = harness([
+    { FlightId: 82, FlightNumber: 'CX134', OperatingDate: '2026-09-19', Direction: 'EXPORT', FlightStatus: 'ACTIVE', OriginAirport: 'MEL', DestinationAirport: 'HKG' }
+  ]);
+  api.state.ulds.push({ FlightId: 82, UldId: 22, UldNumber: 'AKE47186CX', CurrentStatus: 'TRANSIT', IdentityVerified: 1 });
+  const response = await api.call('manifest-upload', exportUwsBody('REVIEW_EXPORT_UWS'));
+  assert.equal(response.status, 200);
+  assert.equal(response.body.exactMatch.flightId, '82');
+  assert.equal(api.state.uploads.length, 1);
+  assert.equal(api.state.uploads[0].UwsUploadType, 'EXPORT_UWS');
+  assert.equal(api.state.audits.at(-1).AuditAction, 'EXPORT_UWS_REVIEWED');
+  assert.equal(api.state.ulds[0].CurrentStatus, 'TRANSIT');
+  assert.equal(api.state.ulds[0].IdentityVerified, 1);
+  assert.equal(api.state.finals.length, 0);
+  assert.equal(api.state.commits, 1);
+});
+
+test('UWS fails closed on duplicate exact flight identity, direction mismatch, and existing FINAL', async () => {
+  const duplicate = harness([
+    { FlightId: 82, FlightNumber: 'CX134', OperatingDate: '2026-09-19', Direction: 'EXPORT', FlightStatus: 'ACTIVE', OriginAirport: 'MEL', DestinationAirport: 'HKG' },
+    { FlightId: 83, FlightNumber: 'CX0134', OperatingDate: '2026-09-19', Direction: 'EXPORT', FlightStatus: 'ACTIVE', OriginAirport: 'MEL', DestinationAirport: 'HKG' }
+  ]);
+  assert.equal((await duplicate.call('manifest-upload', exportUwsBody())).body.code, 'UWS_FLIGHT_IDENTITY_CONFLICT');
+  assert.equal(duplicate.state.uploads.length, 0);
+
+  const wrongDirection = harness([
+    { FlightId: 82, FlightNumber: 'CX134', OperatingDate: '2026-09-19', Direction: 'IMPORT', FlightStatus: 'ACTIVE', OriginAirport: 'MEL', DestinationAirport: 'HKG' }
+  ]);
+  assert.equal((await wrongDirection.call('manifest-upload', exportUwsBody())).body.code, 'UWS_DIRECTION_MISMATCH');
+
+  const final = harness([
+    { FlightId: 82, FlightNumber: 'CX134', OperatingDate: '2026-09-19', Direction: 'EXPORT', FlightStatus: 'ACTIVE', OriginAirport: 'MEL', DestinationAirport: 'HKG' }
+  ]);
+  final.state.finals.push({ FinalManifestId: 9, FlightId: 82 });
+  const response = await final.call('manifest-upload', exportUwsBody('REVIEW_EXPORT_UWS'));
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'EXPORT_MANIFEST_ALREADY_FINAL');
+  assert.equal(final.state.uploads.length, 0);
+  assert.equal(final.state.audits.length, 0);
 });

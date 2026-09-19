@@ -11,6 +11,8 @@ const { insertAuditEvent } = require('../../api/shared/audit');
 const completionAmendments = require('../../api/shared/completion-amendments');
 const flightStatementEvidence = require('../../api/shared/flight-statement-evidence');
 const offloadEligibility = require('../../api/shared/offload-eligibility');
+const exportManifestFinal = require('../../api/shared/export-manifest-final');
+const exportUws = require('../../api/shared/export-uws');
 
 const root = path.resolve(__dirname, '..', '..');
 const principal = Buffer.from(JSON.stringify({
@@ -33,6 +35,8 @@ function loadHandler(relativePath, sqlMock) {
       if (name === '../shared/audit') return { insertAuditEvent };
       if (name === '../shared/completion-amendments') return completionAmendments;
       if (name === '../shared/offload-eligibility') return offloadEligibility;
+      if (name === '../shared/export-manifest-final') return exportManifestFinal;
+      if (name === '../shared/export-uws') return exportUws;
       throw new Error(`Unexpected require: ${name}`);
     }
   });

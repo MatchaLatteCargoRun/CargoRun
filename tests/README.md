@@ -108,6 +108,13 @@ Final race under the shared transaction-owned flight identity lock. The additive
 isolated rehearsal before application code that references the new tables is
 deployed.
 
+The Export UWS checks use a workbook fixture modelled on the supplied MACH
+weight statements. They cover structural document detection, reusable parsing,
+repeated flight context, exact dated FlightId matching, direction/station
+validation, rich ULD fields, separate bulk cargo, read-only preview, explicit
+review, immutable operational status, source/audit metadata, and the existing
+FINAL confirmation boundary.
+
 Before deployment, use an isolated SQL test database with the existing schema
 and indexes to run simultaneous manual/FOW requests against the same existing
 flight, including one with no ULDs. Verify one ULD, independent message links,

@@ -4,6 +4,18 @@ const {
   acquireFlightIdentityLock,
   findFlightsByIdentity
 } = require('../shared/flight');
+const { insertAuditEvent } = require('../shared/audit');
+const {
+  ManifestFinalError,
+  normalizeManifestItems,
+  reconcileManifest,
+  publicReconciliation
+} = require('../shared/export-manifest-final');
+const {
+  ExportUwsError,
+  parseExportUws,
+  matchExportUwsFlight
+} = require('../shared/export-uws');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -48,6 +60,69 @@ function getActor(req) {
   };
 }
 
+async function loadUwsFlight(request, parsed, locked = false) {
+  const hint = locked ? ' WITH (UPDLOCK,HOLDLOCK)' : '';
+  const parameter = locked ? 'LockedUwsOperatingDate' : 'UwsOperatingDate';
+  const result = await request
+    .input(parameter, sql.Date, parsed.operatingDate)
+    .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
+        Direction,FlightStatus,OriginAirport,DestinationAirport
+      FROM dbo.Flights${hint}
+      WHERE OperatingDate=@${parameter};`);
+  return matchExportUwsFlight(result.recordset, parsed);
+}
+
+async function ensureUwsBuildOpen(request, flightId, locked = false) {
+  const hint = locked ? ' WITH (UPDLOCK,HOLDLOCK)' : '';
+  const parameter = locked ? 'LockedUwsFinalFlightId' : 'UwsFinalFlightId';
+  const result = await request
+    .input(parameter, sql.BigInt, flightId)
+    .query(`SELECT FinalManifestId FROM dbo.ExportManifestFinals${hint} WHERE FlightId=@${parameter};`);
+  if (result.recordset.length) {
+    throw new ExportUwsError(
+      'EXPORT_MANIFEST_ALREADY_FINAL',
+      "FLIGHT IS FINAL. This flight's final build is locked. No changes have been made.",
+      409
+    );
+  }
+}
+
+async function loadUwsOperationalRows(request, flightId, locked = false) {
+  const hint = locked ? ' WITH (UPDLOCK,HOLDLOCK)' : '';
+  const parameter = locked ? 'LockedUwsUldFlightId' : 'UwsUldFlightId';
+  const result = await request
+    .input(parameter, sql.BigInt, flightId)
+    .query(`SELECT UldId,FlightId,UldNumber,CurrentStatus,IdentityVerified
+      FROM dbo.ULDs${hint} WHERE FlightId=@${parameter};`);
+  return result.recordset || [];
+}
+
+function uwsManifestItems(parsed) {
+  return normalizeManifestItems(parsed.ulds.map(item => ({
+    uldNumber: item.uldNumber,
+    weightKg: item.grossWeightKg,
+    remarks: item.remarks,
+    priorityText: item.priorityText,
+    shcs: item.shcs
+  })));
+}
+
+function uwsResponse(parsed, flight, items, reconciliation) {
+  return {
+    document: parsed,
+    exactMatch: {
+      flightId: String(flight.FlightId),
+      flightNumber: flight.FlightNumber,
+      operatingDate: flight.OperatingDateIso,
+      direction: flight.Direction,
+      flightStatus: flight.FlightStatus,
+      originAirport: flight.OriginAirport,
+      destinationAirport: flight.DestinationAirport
+    },
+    reconciliation: publicReconciliation(flight, items, reconciliation)
+  };
+}
+
 module.exports = async function (context, req) {
   let pool;
   let transaction;
@@ -73,6 +148,97 @@ module.exports = async function (context, req) {
     }
 
     const body = req.body || {};
+    const action = clean(body.action) || 'CREATE';
+
+    if (action === 'PARSE_EXPORT_UWS' || action === 'REVIEW_EXPORT_UWS') {
+      const sourceFileName = body.sourceFileName
+        ? String(body.sourceFileName).trim().slice(0, 260)
+        : 'MACH Export UWS.xlsx';
+      const parsed = parseExportUws(body.workbook, { sourceFileName });
+      const items = uwsManifestItems(parsed);
+
+      pool = await new sql.ConnectionPool(connectionString).connect();
+
+      if (action === 'PARSE_EXPORT_UWS') {
+        const matchedFlight = await loadUwsFlight(pool.request(), parsed);
+        await ensureUwsBuildOpen(pool.request(), matchedFlight.FlightId);
+        const reconciliation = reconcileManifest(
+          await loadUwsOperationalRows(pool.request(), matchedFlight.FlightId),
+          items
+        );
+        sendJson(context, 200, {
+          ok: true,
+          action,
+          ...uwsResponse(parsed, matchedFlight, items, reconciliation)
+        });
+        return;
+      }
+
+      const initialFlight = await loadUwsFlight(pool.request(), parsed);
+      transaction = new sql.Transaction(pool);
+      await transaction.begin();
+      await acquireFlightIdentityLock(
+        transaction,
+        sql,
+        parsed.operatingDate,
+        parsed.flightNumber
+      );
+      const matchedFlight = await loadUwsFlight(new sql.Request(transaction), parsed, true);
+      if (String(initialFlight.FlightId) !== String(matchedFlight.FlightId)) {
+        throw new ExportUwsError('UWS_FLIGHT_CHANGED', 'The matched flight changed while the UWS was being reviewed', 409);
+      }
+      await ensureUwsBuildOpen(new sql.Request(transaction), matchedFlight.FlightId, true);
+      const reconciliation = reconcileManifest(
+        await loadUwsOperationalRows(new sql.Request(transaction), matchedFlight.FlightId, true),
+        items
+      );
+
+      await new sql.Request(transaction)
+        .input('UwsUploadFlightId', sql.BigInt, matchedFlight.FlightId)
+        .input('UwsFileName', sql.NVarChar(260), sourceFileName)
+        .input('UwsUploadType', sql.NVarChar(50), 'EXPORT_UWS')
+        .input('UwsUploadedBy', sql.NVarChar(150), actor.displayName)
+        .query(`INSERT INTO dbo.FlightUploads
+          (FlightId,FileName,UploadType,UploadedByDisplayName)
+          VALUES(@UwsUploadFlightId,@UwsFileName,@UwsUploadType,@UwsUploadedBy);`);
+
+      await insertAuditEvent(transaction, sql, {
+        type: 'Flight',
+        action: 'EXPORT_UWS_REVIEWED',
+        actorDisplayName: actor.displayName,
+        actorReference: actor.reference,
+        entityType: 'Flight',
+        entityId: matchedFlight.FlightId,
+        flightId: matchedFlight.FlightId,
+        flightNumber: matchedFlight.FlightNumber,
+        detail: `Export UWS reviewed for FINAL: ${items.length} ULDs and ${parsed.bulk.length} bulk rows`,
+        details: {
+          documentType: parsed.documentType,
+          sourceFileName,
+          operatingDate: parsed.operatingDate,
+          station: parsed.station,
+          matchedFlightId: String(matchedFlight.FlightId),
+          uldCount: items.length,
+          bulkRowCount: parsed.bulk.length
+        }
+      });
+
+      await transaction.commit();
+      transaction = null;
+      sendJson(context, 200, {
+        ok: true,
+        action,
+        reviewedBy: actor.displayName,
+        ...uwsResponse(parsed, matchedFlight, items, reconciliation)
+      });
+      return;
+    }
+
+    if (action !== 'CREATE') {
+      sendJson(context, 400, { ok: false, error: 'Unsupported manifest upload action' });
+      return;
+    }
+
     const flight = body.flight || {};
     const ulds = Array.isArray(body.ulds) ? body.ulds : [];
 
@@ -381,6 +547,17 @@ module.exports = async function (context, req) {
   } catch (err) {
     if (transaction) {
       try { await transaction.rollback(); } catch {}
+    }
+
+    if (err instanceof ExportUwsError || err instanceof ManifestFinalError) {
+      sendJson(context, err.status || 400, {
+        ok: false,
+        code: err.code,
+        error: err.message,
+        ...(err.flightIds ? { flightIds: err.flightIds } : {}),
+        ...(err.collisions ? { collisions: err.collisions } : {})
+      });
+      return;
     }
 
     context.log.error('Manifest upload failed', err);

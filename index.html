@@ -1807,6 +1807,9 @@ function doQuickScan(){const val=document.getElementById('scanUld').value;if(!no
 
 let pendingFlightUpload = null;
 let pendingFinalConfirmation = null;
+const CARGORUN_XLSX_MAX_BYTES = 8 * 1024 * 1024;
+const CARGORUN_XLSX_MAX_ENTRIES = 300;
+const CARGORUN_XLSX_MAX_UNCOMPRESSED_BYTES = 30 * 1024 * 1024;
 
 function showUploadFlightData() {
   pendingFlightUpload = null;
@@ -1815,9 +1818,9 @@ function showUploadFlightData() {
     ${modalHead('Upload Flight Data')}
 
     <p>
-      Upload the office Excel file. CargoRun reads the text at the top of the
-      worksheet and automatically detects <strong>Import ULD List</strong>
-      or <strong>Export Unit List</strong>.
+      Upload the office Excel file. CargoRun reads the workbook structure and
+      automatically detects <strong>Import ULD Summary</strong>,
+      <strong>Export Unit List</strong>, or <strong>Export UWS</strong>.
     </p>
 
     <div class="upload-drop">
@@ -1894,7 +1897,12 @@ async function unzipXlsxEntries(arrayBuffer) {
   const cdOffset = xU32(view, eocd + 16);
   const td = new TextDecoder('utf-8');
 
+  if (total > CARGORUN_XLSX_MAX_ENTRIES) {
+    throw new Error('The Excel file contains too many internal entries.');
+  }
+
   const entries = {};
+  let totalUncompressed = 0;
 
   let p = cdOffset;
 
@@ -1910,6 +1918,11 @@ async function unzipXlsxEntries(arrayBuffer) {
     const extraLen = xU16(view, p + 30);
     const commentLen = xU16(view, p + 32);
     const localOff = xU32(view, p + 42);
+
+    totalUncompressed += uncompSize;
+    if (totalUncompressed > CARGORUN_XLSX_MAX_UNCOMPRESSED_BYTES) {
+      throw new Error('The expanded Excel file is too large.');
+    }
 
     const name = td.decode(
       bytes.slice(
@@ -2176,7 +2189,7 @@ function parseCargoRunRows(
   let type = null;
 
   if (
-    /IMPORT\s+ULD\s+LIST/.test(top)
+    /IMPORT\s+ULD\s+(LIST|SUMMARY)/.test(top)
   ) {
     type = 'imports';
   } else if (
@@ -2207,7 +2220,7 @@ function parseCargoRunRows(
   if (type === 'imports') {
     const m =
       allTop.match(
-        /Import\s+ULD\s+List\s*\(\s*([A-Z0-9]+)\s+([^\)]+)\)/i
+        /Import\s+ULD\s+(?:List|Summary)\s*\(\s*([A-Z0-9]+)\s+([^\)]+)\)/i
       );
 
     if (m) {
@@ -2438,61 +2451,123 @@ function parseCargoRunRows(
 }
 
 
+function detectCargoRunWorkbook(workbook) {
+  let uwsMarker = false;
+  let uwsSection = false;
+  let uwsHeader = false;
+  let importTitle = false;
+  let exportTitle = false;
+  let standardHeader = false;
+
+  for (const sheet of workbook.sheets || []) {
+    for (const row of sheet.rows || []) {
+      const headers = (row || []).map(xlsxHeader);
+      const joined = headers.join(' | ');
+      if (joined.includes('ULD/BULK LOAD WEIGHT STATEMENT')) uwsMarker = true;
+      if (joined.includes('UNIT LOAD DEVICES(ULD)')) uwsSection = true;
+      if (headers.includes('NUMBER') && headers.includes('UNLOAD STATION') && headers.includes('PCS') && headers.includes('GROSS WEIGHT')) uwsHeader = true;
+      if (/IMPORT\s+ULD\s+(LIST|SUMMARY)/.test(joined)) importTitle = true;
+      if (/EXPORT\s+(UNIT|ULD)\s+LIST/.test(joined)) exportTitle = true;
+      if (headers.some(value => value === 'ULD NUMBER' || value === 'ULD NUMBER / BULK')) standardHeader = true;
+    }
+  }
+
+  const matches = [];
+  if (uwsMarker && uwsSection && uwsHeader) matches.push('EXPORT_UWS');
+  if (importTitle && standardHeader) matches.push('IMPORT_ULD_SUMMARY');
+  if (exportTitle && standardHeader) matches.push('EXPORT_UNIT_LIST');
+  if (matches.length > 1) throw new Error('Workbook structure is ambiguous. CargoRun has not selected a workflow.');
+  if (!matches.length) throw new Error('CargoRun could not identify a supported workbook from its structure.');
+  return matches[0];
+}
+
+async function readCargoRunWorkbook(file) {
+  if (!file || !/\.xlsx$/i.test(file.name || '') || file.type && file.type !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') {
+    throw new Error('Select a valid .xlsx workbook.');
+  }
+  if (Number(file.size) > CARGORUN_XLSX_MAX_BYTES) {
+    throw new Error('The Excel file exceeds the 8 MB CargoRun limit.');
+  }
+  const arr = await file.arrayBuffer();
+  const zip = await unzipXlsxEntries(arr);
+  const td = new TextDecoder('utf-8');
+  const sharedBytes = await zip.read('xl/sharedStrings.xml');
+  const shared = sharedBytes ? parseSharedStrings(td.decode(sharedBytes)) : [];
+  const sheetNames = Object.keys(zip.entries)
+    .filter(name => /^xl\/worksheets\/sheet\d+\.xml$/i.test(name))
+    .sort((a, b) => Number((a.match(/\d+/) || [0])[0]) - Number((b.match(/\d+/) || [0])[0]));
+  if (!sheetNames.length) throw new Error('No worksheet was found in the Excel file.');
+  if (sheetNames.length > 20) throw new Error('The workbook exceeds 20 worksheets.');
+
+  const sheets = [];
+  for (const sheetName of sheetNames) {
+    const sheetBytes = await zip.read(sheetName);
+    if (!sheetBytes) throw new Error('Worksheet data could not be read.');
+    const rows = parseSheetRows(td.decode(sheetBytes), shared);
+    if (rows.length > 2500) throw new Error('A worksheet exceeds the 2,500 row CargoRun limit.');
+    sheets.push({ name: sheetName.split('/').pop(), rows });
+  }
+  return { sheets };
+}
+
+function cargoRunUwsDraft(document, sourceFile) {
+  return {
+    type: 'exports',
+    documentType: 'EXPORT_UWS',
+    flight: document.flightNumber,
+    flightDate: document.operatingDate,
+    station: document.station,
+    destination: document.destination,
+    destinations: document.destinations || [],
+    sourceFile,
+    sourceMetadata: document.sourceMetadata || {},
+    bulk: Array.isArray(document.bulk) ? document.bulk : [],
+    ulds: (document.ulds || []).map(item => ({
+      num: item.uldNumber,
+      weight: item.grossWeightKg,
+      grossWeightKg: item.grossWeightKg,
+      netWeightKg: item.netWeightKg,
+      tareWeightKg: item.tareWeightKg,
+      pieces: item.pieces,
+      destination: item.destination || '',
+      contour: item.contour || '',
+      remarks: item.remarks || '',
+      dryIceText: item.dryIceText || '',
+      priority: item.priorityText || '',
+      shcs: Array.isArray(item.shcs) ? item.shcs : []
+    }))
+  };
+}
+
+async function parseExportUwsWorkbook(workbook, sourceFileName) {
+  const response = await fetch('/api/manifest-upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    body: JSON.stringify({ action: 'PARSE_EXPORT_UWS', sourceFileName, workbook })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok || result.ok === false) throw new Error(result.error || `Export UWS parser ${response.status}`);
+  const parsed = cargoRunUwsDraft(result.document || {}, sourceFileName);
+  parsed.exactFlightId = stableOperationalId(result.exactMatch?.flightId);
+  parsed.exactMatch = result.exactMatch || null;
+  parsed.reconciliation = result.reconciliation || null;
+  parsed._workbook = workbook;
+  if (!parsed.exactFlightId) throw new Error('Export UWS did not resolve an exact CargoRun FlightId.');
+  return parsed;
+}
+
 async function parseCargoRunWorkbook(file) {
-  const arr =
-    await file.arrayBuffer();
-
-  const zip =
-    await unzipXlsxEntries(arr);
-
-  const td =
-    new TextDecoder('utf-8');
-
-  const sharedBytes =
-    await zip.read(
-      'xl/sharedStrings.xml'
-    );
-
-  const shared =
-    sharedBytes
-      ? parseSharedStrings(
-          td.decode(
-            sharedBytes
-          )
-        )
-      : [];
-
-  const sheetName =
-    Object
-      .keys(zip.entries)
-      .filter(n =>
-        /^xl\/worksheets\/sheet\d+\.xml$/i
-          .test(n)
-      )
-      .sort()[0];
-
-  if (!sheetName) {
-    throw new Error(
-      'No worksheet was found in the Excel file.'
-    );
-  }
-
-  const sheetBytes =
-    await zip.read(sheetName);
-
-  if (!sheetBytes) {
-    throw new Error(
-      'Worksheet data could not be read.'
-    );
-  }
-
-  return parseCargoRunRows(
-    parseSheetRows(
-      td.decode(sheetBytes),
-      shared
-    ),
-    file.name
-  );
+  const workbook = await readCargoRunWorkbook(file);
+  const documentType = detectCargoRunWorkbook(workbook);
+  if (documentType === 'EXPORT_UWS') return parseExportUwsWorkbook(workbook, file.name);
+  const matchingSheet = workbook.sheets.find(sheet => {
+    const joined = (sheet.rows || []).flat().map(value => String(value ?? '')).join(' | ').toUpperCase();
+    return documentType === 'IMPORT_ULD_SUMMARY'
+      ? /IMPORT\s+ULD\s+(LIST|SUMMARY)/.test(joined)
+      : /EXPORT\s+(UNIT|ULD)\s+LIST/.test(joined);
+  });
+  if (!matchingSheet) throw new Error('The detected worksheet could not be read.');
+  return { ...parseCargoRunRows(matchingSheet.rows, file.name), documentType };
 }
 
 
@@ -2534,6 +2609,48 @@ async function handleFlightWorkbook(event) {
 
     pendingFlightUpload =
       parsed;
+
+    if (parsed.documentType === 'EXPORT_UWS') {
+      const reconciliation = parsed.reconciliation || {};
+      const match = parsed.exactMatch || {};
+      const routeText = [parsed.station, parsed.destination || (parsed.destinations || []).join(' / ')]
+        .filter(Boolean).join(' → ') || 'Export route';
+      const priorityTags = [];
+      const uploadFlight = { flight: parsed.flight };
+      for (const uld of parsed.ulds) {
+        for (const tag of priorityTagsFor(uploadFlight, uld, 'exports')) {
+          if (!priorityTags.some(existing => existing.key === tag.key)) priorityTags.push(tag);
+        }
+      }
+      const bulkPieces = (parsed.bulk || []).reduce((sum, row) => sum + (Number(row.pieces) || 0), 0);
+      const bulkWeight = (parsed.bulk || []).reduce((sum, row) => sum + (Number(row.weightKg) || 0), 0);
+      box.className = 'upload-preview';
+      box.innerHTML = `
+        <div class="upload-preview-head">
+          <div><strong>${esc(parsed.flight)}</strong><small>${esc(azureDisplayDate(parsed.flightDate))} • ${esc(routeText)} • ${esc(parsed.sourceFile)}</small></div>
+          <span class="detect-badge exports">Export UWS detected</span>
+        </div>
+        <div class="accept-note" style="margin-top:10px">
+          Exact CargoRun match: <strong>FlightId ${esc(parsed.exactFlightId)}</strong> • ${esc(match.flightStatus || 'ACTIVE')}<br>
+          Uploading this document does not confirm FINAL or change operational ULD statuses.
+        </div>
+        <div class="manifest-preview-grid" style="margin-top:10px">
+          <div><span>UWS ULDs</span><strong>${Number(reconciliation.finalUldCount) || parsed.ulds.length}</strong></div>
+          <div><span>Previously expected</span><strong>${Number(reconciliation.previouslyExpectedCount) || 0}</strong></div>
+          <div><span>Matched</span><strong>${Number(reconciliation.matchedCount) || 0}</strong></div>
+          <div><span>Added</span><strong>${Number(reconciliation.addedCount) || 0}</strong></div>
+          <div><span>Not on Final</span><strong>${Number(reconciliation.excludedCount) || 0}</strong></div>
+        </div>
+        ${priorityTags.length ? `<div style="margin-top:10px">${priorityBadges(priorityTags)}</div>` : ''}
+        ${(parsed.bulk || []).length ? `
+          <div class="upload-stat" style="margin-top:10px"><span>Bulk cargo (separate from ULD count)</span><strong>${parsed.bulk.length} row${parsed.bulk.length === 1 ? '' : 's'} • ${bulkPieces} pcs • ${esc(formatWeight(bulkWeight))}</strong></div>
+          <div style="margin-top:10px"><strong>Bulk load cargo</strong><div class="manifest-reconcile-list">${parsed.bulk.map(row => `<div>${esc(row.destination || 'Destination not supplied')} • ${Number(row.pieces) || 0} pcs • ${esc(formatWeight(Number(row.weightKg) || 0))}${row.awb ? ` • ${esc(row.awb)}` : ''}${(row.shcs || []).length ? ` • ${esc(row.shcs.join(', '))}` : ''}</div>`).join('')}</div></div>
+        ` : ''}
+      `;
+      btn.disabled = false;
+      btn.textContent = 'Review FINAL';
+      return;
+    }
 
     const hc = {
       intact:
@@ -2744,11 +2861,68 @@ function cargoRunApiDate(value) {
 }
 
 
+async function reviewExportUwsUpload(p) {
+  const btn = document.getElementById('createFlightBtn');
+  if (!p?._workbook || !p.exactFlightId) {
+    toast('Select the Export UWS again.');
+    return;
+  }
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Validating UWS…';
+  }
+  showActionLoader('Reviewing Export UWS…', `${p.flight} • validating exact FlightId and FINAL membership`);
+  try {
+    const response = await fetch('/api/manifest-upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        action: 'REVIEW_EXPORT_UWS',
+        sourceFileName: p.sourceFile || '',
+        workbook: p._workbook
+      })
+    });
+    const result = await response.json().catch(() => ({}));
+    if (!response.ok || result.ok === false) throw new Error(result.error || `Export UWS review ${response.status}`);
+    const reviewedFlightId = stableOperationalId(result.exactMatch?.flightId);
+    if (!reviewedFlightId || reviewedFlightId !== p.exactFlightId) {
+      throw new Error('Export UWS flight identity changed; select the document again.');
+    }
+
+    await syncAzureFlights(true, true);
+    const flight = findFlightByStableId('exports', reviewedFlightId);
+    if (!flight) throw new Error('The exact matched export flight is not available after refresh.');
+    if (flight.exportManifestFinal) throw new Error("FLIGHT IS FINAL. This flight's final build is locked. No changes have been made.");
+
+    flight.finalManifestDraft = cargoRunUwsDraft(result.document || {}, p.sourceFile || '');
+    save();
+    pendingFlightUpload = null;
+    closeModal();
+    openScreen('flight', 'exports', reviewedFlightId);
+    setTimeout(() => previewFinalManifest(reviewedFlightId), 50);
+  } catch (error) {
+    console.error('CargoRun Export UWS review failed', error);
+    toast(error?.message || 'CargoRun could not review the Export UWS');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = 'Review FINAL';
+    }
+  } finally {
+    hideActionLoader();
+  }
+}
+
+
 async function createUploadedFlight() {
   const p =
     pendingFlightUpload;
 
   if (!p) {
+    return;
+  }
+
+  if (p.documentType === 'EXPORT_UWS') {
+    await reviewExportUwsUpload(p);
     return;
   }
 
@@ -3151,7 +3325,7 @@ async function previewFinalManifest(flightId) {
     return;
   }
   if (!draft || !Array.isArray(draft.ulds) || !draft.ulds.length) {
-    toast('Upload the final Export XLSX before confirming FINAL.');
+    toast('Upload the final Export XLSX or UWS before confirming FINAL.');
     return;
   }
   showActionLoader('Preparing FINAL reconciliation…', `${flight.flight} • checking expected ULD membership`);
@@ -3175,7 +3349,7 @@ async function previewFinalManifest(flightId) {
     modal(`${modalHead('FINAL Export Manifest')}
       <p><strong>${esc(r.flight.flightNumber)}</strong> • ${esc(azureDisplayDate(r.flight.operatingDate))} • FlightId ${esc(stableFlightId)}</p>
       <div class="manifest-preview-grid">
-        <div><span>Final XLSX ULDs</span><strong>${r.finalUldCount}</strong></div>
+        <div><span>${draft.documentType === 'EXPORT_UWS' ? 'UWS ULDs' : 'Final XLSX ULDs'}</span><strong>${r.finalUldCount}</strong></div>
         <div><span>Previously expected</span><strong>${r.previouslyExpectedCount}</strong></div>
         <div><span>Matched</span><strong>${r.matchedCount}</strong></div>
         <div><span>Added</span><strong>${r.addedCount}</strong></div>
@@ -3183,7 +3357,7 @@ async function previewFinalManifest(flightId) {
       </div>
       <div class="accept-note"><strong>Operational ULD statuses will not be changed.</strong> CurrentStatus, IdentityVerified, timestamps, UldId, offloads and movement history remain untouched.</div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px">
-        ${finalManifestList('Added from final XLSX', r.added || [], 'No new ULDs.')}
+        ${finalManifestList(draft.documentType === 'EXPORT_UWS' ? 'Added from UWS' : 'Added from final XLSX', r.added || [], 'No new ULDs.')}
         ${finalManifestList('Not on Final', r.excluded || [], 'No exclusions.')}
       </div>
       <div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" data-flight-id="${esc(stableFlightId)}" onclick="confirmFinalManifest('${esc(stableFlightId)}')">Confirm Final</button></div>`, 'wide');

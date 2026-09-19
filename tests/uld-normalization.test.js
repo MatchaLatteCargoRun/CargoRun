@@ -236,6 +236,10 @@ function apiHarness(initialRows = []) {
               ? require('../api/shared/completion-amendments')
             : name === '../shared/offload-eligibility'
               ? require('../api/shared/offload-eligibility')
+            : name === '../shared/export-manifest-final'
+              ? require('../api/shared/export-manifest-final')
+            : name === '../shared/export-uws'
+              ? require('../api/shared/export-uws')
             : require(name)
     }, { filename: endpoint + '/index.js' });
     const log = Object.assign(() => {}, { error() {}, warn() {} });
