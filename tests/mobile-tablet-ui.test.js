@@ -24,11 +24,36 @@ test('mobile home contains only the four operational module tiles', () => {
   const source = sourceBetween('function mobileHome(', 'function mobileFlightsHub(');
   for (const module of ['imports', 'exports', 'offloads', 'priority']) {
     assert.match(source, new RegExp(`tile\\('${module}'`));
+    assert.match(source, new RegExp(`data-mobile-module="\\$\\{kind\\}"`));
   }
   assert.doesNotMatch(source, /showUploadFlightData|openScreen\('history'\)|openScreen\('supervisor'\)|showScan/);
+  assert.doesNotMatch(source, /mobile-module-icon|HOME_ICON_PATH|<img/);
+  assert.match(source, /mobileModuleArtwork\(kind\)/);
+  assert.match(source, /im\.reduce\(\(n,f\)=>n\+counts\(f,'imports'\)\.done,0\)/);
+  assert.match(source, /ex\.reduce\(\(n,f\)=>n\+counts\(f,'exports'\)\.done,0\)/);
+  assert.match(source, /onclick="openScreen\('\$\{screen\}'\$\{type\?`,'\$\{type\}'`:''\}\)"/);
   assert.match(html, /\.mobile-module-grid\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
-  assert.match(html, /\.mobile-module-icon\{width:80px;height:80px/);
-  assert.match(html, /\.mobile-module-icon img\{width:60px;height:60px/);
+  assert.match(html, /\.mobile-module-art\{position:absolute[\s\S]*height:62%[\s\S]*opacity:\.19[\s\S]*pointer-events:none/);
+  assert.match(html, /\.mobile-module-copy\{position:relative;z-index:1/);
+});
+
+test('mobile Home uses distinct scalable white artwork for every operational module', () => {
+  const context = vm.createContext({});
+  vm.runInContext(sourceBetween('function mobileRiderArtwork(', 'function mobileHome('), context);
+  const imports = context.mobileModuleArtwork('imports');
+  const exports = context.mobileModuleArtwork('exports');
+  const offloads = context.mobileModuleArtwork('offloads');
+  const priority = context.mobileModuleArtwork('priority');
+  assert.match(imports, /artwork-imports[\s\S]*data-module-art="imports"[\s\S]*data-flight-motion="descending"/);
+  assert.match(exports, /artwork-exports[\s\S]*data-module-art="exports"[\s\S]*data-flight-motion="climbing"/);
+  assert.match(offloads, /artwork-offloads[\s\S]*data-module-art="offloads"/);
+  assert.match(priority, /artwork-priority[\s\S]*data-module-art="priority"/);
+  assert.notEqual(imports, exports);
+  for (const artwork of [imports, exports, offloads, priority]) {
+    assert.match(artwork, /^<svg/);
+    assert.match(artwork, /aria-hidden="true"/);
+    assert.doesNotMatch(artwork, /<img|<image|linearGradient|radialGradient|filter=|#[0-9a-f]{3,8}/i);
+  }
 });
 
 test('mobile bottom navigation is limited to Home and four operational areas', () => {
