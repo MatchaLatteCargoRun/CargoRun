@@ -5,8 +5,8 @@
       "type": "httpTrigger",
       "direction": "in",
       "name": "req",
-      "methods": ["get"],
-      "route": "configuration-control"
+      "methods": ["get", "post"],
+      "route": "configuration-control/{operation?}"
     },
     {
       "type": "http",

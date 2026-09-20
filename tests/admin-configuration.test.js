@@ -251,31 +251,36 @@ test('Admin bootstrap verification is read-only, resolves effective decisions an
   assert.match(bootstrapVerify, /ROW_NUMBER\(\) OVER/);
 });
 
-test('Admin Centre is a read-only shell and exposes no browser-only security claim', () => {
+test('Admin Centre exposes audited editors only from server-returned capabilities', () => {
   assert.match(html, /openScreen\('admin','airlines'\)/);
-  for (const label of ['Airlines','SHC Groups','SLA & Escalations','Mail Rules','Document / Intake','Messaging Centre','Employees & Permissions','Stations','Configuration Audit']) assert.match(html, new RegExp(label.replace(/[&]/g, '&')));
-  assert.match(html, /fetch\('\/api\/configuration-control',[\s\S]*method !== 'GET'|fetch\('\/api\/configuration-control'/);
-  assert.match(html, /No Admin mutation API is exposed/);
-  const start = html.indexOf('async function loadAdminConfiguration(');
+  for (const label of ['Airlines','SHC Groups & Mappings','Priority Rules','SLA & Escalations','Mail Rules','Document / Intake','Messaging Centre','Employees & Permissions','Stations','Configuration Audit']) assert.match(html, new RegExp(label.replace(/[&]/g, '&')));
+  assert.match(html, /fetch\('\/api\/configuration-control'/);
+  assert.match(html, /adminCan\('EDIT_AIRLINE_RULES'\)/);
+  assert.match(html, /adminCan\('EDIT_SHC_RULES'\)/);
+  assert.match(html, /adminCan\('EDIT_SLA_RULES'\)/);
+  assert.match(html, /READ ONLY — enforcement not enabled/);
+  const start = html.indexOf('async function adminCommitMutation(');
   const end = html.indexOf('const HOME_ICON_PATH', start);
-  assert.doesNotMatch(html.slice(start, end), /method:\s*'(POST|PATCH|PUT|DELETE)'/);
+  assert.match(html.slice(start, end), /method:'POST'/);
+  assert.doesNotMatch(html.slice(start, end), /method:\s*'(PATCH|PUT|DELETE)'/);
 });
 
-test('Admin API is authenticated and GET-only with no configuration mutation surface', () => {
+test('Admin API is authenticated and exposes GET plus explicit POST operations', () => {
   const trigger = adminFunction.bindings.find(binding => binding.type === 'httpTrigger');
-  assert.deepEqual(trigger.methods, ['get']);
+  assert.deepEqual(trigger.methods, ['get', 'post']);
   assert.equal(trigger.authLevel, 'anonymous', 'Static Web Apps authenticates the route before the handler validates x-ms-client-principal');
   assert.match(adminApi, /roles\.includes\('authenticated'\)/);
-  assert.match(adminApi, /req\.method !== 'GET'/);
-  assert.doesNotMatch(adminApi, /\b(INSERT|UPDATE|DELETE|MERGE)\s+(INTO\s+)?dbo\.CargoRun/i);
-  assert.doesNotMatch(adminApi, /userRoleAssignments|roleCapabilities|ConfigurationAudit/);
+  assert.match(adminApi, /\['GET', 'POST'\]/);
+  assert.match(adminApi, /executeConfigurationMutation/);
+  assert.match(adminApi, /AUTHORIZED_BY_ADMIN_CAPABILITY/);
+  assert.match(adminApi, /LEGACY_OPERATIONAL_AUTHORIZATION/);
 });
 
 test('Admin frontend and function expose the same deployable public route under Node 22', () => {
   const trigger = adminFunction.bindings.find(binding => binding.type === 'httpTrigger');
   assert.match(html, /fetch\('\/api\/configuration-control'/);
   assert.doesNotMatch(html, /\/api\/admin-config/);
-  assert.equal(trigger.route, 'configuration-control');
+  assert.equal(trigger.route, 'configuration-control/{operation?}');
   assert.equal(path.basename(adminFunctionDirectory), 'configuration-admin');
   assert.doesNotMatch(path.basename(adminFunctionDirectory), /^admin/i, 'Azure reserves function names beginning with admin');
   assert.doesNotMatch(trigger.route, /^admin/i, 'Azure reserves routes beginning with admin');

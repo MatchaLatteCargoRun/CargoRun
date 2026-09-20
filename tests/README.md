@@ -15,6 +15,7 @@ node --test tests/flight-summary-offloads.test.js
 node --test tests/flight-statement.test.js
 node --test tests/mascot-loader.test.js
 node --test tests/admin-configuration.test.js
+node --test tests/admin-configuration-phase-b.test.js
 ```
 
 Uses Node's built-in test runner (project runtime: Node 22). No dependencies,
@@ -31,6 +32,11 @@ SHC grouping, unassigned SHCs, priority/SLA/mail/document fallbacks, capability
 staging, additive migration gates, the read-only Admin shell, and the transactional
 single-identity bootstrap template. Tests do not execute SQL, apply the migration,
 enable capability enforcement, or change the compatibility rules used by operations.
+Phase B Admin tests cover explicit mutation routes, server-side capability checks,
+stable SWA actor identity, append-only airline and rule validation, transaction-owned
+locking, atomic configuration/audit rollback, cache invalidation, shared resolver
+previews, shadow comparisons, and desktop-only editing. Operational APIs remain on
+legacy authorization and all operational rule families retain their existing behavior.
 
 Phase B tests execute the real offload handler against both legacy aliases and
 the live `OffloadStatus`/`Bay` schema. They cover historical ACTIVE/CLOSED/FINALISED
