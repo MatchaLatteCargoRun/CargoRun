@@ -33,21 +33,24 @@ test('mobile home contains only the four operational module tiles', () => {
   assert.match(source, /ex\.reduce\(\(n,f\)=>n\+counts\(f,'exports'\)\.done,0\)/);
   assert.match(source, /onclick="openScreen\('\$\{screen\}'\$\{type\?`,'\$\{type\}'`:''\}\)"/);
   assert.match(html, /\.mobile-module-grid\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
-  assert.match(html, /\.mobile-module-art\{position:absolute[\s\S]*height:62%[\s\S]*opacity:\.19[\s\S]*pointer-events:none/);
+  assert.match(html, /\.mobile-module-art\{position:absolute[\s\S]*height:58%[\s\S]*opacity:\.92[\s\S]*pointer-events:none[\s\S]*user-select:none/);
   assert.match(html, /\.mobile-module-copy\{position:relative;z-index:1/);
 });
 
-test('mobile Home uses distinct scalable white artwork for every operational module', () => {
+test('mobile Home uses the shared aircraft, parachuting AKE, and CargoRun runner artwork', () => {
   const context = vm.createContext({});
-  vm.runInContext(sourceBetween('function mobileRiderArtwork(', 'function mobileHome('), context);
+  vm.runInContext(sourceBetween('function mobileAircraftRiderShapes(', 'function mobileHome('), context);
   const imports = context.mobileModuleArtwork('imports');
   const exports = context.mobileModuleArtwork('exports');
   const offloads = context.mobileModuleArtwork('offloads');
   const priority = context.mobileModuleArtwork('priority');
+  const sharedAircraft = context.mobileAircraftRiderShapes();
   assert.match(imports, /artwork-imports[\s\S]*data-module-art="imports"[\s\S]*data-flight-motion="descending"/);
   assert.match(exports, /artwork-exports[\s\S]*data-module-art="exports"[\s\S]*data-flight-motion="climbing"/);
-  assert.match(offloads, /artwork-offloads[\s\S]*data-module-art="offloads"/);
-  assert.match(priority, /artwork-priority[\s\S]*data-module-art="priority"/);
+  assert.ok(imports.includes(sharedAircraft));
+  assert.ok(exports.includes(sharedAircraft));
+  assert.match(offloads, /artwork-offloads[\s\S]*data-module-art="offloads"[\s\S]*data-art-concept="parachuting-ake"/);
+  assert.match(priority, /artwork-priority[\s\S]*data-module-art="priority"[\s\S]*data-art-concept="cargorun-runner"/);
   assert.notEqual(imports, exports);
   for (const artwork of [imports, exports, offloads, priority]) {
     assert.match(artwork, /^<svg/);
@@ -58,10 +61,33 @@ test('mobile Home uses distinct scalable white artwork for every operational mod
 
 test('mobile bottom navigation is limited to Home and four operational areas', () => {
   const source = sourceBetween('function mobileBottomNav(', 'function fowSampleXml(');
-  for (const label of ['Home', 'Imports', 'Exports', 'Offloads', 'Priority']) assert.match(source, new RegExp(`<span>${label}<\\/span>`));
-  assert.doesNotMatch(source, /<span>More<\/span>|<span>History<\/span>|<span>Scan<\/span>|Supervisor|Admin/);
-  assert.match(html, /\.mobile-nav-icon\{width:34px;height:28px[\s\S]*font-size:24px/);
-  assert.match(html, /\.mobile-nav-btn\.active \.mobile-nav-icon\{background:rgba\(44,201,255,\.13\)/);
+  assert.match(source, /item\('home','Home',home,'home'\)/);
+  assert.match(source, /item\('imports','Imports',imports,'flights','imports'\)/);
+  assert.match(source, /item\('exports','Exports',exports,'flights','exports'\)/);
+  assert.match(source, /item\('offloads','Offloads',off,'offloads'\)/);
+  assert.match(source, /item\('priority','Priority',priority,'priority'\)/);
+  assert.doesNotMatch(source, /More|History|Scan|Supervisor|Admin|↙|↗|◇/);
+  assert.match(source, /data-mobile-nav="\$\{kind\}"/);
+  assert.match(source, /mobileNavArtwork\(kind\)/);
+  assert.match(html, /\.mobile-nav-art\{display:block;width:28px;height:28px/);
+  assert.match(html, /\.mobile-nav-btn\.active \.mobile-nav-icon\.home\{background:rgba\(44,201,255,\.13\)/);
+});
+
+test('bottom navigation reuses miniature card artwork and keeps Home as a house', () => {
+  const context = vm.createContext({});
+  vm.runInContext(sourceBetween('function mobileAircraftRiderShapes(', 'function mobileHome('), context);
+  const home = context.mobileNavArtwork('home');
+  const imports = context.mobileNavArtwork('imports');
+  const exports = context.mobileNavArtwork('exports');
+  const offloads = context.mobileNavArtwork('offloads');
+  const priority = context.mobileNavArtwork('priority');
+  assert.match(home, /nav-art-home[\s\S]*data-nav-art="home"[\s\S]*<path/);
+  assert.match(imports, /nav-art-imports[\s\S]*data-nav-art="imports"[\s\S]*data-flight-motion="descending"/);
+  assert.match(exports, /nav-art-exports[\s\S]*data-nav-art="exports"[\s\S]*data-flight-motion="climbing"/);
+  assert.ok(imports.includes(context.mobileAircraftRiderShapes()));
+  assert.ok(exports.includes(context.mobileAircraftRiderShapes()));
+  assert.match(offloads, /data-nav-art="offloads"[\s\S]*data-art-concept="parachuting-ake"/);
+  assert.match(priority, /data-nav-art="priority"[\s\S]*data-art-concept="cargorun-runner"/);
 });
 
 test('mobile flight cards show export ETD and tidy import priority state', () => {
