@@ -116,6 +116,48 @@ test('successful ULD verification changes identityVerified only after server suc
   assert.equal(selected.status, 'Arrived');
 });
 
+test('Import Confirm Received sends the selected stable UldId', async () => {
+  const h = harness();
+  const duplicate = { azureUldId: 72, num: 'AKE12345CX', status: 'Transit', identityVerified: true };
+  const selected = { azureUldId: 71, num: 'AKE12345CX', status: 'Transit', identityVerified: true };
+  h.context.state.imports = [
+    { ...flight([duplicate]), azureFlightId: 202 },
+    { ...flight([selected]), azureFlightId: 201 }
+  ];
+  await h.context.advanceULD('imports', '201', '71', 'Transit', 'Received', false);
+  assert.equal(h.calls.length, 1);
+  assert.deepEqual(h.calls[0].body, {
+    uldId: 71,
+    expectedCurrentStatus: 'TRANSIT',
+    nextStatus: 'RECEIVED',
+    identityVerified: true,
+    actorDisplayName: 'Tester',
+    actorReference: 'test-id',
+    notes: 'CargoRun ULD status change'
+  });
+  assert.equal(selected.status, 'Received');
+  assert.equal(duplicate.status, 'Transit');
+});
+
+test('Export Transit to At Aircraft sends the selected stable UldId', async () => {
+  const h = harness();
+  const duplicate = { azureUldId: 82, num: 'PMC48921R7', status: 'Transit', identityVerified: true };
+  const selected = { azureUldId: 81, num: 'PMC48921R7', status: 'Transit', identityVerified: true };
+  h.context.state.exports = [
+    { ...flight([duplicate]), azureFlightId: 302 },
+    { ...flight([selected]), azureFlightId: 301 }
+  ];
+  await h.context.advanceULD('exports', '301', '81', 'Transit', 'At Aircraft', false);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls[0].url, '/api/uld-status');
+  assert.equal(h.calls[0].body.uldId, 81);
+  assert.equal(h.calls[0].body.expectedCurrentStatus, 'TRANSIT');
+  assert.equal(h.calls[0].body.nextStatus, 'AT_AIRCRAFT');
+  assert.equal(selected.status, 'At Aircraft');
+  assert.equal(selected.identityVerified, true);
+  assert.equal(duplicate.status, 'Transit');
+});
+
 test('offload confirmation follows exact OffloadId through insertion and duplicate ULDs', async () => {
   const h = harness();
   const selected = { azureOffloadId: 90, uld: 'AKE11111CX', status: 'Requested', flight: 'CX178', bay: 'F25' };

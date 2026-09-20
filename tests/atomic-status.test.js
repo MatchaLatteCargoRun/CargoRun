@@ -30,6 +30,48 @@ test('ULD first acceptance records verification through the authoritative audit'
   assert.equal(h.state.audits[0].Action, 'ULD accepted');
 });
 
+test('Import Confirm Received succeeds by stable UldId with trigger-compatible atomic audit', async () => {
+  const duplicate = { UldId: 72, FlightId: 202, FlightNumber: 'CX178', UldNumber: 'AKE12345CX', CurrentStatus: 'TRANSIT', IdentityVerified: 1, Direction: 'IMPORT' };
+  const h = sqlHarness({
+    uld: { UldId: 71, FlightId: 201, FlightNumber: 'CX178', UldNumber: 'AKE12345CX', CurrentStatus: 'TRANSIT', IdentityVerified: 1, Direction: 'IMPORT' },
+    otherUlds: [duplicate],
+    auditInsertTrigger: true
+  });
+  const handler = loadHandler('api/uld-status/index.js', h.sql);
+  const response = await call(handler, 'POST', { uldId: 71, expectedCurrentStatus: 'TRANSIT', nextStatus: 'RECEIVED' });
+  assert.equal(response.status, 200);
+  assert.equal(h.state.uld.CurrentStatus, 'RECEIVED');
+  assert.equal(h.state.uld.IdentityVerified, 1);
+  assert.equal(h.state.otherUlds[0].CurrentStatus, 'TRANSIT');
+  assert.equal(h.state.otherUlds[0].IdentityVerified, 1);
+  assert.deepEqual(h.state.audits.map(event => [event.Action, event.FromStatus, event.ToStatus]), [
+    ['Status changed', 'TRANSIT', 'RECEIVED']
+  ]);
+  assert.equal(h.state.commits, 1);
+  assert.equal(h.state.rollbacks, 0);
+});
+
+test('Export Transit to At Aircraft succeeds by stable UldId with trigger-compatible atomic audit', async () => {
+  const duplicate = { UldId: 82, FlightId: 302, FlightNumber: 'QF93', UldNumber: 'PMC48921R7', CurrentStatus: 'TRANSIT', IdentityVerified: 1, Direction: 'EXPORT' };
+  const h = sqlHarness({
+    uld: { UldId: 81, FlightId: 301, FlightNumber: 'QF93', UldNumber: 'PMC48921R7', CurrentStatus: 'TRANSIT', IdentityVerified: 1, Direction: 'EXPORT' },
+    otherUlds: [duplicate],
+    auditInsertTrigger: true
+  });
+  const handler = loadHandler('api/uld-status/index.js', h.sql);
+  const response = await call(handler, 'POST', { uldId: 81, expectedCurrentStatus: 'TRANSIT', nextStatus: 'AT_AIRCRAFT' });
+  assert.equal(response.status, 200);
+  assert.equal(h.state.uld.CurrentStatus, 'AT_AIRCRAFT');
+  assert.equal(h.state.uld.IdentityVerified, 1);
+  assert.equal(h.state.otherUlds[0].CurrentStatus, 'TRANSIT');
+  assert.equal(h.state.otherUlds[0].IdentityVerified, 1);
+  assert.deepEqual(h.state.audits.map(event => [event.Action, event.FromStatus, event.ToStatus]), [
+    ['Status changed', 'TRANSIT', 'AT_AIRCRAFT']
+  ]);
+  assert.equal(h.state.commits, 1);
+  assert.equal(h.state.rollbacks, 0);
+});
+
 test('ULD race returns STALE_STATUS and rolls back status, verification, and movement', async () => {
   const h = sqlHarness({ uld: { UldId: 7, FlightId: 1, UldNumber: 'AKE12345CX', CurrentStatus: 'ARRIVED', IdentityVerified: 0 } });
   h.state.raceUldStatus = 'TRANSIT';

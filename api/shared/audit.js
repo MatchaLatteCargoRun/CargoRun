@@ -110,13 +110,14 @@ async function insertAuditEvent(transaction, sql, event) {
     throw new Error(`AuditEvents schema has unmapped required columns: ${requiredUnknown.map(column => column.COLUMN_NAME).join(', ')}`);
   }
 
-  const inserted = await request.query(`
+  // Audit tables may have enabled immutability triggers. SQL Server rejects a
+  // bare OUTPUT clause on triggered targets, and callers do not consume a row.
+  await request.query(`
     INSERT INTO dbo.AuditEvents (${names.map(quoteName).join(', ')})
-    OUTPUT INSERTED.*
     VALUES (${values.join(', ')});
   `);
 
-  return inserted.recordset?.[0] || null;
+  return null;
 }
 
 module.exports = { insertAuditEvent };

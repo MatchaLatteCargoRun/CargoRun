@@ -44,9 +44,10 @@ function loadHandler(relativePath, sqlMock) {
   return module.exports;
 }
 
-function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amendments = [], completionSchema = true, amendmentSchema = true, liveSchema = false, migrated = true } = {}) {
+function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, completions = [], amendments = [], completionSchema = true, amendmentSchema = true, liveSchema = false, migrated = true, auditInsertTrigger = false } = {}) {
   const state = {
     uld: uld ? structuredClone(uld) : null,
+    otherUlds: structuredClone(otherUlds),
     offload: offload ? structuredClone(offload) : null,
     flights: structuredClone(flights || [{ FlightId: 1, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }]),
     completions: structuredClone(completions),
@@ -78,11 +79,11 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
   const statusField = liveSchema ? 'OffloadStatus' : 'Status';
   let lockTail=Promise.resolve();
   class Transaction {
-    async begin() { this.active = true; this.snapshot = structuredClone({ uld: state.uld, offload: state.offload, extraOffloads: state.extraOffloads, movements: state.movements, audits: state.audits, amendments: state.amendments }); }
+    async begin() { this.active = true; this.snapshot = structuredClone({ uld: state.uld, otherUlds: state.otherUlds, offload: state.offload, extraOffloads: state.extraOffloads, movements: state.movements, audits: state.audits, amendments: state.amendments }); }
     async commit() { this.active = false; state.commits++; this.release?.(); }
     async rollback() {
       if (this.active) {
-        state.uld = this.snapshot.uld; state.offload = this.snapshot.offload; state.extraOffloads = this.snapshot.extraOffloads; state.movements = this.snapshot.movements; state.audits = this.snapshot.audits; state.amendments = this.snapshot.amendments;
+        state.uld = this.snapshot.uld; state.otherUlds = this.snapshot.otherUlds; state.offload = this.snapshot.offload; state.extraOffloads = this.snapshot.extraOffloads; state.movements = this.snapshot.movements; state.audits = this.snapshot.audits; state.amendments = this.snapshot.amendments;
         this.active = false; state.rollbacks++; this.release?.();
       }
     }
@@ -117,8 +118,9 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
       }
       if (q.includes('FROM dbo.ULDs u INNER JOIN dbo.Flights')) {
         if (p.AuditUldId) return result(state.uld ? [{ ...state.uld, FlightNumber: state.uld.FlightNumber || 'CX178' }] : []);
-        return result(state.uld && String(state.uld.UldId) === String(p.UldId)
-          ? [{ ...state.uld, Direction: state.uld.Direction || 'IMPORT', FlightNumber: state.uld.FlightNumber || 'CX178' }]
+        const selected = [state.uld, ...state.otherUlds].find(candidate => candidate && String(candidate.UldId) === String(p.UldId));
+        return result(selected
+          ? [{ ...selected, Direction: selected.Direction || 'IMPORT', FlightNumber: selected.FlightNumber || 'CX178' }]
           : []);
       }
       if (q.startsWith('DECLARE @Now') && q.includes('UPDATE dbo.ULDs')) {
@@ -128,16 +130,22 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
           if (this.transaction?.snapshot?.uld) this.transaction.snapshot.uld.CurrentStatus = state.raceUldStatus;
           state.raceUldStatus = null;
         }
-        const matched = state.uld && String(state.uld.UldId) === String(p.UldId) && state.uld.CurrentStatus === p.ExpectedStatus;
+        const selected = [state.uld, ...state.otherUlds].find(candidate => candidate && String(candidate.UldId) === String(p.UldId));
+        const matched = selected && selected.CurrentStatus === p.ExpectedStatus;
         if (matched) {
-          state.uld.CurrentStatus = p.NextStatus;
-          state.uld.IdentityVerified = 1;
+          selected.CurrentStatus = p.NextStatus;
+          selected.IdentityVerified = 1;
           return result([{ OccurredAtUtc: '2026-09-17T00:00:00.000Z' }], [1]);
         }
         return result([{ OccurredAtUtc: '2026-09-17T00:00:00.000Z' }], [0]);
       }
       if (q.startsWith('INSERT INTO dbo.UldMovements')) { state.movements.push({ from: p.MoveFromStatus, to: p.MoveToStatus }); return result([], [1]); }
       if (q.startsWith('INSERT INTO dbo.AuditEvents')) {
+        if (auditInsertTrigger && /\bOUTPUT\s+INSERTED\./i.test(q)) {
+          const error = new Error("The target table 'dbo.AuditEvents' of the DML statement cannot have any enabled triggers if the statement contains an OUTPUT clause without INTO clause.");
+          error.number = 334;
+          throw error;
+        }
         if (state.failAudit) throw new Error('forced audit failure');
         const row = { Action: p.AuditAction, ActorDisplayName: p.AuditActorDisplayName, FromStatus: p.AuditFromStatus, ToStatus: p.AuditToStatus, Detail: p.AuditDetail, DetailsJson: p.AuditDetailsJson, OccurredAtUtc: '2026-09-17T00:00:00.000Z' };
         state.audits.push(row); return result([row], [1]);
@@ -154,7 +162,7 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
       if (q.includes('FROM dbo.Flights') && Object.hasOwn(p, 'SelectedFlightId')) {
         if(this.transaction){
           const previous=lockTail;lockTail=new Promise(resolve=>this.transaction.release=resolve);await previous;
-          this.transaction.snapshot=structuredClone({uld:state.uld,offload:state.offload,extraOffloads:state.extraOffloads,movements:state.movements,audits:state.audits,amendments:state.amendments});
+          this.transaction.snapshot=structuredClone({uld:state.uld,otherUlds:state.otherUlds,offload:state.offload,extraOffloads:state.extraOffloads,movements:state.movements,audits:state.audits,amendments:state.amendments});
         }
         const rows=state.flights.map(f=>({...f,Direction:f.Direction||'EXPORT'}));
         return result(p.SelectedFlightId ? rows.filter(f=>String(f.FlightId)===String(p.SelectedFlightId)) : rows.filter(f=>f.Direction==='EXPORT'&&['ACTIVE','CLOSED','FINALISED','FINALIZED'].includes(f.FlightStatus)));
@@ -162,7 +170,7 @@ function sqlHarness({ uld, offload, flights, offloadUlds, completions = [], amen
       if(q.includes('FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)') && p.AmendmentMutationFlightId) {
         if(this.transaction){
           const previous=lockTail;lockTail=new Promise(resolve=>this.transaction.release=resolve);await previous;
-          this.transaction.snapshot=structuredClone({uld:state.uld,offload:state.offload,extraOffloads:state.extraOffloads,movements:state.movements,audits:state.audits,amendments:state.amendments});
+          this.transaction.snapshot=structuredClone({uld:state.uld,otherUlds:state.otherUlds,offload:state.offload,extraOffloads:state.extraOffloads,movements:state.movements,audits:state.audits,amendments:state.amendments});
         }
         return result(state.flights.filter(f=>String(f.FlightId)===String(p.AmendmentMutationFlightId)).map(f=>({FlightStatus:f.FlightStatus})));
       }
