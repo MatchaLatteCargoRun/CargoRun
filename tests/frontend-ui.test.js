@@ -42,15 +42,44 @@ test('desktop Home is lookup-first and keeps upload and operational routes', () 
   assert.doesNotMatch(html, /:'User'\}/);
 });
 
-test('approved CargoRun Home icon assets are present and referenced', () => {
+test('existing CargoRun Home icon assets remain available and unaffected icons stay referenced', () => {
   const names = ['flight-lookup', 'uld-lookup', 'flight-board', 'priority', 'imports', 'exports', 'offloads', 'supervisor', 'history', 'upload'];
   for (const name of names) {
     const file = path.resolve(__dirname, '..', 'assets', 'home-icons', `icon-${name}.png`);
     assert.equal(fs.existsSync(file), true, `${name} icon should exist`);
     assert.ok(fs.statSync(file).size > 1000, `${name} icon should not be empty`);
-    assert.match(html, new RegExp(`icon-${name}\\.png`));
+    if (!['priority', 'imports', 'exports', 'offloads'].includes(name)) {
+      assert.match(html, new RegExp(`icon-${name}\\.png`));
+    }
   }
   assert.match(html, /\.home-op-card \.home-card-icon\{width:70px;height:70px\}/);
+});
+
+test('desktop Home replaces only four card icons with the canonical CargoRun artwork', () => {
+  const context = vm.createContext({ HOME_ICON_PATH: '/assets/home-icons/' });
+  const artStart = html.indexOf('const MOBILE_NAV_ART=');
+  const artEnd = html.indexOf('function mobileHome(', artStart);
+  vm.runInContext(html.slice(artStart, artEnd), context);
+  const iconStart = html.indexOf('function homeIcon(');
+  const iconEnd = html.indexOf('function homeGreetingName(', iconStart);
+  vm.runInContext(html.slice(iconStart, iconEnd), context);
+  const expected = {
+    imports: 'assets/mobile-art/rider_on_descending_airplane_icon.png',
+    exports: 'assets/mobile-art/white_airplane_rider_takeoff_icon.png',
+    offloads: 'assets/mobile-art/white_parachute_cargo_icon.png',
+    priority: 'assets/mobile-art/priority_courier_in_motion.png'
+  };
+  for (const [kind, asset] of Object.entries(expected)) {
+    const rendered = context.homeIcon(kind);
+    assert.match(rendered, new RegExp(`class="home-card-icon desktop-home-art desktop-home-art-${kind}"`));
+    assert.ok(rendered.includes(`src="${asset}"`));
+    assert.match(rendered, /width="1254" height="1254" alt="" draggable="false"/);
+    assert.match(html, new RegExp(`homeCard\\('${kind}'`));
+  }
+  assert.match(html, /\.home-op-card\{display:grid;grid-template-columns:78px minmax\(0,1fr\) auto;align-items:center;gap:17px;min-height:118px;padding:17px 20px/);
+  assert.match(html, /\.desktop-home-art\{display:flex[\s\S]*box-sizing:border-box[\s\S]*border:1px solid/);
+  assert.match(html, /\.desktop-home-art img\{display:block;width:100%;height:100%;object-fit:contain\}/);
+  assert.match(context.homeIcon('icon-flight-board.png'), /^<img class="home-card-icon" src="\/assets\/home-icons\/icon-flight-board\.png"/);
 });
 
 test('desktop ULD rows preserve DHL and strong handling and priority tokens', () => {
