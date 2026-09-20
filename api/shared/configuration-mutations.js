@@ -119,8 +119,11 @@ function addPeriod(request, sql, value) {
 function addScope(request, sql, scope) {
   return request.input('AirlineId', sql.BigInt, scope.airlineId).input('StationId', sql.BigInt, scope.stationId);
 }
-function duplicateVersion() {
-  throw new ConfigurationMutationError('CONFIGURATION_VERSION_CONFLICT', 'A version already exists for this identity, scope, and effective date', 409);
+function nextDecisionSequence(oldValue, effectiveFrom) {
+  if (!oldValue || dateKey(oldValue.EffectiveFrom) !== effectiveFrom) return 1;
+  const current = Number(oldValue.DecisionSequence ?? 1);
+  if (!Number.isInteger(current) || current < 1) throw new ConfigurationMutationError('CONFIGURATION_SEQUENCE_INVALID', 'The current configuration decision sequence is invalid', 409);
+  return current + 1;
 }
 function logicalConflict() {
   throw new ConfigurationMutationError('CONFIGURATION_LOGICAL_RULE_EXISTS', 'This logical rule already exists; edit the existing rule instead', 409);
@@ -152,25 +155,26 @@ async function writeAirline(transaction, sql, value, actor) {
   const existing = await addPeriod(new sql.Request(transaction), sql, value)
     .input('AirlineId', sql.BigInt, airlineId).input('StationId', sql.BigInt, scope.stationId)
     .query(`
-      SELECT TOP (1) ProfileVersionId,DisplayName,BadgeColour,BrightBadge,IsEnabled,OperationalNotes,EffectiveFrom,EffectiveTo
+      SELECT TOP (1) ProfileVersionId,DecisionSequence,DisplayName,BadgeColour,BrightBadge,IsEnabled,OperationalNotes,EffectiveFrom,EffectiveTo
       FROM dbo.CargoRunAirlineProfiles WITH (UPDLOCK,HOLDLOCK)
       WHERE AirlineId=@AirlineId AND StationScopeKey=ISNULL(@StationId,0) AND EffectiveFrom<=@EffectiveFrom
-      ORDER BY EffectiveFrom DESC,ProfileVersionId DESC;
+      ORDER BY EffectiveFrom DESC,DecisionSequence DESC,ProfileVersionId DESC;
     `);
   const oldValue = one(existing);
   if (value.intent === 'CREATE' && oldValue) logicalConflict();
   if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
-  if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
+  const decisionSequence = nextDecisionSequence(oldValue, value.effectiveFrom);
   const inserted = await addPeriod(new sql.Request(transaction), sql, value)
     .input('AirlineId', sql.BigInt, airlineId).input('StationId', sql.BigInt, scope.stationId)
     .input('DisplayName', sql.NVarChar(100), value.displayName).input('BadgeColour', sql.VarChar(7), value.badgeColour)
     .input('BrightBadge', sql.Bit, value.brightBadge).input('IsEnabled', sql.Bit, value.isEnabled)
-    .input('OperationalNotes', sql.NVarChar(1000), value.operationalNotes).input('ActorReference', sql.NVarChar(150), actor.reference)
+    .input('OperationalNotes', sql.NVarChar(1000), value.operationalNotes).input('DecisionSequence', sql.Int, decisionSequence)
+    .input('ActorReference', sql.NVarChar(150), actor.reference)
     .query(`
       INSERT dbo.CargoRunAirlineProfiles
-        (AirlineId,StationId,DisplayName,BadgeColour,BrightBadge,IsEnabled,OperationalNotes,EffectiveFrom,EffectiveTo,CreatedByReference)
+        (AirlineId,StationId,DisplayName,BadgeColour,BrightBadge,IsEnabled,OperationalNotes,EffectiveFrom,EffectiveTo,DecisionSequence,CreatedByReference)
       OUTPUT INSERTED.ProfileVersionId
-      VALUES(@AirlineId,@StationId,@DisplayName,@BadgeColour,@BrightBadge,@IsEnabled,@OperationalNotes,@EffectiveFrom,@EffectiveTo,@ActorReference);
+      VALUES(@AirlineId,@StationId,@DisplayName,@BadgeColour,@BrightBadge,@IsEnabled,@OperationalNotes,@EffectiveFrom,@EffectiveTo,@DecisionSequence,@ActorReference);
     `);
   return { operation: mutationOperation(value, createdIdentity, { created: 'AIRLINE_CREATED', updated: 'AIRLINE_UPDATED', deleted: 'AIRLINE_DISABLED' }), entityType: 'AIRLINE_PROFILE', entityId: String(one(inserted).ProfileVersionId), oldValue, newValue: value };
 }
@@ -190,23 +194,24 @@ async function writeShcGroup(transaction, sql, value, actor) {
     createdIdentity = true;
   }
   const existing = await addPeriod(new sql.Request(transaction), sql, value).input('ShcGroupId', sql.BigInt, groupId).query(`
-    SELECT TOP (1) GroupVersionId,DisplayToken,DisplayName,Description,DisplayOrder,VisualClass,IsEnabled,EffectiveFrom,EffectiveTo
+    SELECT TOP (1) GroupVersionId,DecisionSequence,DisplayToken,DisplayName,Description,DisplayOrder,VisualClass,IsEnabled,EffectiveFrom,EffectiveTo
     FROM dbo.CargoRunShcGroupVersions WITH (UPDLOCK,HOLDLOCK)
-    WHERE ShcGroupId=@ShcGroupId AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,GroupVersionId DESC;
+    WHERE ShcGroupId=@ShcGroupId AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,DecisionSequence DESC,GroupVersionId DESC;
   `);
   const oldValue = one(existing);
   if (value.intent === 'CREATE' && oldValue) logicalConflict();
   if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
-  if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
+  const decisionSequence = nextDecisionSequence(oldValue, value.effectiveFrom);
   const inserted = await addPeriod(new sql.Request(transaction), sql, value).input('ShcGroupId', sql.BigInt, groupId)
     .input('DisplayToken', sql.NVarChar(20), value.displayToken).input('DisplayName', sql.NVarChar(100), value.displayName)
     .input('Description', sql.NVarChar(500), value.description).input('DisplayOrder', sql.Int, value.displayOrder)
     .input('VisualClass', sql.VarChar(30), value.visualClass).input('IsEnabled', sql.Bit, value.isEnabled)
+    .input('DecisionSequence', sql.Int, decisionSequence)
     .input('ActorReference', sql.NVarChar(150), actor.reference).query(`
       INSERT dbo.CargoRunShcGroupVersions
-        (ShcGroupId,DisplayToken,DisplayName,Description,DisplayOrder,VisualClass,IsEnabled,EffectiveFrom,EffectiveTo,CreatedByReference)
+        (ShcGroupId,DisplayToken,DisplayName,Description,DisplayOrder,VisualClass,IsEnabled,EffectiveFrom,EffectiveTo,DecisionSequence,CreatedByReference)
       OUTPUT INSERTED.GroupVersionId
-      VALUES(@ShcGroupId,@DisplayToken,@DisplayName,@Description,@DisplayOrder,@VisualClass,@IsEnabled,@EffectiveFrom,@EffectiveTo,@ActorReference);
+      VALUES(@ShcGroupId,@DisplayToken,@DisplayName,@Description,@DisplayOrder,@VisualClass,@IsEnabled,@EffectiveFrom,@EffectiveTo,@DecisionSequence,@ActorReference);
     `);
   const colourChanged = oldValue && resolveGroupColour(oldValue.VisualClass) !== value.displayColour;
   const operation = value.intent === 'DELETE' ? 'SHC_GROUP_DISABLED' : colourChanged ? 'SHC_GROUP_COLOUR_CHANGED' : mutationOperation(value, createdIdentity, { created: 'SHC_GROUP_CREATED', updated: 'SHC_GROUP_UPDATED', deleted: 'SHC_GROUP_DISABLED' });
@@ -270,23 +275,24 @@ async function writeMappings(transaction, sql, value, actor) {
     }
     const oldResult = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value)
       .input('ShcId', sql.BigInt, selected.ShcId).input('ShcGroupId', sql.BigInt, groupId).query(`
-        SELECT TOP (1) MappingId,MappingAction,EffectiveFrom,EffectiveTo
+        SELECT TOP (1) MappingId,DecisionSequence,MappingAction,EffectiveFrom,EffectiveTo
         FROM dbo.CargoRunShcGroupMappings WITH (UPDLOCK,HOLDLOCK)
         WHERE ShcId=@ShcId AND ShcGroupId=@ShcGroupId
           AND AirlineScopeKey=ISNULL(@AirlineId,0) AND StationScopeKey=ISNULL(@StationId,0)
           AND EffectiveFrom<=@EffectiveFrom
-        ORDER BY EffectiveFrom DESC,MappingId DESC;
+        ORDER BY EffectiveFrom DESC,DecisionSequence DESC,MappingId DESC;
       `);
     const oldValue = one(oldResult);
-    if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
+    const decisionSequence = nextDecisionSequence(oldValue, value.effectiveFrom);
     const inserted = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value)
       .input('ShcId', sql.BigInt, selected.ShcId).input('ShcGroupId', sql.BigInt, groupId)
-      .input('MappingAction', sql.VarChar(10), value.mappingAction).input('ActorReference', sql.NVarChar(150), actor.reference)
+      .input('MappingAction', sql.VarChar(10), value.mappingAction).input('DecisionSequence', sql.Int, decisionSequence)
+      .input('ActorReference', sql.NVarChar(150), actor.reference)
       .query(`
         INSERT dbo.CargoRunShcGroupMappings
-          (ShcId,ShcGroupId,AirlineId,StationId,MappingAction,EffectiveFrom,EffectiveTo,CreatedByReference)
+          (ShcId,ShcGroupId,AirlineId,StationId,MappingAction,EffectiveFrom,EffectiveTo,DecisionSequence,CreatedByReference)
         OUTPUT INSERTED.MappingId
-        VALUES(@ShcId,@ShcGroupId,@AirlineId,@StationId,@MappingAction,@EffectiveFrom,@EffectiveTo,@ActorReference);
+        VALUES(@ShcId,@ShcGroupId,@AirlineId,@StationId,@MappingAction,@EffectiveFrom,@EffectiveTo,@DecisionSequence,@ActorReference);
       `);
     events.push({ operation: value.mappingAction === 'INCLUDE' ? 'SHC_MAPPING_ADDED' : 'SHC_MAPPING_REMOVED', entityType: 'SHC_MAPPING', entityId: String(one(inserted).MappingId), oldValue, newValue: { ...value, shcCodes: [shcCode] } });
   }
@@ -298,24 +304,25 @@ async function writePriorityDecision(transaction, sql, value, actor) {
   const groupId = await groupIdFor(transaction, sql, value.groupKey);
   await assertSlaReference(transaction, sql, value.slaRuleKeyOverride, scope, value.effectiveFrom);
   const existing = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value).input('ShcGroupId', sql.BigInt, groupId).query(`
-    SELECT TOP (1) PriorityRuleId,PriorityLevel,CountsAsPriority,SupervisorAttention,EscalationEnabled,SlaRuleKeyOverride,EffectiveFrom,EffectiveTo
+    SELECT TOP (1) PriorityRuleId,DecisionSequence,PriorityLevel,CountsAsPriority,SupervisorAttention,EscalationEnabled,SlaRuleKeyOverride,EffectiveFrom,EffectiveTo
     FROM dbo.CargoRunPriorityRules WITH (UPDLOCK,HOLDLOCK)
     WHERE ShcGroupId=@ShcGroupId AND AirlineScopeKey=ISNULL(@AirlineId,0) AND StationScopeKey=ISNULL(@StationId,0)
-      AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,PriorityRuleId DESC;
+      AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,DecisionSequence DESC,PriorityRuleId DESC;
   `);
   const oldValue = one(existing);
   if (value.intent === 'CREATE' && oldValue) logicalConflict();
   if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
-  if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
+  const decisionSequence = nextDecisionSequence(oldValue, value.effectiveFrom);
   const inserted = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value).input('ShcGroupId', sql.BigInt, groupId)
     .input('PriorityLevel', sql.VarChar(12), value.priorityLevel).input('CountsAsPriority', sql.Bit, value.countsAsPriority)
     .input('SupervisorAttention', sql.Bit, value.supervisorAttention).input('EscalationEnabled', sql.Bit, value.escalationEnabled)
-    .input('SlaRuleKeyOverride', sql.VarChar(50), value.slaRuleKeyOverride).input('ActorReference', sql.NVarChar(150), actor.reference)
+    .input('SlaRuleKeyOverride', sql.VarChar(50), value.slaRuleKeyOverride).input('DecisionSequence', sql.Int, decisionSequence)
+    .input('ActorReference', sql.NVarChar(150), actor.reference)
     .query(`
       INSERT dbo.CargoRunPriorityRules
-        (ShcGroupId,AirlineId,StationId,PriorityLevel,CountsAsPriority,SupervisorAttention,EscalationEnabled,SlaRuleKeyOverride,EffectiveFrom,EffectiveTo,CreatedByReference)
+        (ShcGroupId,AirlineId,StationId,PriorityLevel,CountsAsPriority,SupervisorAttention,EscalationEnabled,SlaRuleKeyOverride,EffectiveFrom,EffectiveTo,DecisionSequence,CreatedByReference)
       OUTPUT INSERTED.PriorityRuleId
-      VALUES(@ShcGroupId,@AirlineId,@StationId,@PriorityLevel,@CountsAsPriority,@SupervisorAttention,@EscalationEnabled,@SlaRuleKeyOverride,@EffectiveFrom,@EffectiveTo,@ActorReference);
+      VALUES(@ShcGroupId,@AirlineId,@StationId,@PriorityLevel,@CountsAsPriority,@SupervisorAttention,@EscalationEnabled,@SlaRuleKeyOverride,@EffectiveFrom,@EffectiveTo,@DecisionSequence,@ActorReference);
     `);
   return { operation: mutationOperation(value, !oldValue, { created: 'PRIORITY_RULE_CREATED', updated: 'PRIORITY_RULE_UPDATED', deleted: 'PRIORITY_RULE_DELETED' }), entityType: 'PRIORITY_RULE', entityId: String(one(inserted).PriorityRuleId), oldValue, newValue: value };
 }
@@ -346,25 +353,26 @@ async function writePriority(transaction, sql, value, actor) {
 async function writeSla(transaction, sql, value, actor) {
   const scope = await resolveScopeIds(transaction, sql, value);
   const existing = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value).input('RuleKey', sql.VarChar(50), value.ruleKey).query(`
-    SELECT TOP (1) SlaRuleId,Direction,StartEvent,TargetEvent,TargetMinutes,WarningMinutes,BreachMinutes,IsEnabled,ApplicabilityNotes,EffectiveFrom,EffectiveTo
+    SELECT TOP (1) SlaRuleId,DecisionSequence,Direction,StartEvent,TargetEvent,TargetMinutes,WarningMinutes,BreachMinutes,IsEnabled,ApplicabilityNotes,EffectiveFrom,EffectiveTo
     FROM dbo.CargoRunSlaRules WITH (UPDLOCK,HOLDLOCK)
     WHERE RuleKey=@RuleKey AND AirlineScopeKey=ISNULL(@AirlineId,0) AND StationScopeKey=ISNULL(@StationId,0)
-      AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,SlaRuleId DESC;
+      AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,DecisionSequence DESC,SlaRuleId DESC;
   `);
   const oldValue = one(existing);
   if (value.intent === 'CREATE' && oldValue) logicalConflict();
   if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
-  if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
+  const decisionSequence = nextDecisionSequence(oldValue, value.effectiveFrom);
   const inserted = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value).input('RuleKey', sql.VarChar(50), value.ruleKey)
     .input('Direction', sql.VarChar(10), value.direction).input('StartEvent', sql.VarChar(50), value.startEvent)
     .input('TargetEvent', sql.VarChar(50), value.targetEvent).input('TargetMinutes', sql.Int, value.targetMinutes)
     .input('WarningMinutes', sql.Int, value.warningMinutes).input('BreachMinutes', sql.Int, value.breachMinutes)
     .input('IsEnabled', sql.Bit, value.isEnabled).input('ApplicabilityNotes', sql.NVarChar(500), value.applicabilityNotes)
+    .input('DecisionSequence', sql.Int, decisionSequence)
     .input('ActorReference', sql.NVarChar(150), actor.reference).query(`
       INSERT dbo.CargoRunSlaRules
-        (RuleKey,AirlineId,StationId,Direction,StartEvent,TargetEvent,TargetMinutes,WarningMinutes,BreachMinutes,IsEnabled,ApplicabilityNotes,EffectiveFrom,EffectiveTo,CreatedByReference)
+        (RuleKey,AirlineId,StationId,Direction,StartEvent,TargetEvent,TargetMinutes,WarningMinutes,BreachMinutes,IsEnabled,ApplicabilityNotes,EffectiveFrom,EffectiveTo,DecisionSequence,CreatedByReference)
       OUTPUT INSERTED.SlaRuleId
-      VALUES(@RuleKey,@AirlineId,@StationId,@Direction,@StartEvent,@TargetEvent,@TargetMinutes,@WarningMinutes,@BreachMinutes,@IsEnabled,@ApplicabilityNotes,@EffectiveFrom,@EffectiveTo,@ActorReference);
+      VALUES(@RuleKey,@AirlineId,@StationId,@Direction,@StartEvent,@TargetEvent,@TargetMinutes,@WarningMinutes,@BreachMinutes,@IsEnabled,@ApplicabilityNotes,@EffectiveFrom,@EffectiveTo,@DecisionSequence,@ActorReference);
     `);
   return { operation: mutationOperation(value, !oldValue, { created: 'SLA_RULE_CREATED', updated: 'SLA_RULE_UPDATED', deleted: 'SLA_RULE_DELETED' }), entityType: 'SLA_RULE', entityId: String(one(inserted).SlaRuleId), oldValue, newValue: value };
 }
@@ -373,25 +381,26 @@ async function writeMail(transaction, sql, value, actor) {
   const scope = await resolveScopeIds(transaction, sql, value);
   if (value.slaEnabled) await assertSlaReference(transaction, sql, value.slaRuleKey, scope, value.effectiveFrom);
   const existing = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value).query(`
-    SELECT TOP (1) MailRuleId,MailHandlingRequired,MailScanRequired,SlaEnabled,SlaRuleKey,ReminderEnabled,EscalationEnabled,OperationalInstructions,EffectiveFrom,EffectiveTo
+    SELECT TOP (1) MailRuleId,DecisionSequence,MailHandlingRequired,MailScanRequired,SlaEnabled,SlaRuleKey,ReminderEnabled,EscalationEnabled,OperationalInstructions,EffectiveFrom,EffectiveTo
     FROM dbo.CargoRunMailRules WITH (UPDLOCK,HOLDLOCK)
     WHERE AirlineScopeKey=ISNULL(@AirlineId,0) AND StationScopeKey=ISNULL(@StationId,0)
-      AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,MailRuleId DESC;
+      AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,DecisionSequence DESC,MailRuleId DESC;
   `);
   const oldValue = one(existing);
   if (value.intent === 'CREATE' && oldValue) logicalConflict();
   if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
-  if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
+  const decisionSequence = nextDecisionSequence(oldValue, value.effectiveFrom);
   const inserted = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value)
     .input('MailHandlingRequired', sql.Bit, value.mailHandlingRequired).input('MailScanRequired', sql.Bit, value.mailScanRequired)
     .input('SlaEnabled', sql.Bit, value.slaEnabled).input('SlaRuleKey', sql.VarChar(50), value.slaRuleKey)
     .input('ReminderEnabled', sql.Bit, value.reminderEnabled).input('EscalationEnabled', sql.Bit, value.escalationEnabled)
-    .input('OperationalInstructions', sql.NVarChar(1000), value.operationalInstructions).input('ActorReference', sql.NVarChar(150), actor.reference)
+    .input('OperationalInstructions', sql.NVarChar(1000), value.operationalInstructions).input('DecisionSequence', sql.Int, decisionSequence)
+    .input('ActorReference', sql.NVarChar(150), actor.reference)
     .query(`
       INSERT dbo.CargoRunMailRules
-        (AirlineId,StationId,MailHandlingRequired,MailScanRequired,SlaEnabled,SlaRuleKey,ReminderEnabled,EscalationEnabled,OperationalInstructions,EffectiveFrom,EffectiveTo,CreatedByReference)
+        (AirlineId,StationId,MailHandlingRequired,MailScanRequired,SlaEnabled,SlaRuleKey,ReminderEnabled,EscalationEnabled,OperationalInstructions,EffectiveFrom,EffectiveTo,DecisionSequence,CreatedByReference)
       OUTPUT INSERTED.MailRuleId
-      VALUES(@AirlineId,@StationId,@MailHandlingRequired,@MailScanRequired,@SlaEnabled,@SlaRuleKey,@ReminderEnabled,@EscalationEnabled,@OperationalInstructions,@EffectiveFrom,@EffectiveTo,@ActorReference);
+      VALUES(@AirlineId,@StationId,@MailHandlingRequired,@MailScanRequired,@SlaEnabled,@SlaRuleKey,@ReminderEnabled,@EscalationEnabled,@OperationalInstructions,@EffectiveFrom,@EffectiveTo,@DecisionSequence,@ActorReference);
     `);
   return { operation: mutationOperation(value, !oldValue, { created: 'MAIL_RULE_CREATED', updated: 'MAIL_RULE_UPDATED', deleted: 'MAIL_RULE_DELETED' }), entityType: 'MAIL_RULE', entityId: String(one(inserted).MailRuleId), oldValue, newValue: value };
 }
@@ -401,9 +410,9 @@ async function loadShcSnapshot(transaction, sql) {
     SELECT sh.ShcId,sh.ShcCode,a.AirlineCode,v.ShcVersionId,v.Description,v.StandardIndicator,v.IsEnabled,v.EffectiveFrom,v.EffectiveTo
     FROM dbo.CargoRunShcs sh LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=sh.CarrierAirlineId
     JOIN dbo.CargoRunShcVersions v ON v.ShcId=sh.ShcId;
-    SELECT g.ShcGroupId,g.GroupKey,v.GroupVersionId,v.DisplayToken,v.DisplayName,v.Description,v.DisplayOrder,v.VisualClass,v.IsEnabled,v.EffectiveFrom,v.EffectiveTo
+    SELECT g.ShcGroupId,g.GroupKey,v.GroupVersionId,v.DecisionSequence,v.DisplayToken,v.DisplayName,v.Description,v.DisplayOrder,v.VisualClass,v.IsEnabled,v.EffectiveFrom,v.EffectiveTo
     FROM dbo.CargoRunShcGroups g JOIN dbo.CargoRunShcGroupVersions v ON v.ShcGroupId=g.ShcGroupId;
-    SELECT m.MappingId,sh.ShcCode,g.GroupKey,a.AirlineCode,s.StationCode,m.MappingAction,m.EffectiveFrom,m.EffectiveTo
+    SELECT m.MappingId,m.DecisionSequence,sh.ShcCode,g.GroupKey,a.AirlineCode,s.StationCode,m.MappingAction,m.EffectiveFrom,m.EffectiveTo
     FROM dbo.CargoRunShcGroupMappings m JOIN dbo.CargoRunShcs sh ON sh.ShcId=m.ShcId
     JOIN dbo.CargoRunShcGroups g ON g.ShcGroupId=m.ShcGroupId
     LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=m.AirlineId LEFT JOIN dbo.CargoRunStations s ON s.StationId=m.StationId;

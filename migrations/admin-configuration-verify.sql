@@ -68,14 +68,14 @@ UNION ALL
 SELECT 'INVALID_EFFECTIVE_PERIOD',CONCAT('Document rule ',DocumentRuleId)
 FROM dbo.CargoRunDocumentRules WHERE EffectiveTo IS NOT NULL AND EffectiveTo<=EffectiveFrom;
 
-SELECT AirlineId,StationScopeKey,EffectiveFrom,COUNT_BIG(*) AS RecordCount
-FROM dbo.CargoRunAirlineProfiles GROUP BY AirlineId,StationScopeKey,EffectiveFrom HAVING COUNT_BIG(*)>1;
+SELECT AirlineId,StationScopeKey,EffectiveFrom,DecisionSequence,COUNT_BIG(*) AS RecordCount
+FROM dbo.CargoRunAirlineProfiles GROUP BY AirlineId,StationScopeKey,EffectiveFrom,DecisionSequence HAVING COUNT_BIG(*)>1;
 
-SELECT ShcId,ShcGroupId,AirlineScopeKey,StationScopeKey,EffectiveFrom,COUNT_BIG(*) AS RecordCount
-FROM dbo.CargoRunShcGroupMappings GROUP BY ShcId,ShcGroupId,AirlineScopeKey,StationScopeKey,EffectiveFrom HAVING COUNT_BIG(*)>1;
+SELECT ShcId,ShcGroupId,AirlineScopeKey,StationScopeKey,EffectiveFrom,DecisionSequence,COUNT_BIG(*) AS RecordCount
+FROM dbo.CargoRunShcGroupMappings GROUP BY ShcId,ShcGroupId,AirlineScopeKey,StationScopeKey,EffectiveFrom,DecisionSequence HAVING COUNT_BIG(*)>1;
 
-SELECT RuleKey,AirlineScopeKey,StationScopeKey,EffectiveFrom,COUNT_BIG(*) AS RecordCount
-FROM dbo.CargoRunSlaRules GROUP BY RuleKey,AirlineScopeKey,StationScopeKey,EffectiveFrom HAVING COUNT_BIG(*)>1;
+SELECT RuleKey,AirlineScopeKey,StationScopeKey,EffectiveFrom,DecisionSequence,COUNT_BIG(*) AS RecordCount
+FROM dbo.CargoRunSlaRules GROUP BY RuleKey,AirlineScopeKey,StationScopeKey,EffectiveFrom,DecisionSequence HAVING COUNT_BIG(*)>1;
 
 SELECT 'MISSING_FALLBACK_SEED' AS Finding,v.Code AS Detail
 FROM (VALUES('CX'),('UA'),('MH'),('QR'),('TG'),('BI'),('GA'),('VN'),('AI'),('JQ')) v(Code)

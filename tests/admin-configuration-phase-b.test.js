@@ -4,6 +4,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
+const vm = require('node:vm');
 const {
   validateMutationInput,
   requiredCapabilityForOperation,
@@ -11,6 +12,7 @@ const {
   groupTextColour,
   resolveGroupColour
 } = require('../api/shared/configuration-admin');
+const { resolveAirlineConfig } = require('../api/shared/configuration');
 const {
   ConfigurationMutationError,
   executeConfigurationMutation,
@@ -23,15 +25,20 @@ const apiSource = fs.readFileSync(path.join(root, 'api', 'configuration-admin', 
 const mutationSource = fs.readFileSync(path.join(root, 'api', 'shared', 'configuration-mutations.js'), 'utf8');
 const adminHelperSource = fs.readFileSync(path.join(root, 'api', 'shared', 'configuration-admin.js'), 'utf8');
 const functionJson = JSON.parse(fs.readFileSync(path.join(root, 'api', 'configuration-admin', 'function.json'), 'utf8'));
+const sameDayMigration = fs.readFileSync(path.join(root, 'migrations', 'admin-same-day-decisions.sql'), 'utf8');
+const sameDayPreflight = fs.readFileSync(path.join(root, 'migrations', 'admin-same-day-decisions-preflight.sql'), 'utf8');
+const sameDayVerify = fs.readFileSync(path.join(root, 'migrations', 'admin-same-day-decisions-verify.sql'), 'utf8');
 const principal = value => Buffer.from(JSON.stringify(value)).toString('base64');
 
-function adminHarness({ capabilities = ['EDIT_AIRLINE_RULES'], lockResult = 0, oldProfile = null, auditFailure = false, airlineExists = true } = {}) {
-  const state = { commits: 0, rollbacks: 0, insertedAirlines: [], insertedProfiles: [], audits: [], queries: [] };
+function adminHarness({ capabilities = ['EDIT_AIRLINE_RULES'], lockResult = 0, oldProfile = null, oldGroup = null, auditFailure = false, airlineExists = true, profileInsertError = null } = {}) {
+  const state = { commits: 0, rollbacks: 0, insertedAirlines: [], insertedProfiles: [], insertedGroupVersions: [], audits: [], queries: [] };
+  let currentProfile = oldProfile;
+  let currentGroup = oldGroup;
   class Transaction {
-    constructor() { this.pendingAirlines = []; this.pendingProfiles = []; this.pendingAudits = []; }
+    constructor() { this.pendingAirlines = []; this.pendingProfiles = []; this.pendingGroupVersions = []; this.pendingAudits = []; }
     async begin() { this.begun = true; }
-    async commit() { state.commits++; state.insertedAirlines.push(...this.pendingAirlines); state.insertedProfiles.push(...this.pendingProfiles); state.audits.push(...this.pendingAudits); }
-    async rollback() { state.rollbacks++; this.pendingAirlines = []; this.pendingProfiles = []; this.pendingAudits = []; }
+    async commit() { state.commits++; state.insertedAirlines.push(...this.pendingAirlines); state.insertedProfiles.push(...this.pendingProfiles); state.insertedGroupVersions.push(...this.pendingGroupVersions); state.audits.push(...this.pendingAudits); if (this.pendingProfiles.length) currentProfile = { ProfileVersionId: 90 + state.insertedProfiles.length, ...this.pendingProfiles.at(-1) }; if (this.pendingGroupVersions.length) currentGroup = { GroupVersionId: 190 + state.insertedGroupVersions.length, ...this.pendingGroupVersions.at(-1) }; }
+    async rollback() { state.rollbacks++; this.pendingAirlines = []; this.pendingProfiles = []; this.pendingGroupVersions = []; this.pendingAudits = []; }
   }
   class Request {
     constructor(executor) { this.executor = executor; this.values = {}; }
@@ -45,10 +52,17 @@ function adminHarness({ capabilities = ['EDIT_AIRLINE_RULES'], lockResult = 0, o
         this.executor.pendingAirlines.push({ ...this.values });
         return { recordset: [{ AirlineId: 10 }] };
       }
-      if (q.includes('FROM dbo.CargoRunAirlineProfiles')) return { recordset: oldProfile ? [oldProfile] : [] };
+      if (q.includes('FROM dbo.CargoRunAirlineProfiles')) return { recordset: currentProfile ? [currentProfile] : [] };
       if (q.includes('INSERT dbo.CargoRunAirlineProfiles')) {
+        if (profileInsertError) throw profileInsertError;
         this.executor.pendingProfiles.push({ ...this.values });
-        return { recordset: [{ ProfileVersionId: 91 }] };
+        return { recordset: [{ ProfileVersionId: 91 + state.insertedProfiles.length + this.executor.pendingProfiles.length - 1 }] };
+      }
+      if (q.includes('FROM dbo.CargoRunShcGroups') && q.includes('GroupKey=@GroupKey')) return { recordset: [{ ShcGroupId: 20 }] };
+      if (q.includes('FROM dbo.CargoRunShcGroupVersions')) return { recordset: currentGroup ? [currentGroup] : [] };
+      if (q.includes('INSERT dbo.CargoRunShcGroupVersions')) {
+        this.executor.pendingGroupVersions.push({ ...this.values });
+        return { recordset: [{ GroupVersionId: 191 + state.insertedGroupVersions.length + this.executor.pendingGroupVersions.length - 1 }] };
       }
       if (q.includes('INSERT dbo.CargoRunConfigurationAudit')) {
         if (auditFailure) throw new Error('audit unavailable');
@@ -171,8 +185,8 @@ test('authenticated non-admin GET remains readable but reports Admin mutations d
     async close() {}
     request() { return { query: async query => {
       if (String(query).includes('FROM sys.tables')) {
-        const { REQUIRED_CONFIGURATION_TABLES } = require('../api/shared/configuration-store');
-        return { recordset: REQUIRED_CONFIGURATION_TABLES.map(name => ({ name })) };
+        const { REQUIRED_CONFIGURATION_TABLES, DECISION_SEQUENCE_TABLES } = require('../api/shared/configuration-store');
+        return { recordset: REQUIRED_CONFIGURATION_TABLES.map(name => ({ name, ColumnName: DECISION_SEQUENCE_TABLES.includes(name) ? 'DecisionSequence' : null })) };
       }
       if (String(query).includes('SELECT s.StationId')) return { recordsets: Array.from({ length: 12 }, () => []) };
       if (String(query).includes('WITH AssignmentDecisions')) return { recordset: [] };
@@ -235,9 +249,10 @@ test('delete requires the same server capability and appends one audited success
   const denied = adminHarness({ capabilities: [], oldProfile: { ProfileVersionId: 1, EffectiveFrom: new Date('2020-01-01T00:00:00Z') } });
   await assert.rejects(executeConfigurationMutation(denied.pool, denied.sql, 'airlines', { ...airlineInput, intent: 'DELETE' }, { reference: 'ordinary-user', displayName: 'User' }), error => error.status === 403);
   assert.equal(denied.state.insertedProfiles.length, 0);
-  const allowed = adminHarness({ oldProfile: { ProfileVersionId: 1, EffectiveFrom: new Date('2020-01-01T00:00:00Z') } });
+  const allowed = adminHarness({ oldProfile: { ProfileVersionId: 3, DecisionSequence: 3, EffectiveFrom: new Date('2026-09-21T00:00:00Z'), IsEnabled: true } });
   await executeConfigurationMutation(allowed.pool, allowed.sql, 'airlines', { ...airlineInput, intent: 'DELETE' }, { reference: 'admin-id', displayName: 'Admin' });
   assert.equal(allowed.state.insertedProfiles[0].IsEnabled, false);
+  assert.equal(allowed.state.insertedProfiles[0].DecisionSequence, 4);
   assert.equal(allowed.state.audits[0].ConfigurationOperation, 'AIRLINE_DISABLED');
 });
 
@@ -259,11 +274,41 @@ test('failed transaction-owned application lock aborts before configuration writ
   assert.match(lockSql, /@LockOwner='Transaction'/);
 });
 
-test('same-scope same-effective-date airline version fails closed', async () => {
-  const h = adminHarness({ oldProfile: { ProfileVersionId: 8, EffectiveFrom: new Date('2026-09-21T00:00:00Z') } });
-  await assert.rejects(executeConfigurationMutation(h.pool, h.sql, 'airlines', airlineInput, { reference: 'admin-id', displayName: 'Admin User' }), error => error.code === 'CONFIGURATION_VERSION_CONFLICT' && error.status === 409);
-  assert.equal(h.state.rollbacks, 1);
-  assert.equal(h.state.insertedProfiles.length, 0);
+test('repeated same-day airline edits append deterministic decisions with complete audit evidence', async () => {
+  const h = adminHarness({ oldProfile: { ProfileVersionId: 8, DecisionSequence: 1, EffectiveFrom: new Date('2026-09-21T00:00:00Z'), DisplayName: 'Cathay Pacific', BadgeColour: '#AAAAAA', IsEnabled: true } });
+  await executeConfigurationMutation(h.pool, h.sql, 'airlines', { ...airlineInput, displayName: 'Cathay Updated', badgeColour: '#BBBBBB' }, { reference: 'admin-id', displayName: 'Admin User' });
+  await executeConfigurationMutation(h.pool, h.sql, 'airlines', { ...airlineInput, displayName: 'Cathay Final', badgeColour: '#CCCCCC' }, { reference: 'admin-id', displayName: 'Admin User' });
+  assert.deepEqual(h.state.insertedProfiles.map(row => row.DecisionSequence), [2, 3]);
+  assert.equal(h.state.commits, 2);
+  assert.equal(h.state.rollbacks, 0);
+  assert.equal(h.state.audits.length, 2);
+  assert.match(h.state.audits[0].ConfigurationOldValueJson, /#AAAAAA/);
+  assert.match(h.state.audits[0].ConfigurationNewValueJson, /#BBBBBB/);
+  assert.match(h.state.audits[1].ConfigurationOldValueJson, /#BBBBBB/);
+  assert.match(h.state.audits[1].ConfigurationNewValueJson, /#CCCCCC/);
+  const resolved = resolveAirlineConfig({ airlineProfiles: [
+    { AirlineCode: 'CX', ProfileVersionId: 8, DecisionSequence: 1, EffectiveFrom: '2026-09-21', BadgeColour: '#AAAAAA', IsEnabled: true },
+    { AirlineCode: 'CX', ProfileVersionId: 91, DecisionSequence: 2, EffectiveFrom: '2026-09-21', BadgeColour: '#BBBBBB', IsEnabled: true },
+    { AirlineCode: 'CX', ProfileVersionId: 92, DecisionSequence: 3, EffectiveFrom: '2026-09-21', BadgeColour: '#CCCCCC', IsEnabled: true }
+  ] }, { airlineCode: 'CX', operatingDate: '2026-09-21' });
+  assert.equal(resolved.BadgeColour, '#CCCCCC');
+});
+
+test('same-day SHC group colour edit appends a shadow decision and audits old and new colours', async () => {
+  const h = adminHarness({
+    capabilities: ['EDIT_SHC_RULES'],
+    oldGroup: { GroupVersionId: 7, DecisionSequence: 1, EffectiveFrom: new Date('2026-09-21T00:00:00Z'), VisualClass: '#176B79', DisplayName: 'Temperature' }
+  });
+  await executeConfigurationMutation(h.pool, h.sql, 'shc-groups', {
+    intent: 'UPDATE', groupKey: 'TEMP', displayToken: 'TEMP', displayName: 'Temperature',
+    description: 'Temperature controlled', displayOrder: 20, displayColour: '#225577',
+    isEnabled: true, effectiveFrom: '2026-09-21', effectiveTo: ''
+  }, { reference: 'admin-id', displayName: 'Admin User' });
+  assert.equal(h.state.insertedGroupVersions[0].DecisionSequence, 2);
+  assert.equal(h.state.insertedGroupVersions[0].VisualClass, '#225577');
+  assert.equal(h.state.audits[0].ConfigurationOperation, 'SHC_GROUP_COLOUR_CHANGED');
+  assert.match(h.state.audits[0].ConfigurationOldValueJson, /#176B79/);
+  assert.match(h.state.audits[0].ConfigurationNewValueJson, /#225577/);
 });
 
 test('shared resolver preview covers many-to-many priority, SLA simulation and mail shadow parity', () => {
@@ -334,7 +379,7 @@ test('Phase B route and desktop UI expose only explicit operations while legacy 
   assert.match(apiSource, /invalidateConfigurationCache\(\)/);
   assert.match(html, /Admin configuration is available on desktop/);
   assert.match(html, /READ ONLY — enforcement not enabled/);
-  assert.match(html, /function adminEffectiveFields\(\)\{[\s\S]*adminDefaultEffectiveDate\(\)[\s\S]*adminEffectiveTo[^>]*value=""/);
+  assert.match(html, /function adminEffectiveFields\(editing=false\)\{[\s\S]*editing\?adminToday\(\):adminDefaultEffectiveDate\(\)[\s\S]*adminEffectiveTo[^>]*value=""/);
 });
 
 test('Admin UI hides version mechanics and exposes normal CRUD plus authoritative group membership controls', () => {
@@ -351,4 +396,95 @@ test('Admin UI hides version mechanics and exposes normal CRUD plus authoritativ
   assert.match(html, /function adminAuditLabel\(row\)/);
   assert.match(html, /SHC_GROUP_COLOUR_CHANGED/);
   assert.doesNotMatch(html, /<strong>\$\{esc\(row\.Operation\)\}<\/strong><small>\$\{esc\(row\.EntityType\)\} • \$\{esc\(row\.EntityId\)\}/);
+});
+
+test('same-day decision migration defers new-column references and preserves transactional safety', () => {
+  const tables = [
+    'CargoRunAirlineProfiles', 'CargoRunShcGroupVersions', 'CargoRunShcGroupMappings',
+    'CargoRunPriorityRules', 'CargoRunSlaRules', 'CargoRunMailRules'
+  ];
+  for (const table of tables) {
+    assert.match(sameDayMigration, new RegExp(`${table}[\\s\\S]{0,400}UQ_${table}_Version`));
+    assert.match(sameDayVerify, new RegExp(table));
+    assert.match(sameDayPreflight, new RegExp(table));
+  }
+  assert.match(sameDayMigration, /BEGIN TRY[\s\S]*BEGIN TRANSACTION[\s\S]*sp_getapplock/);
+  assert.match(sameDayMigration, /@LockOwner='Transaction'/);
+  assert.match(sameDayMigration, /IF @LockResult<0 THROW 51410/);
+  assert.match(sameDayMigration, /SET @Sql=N'ALTER TABLE dbo\.'\+QUOTENAME\(@TableName\)[\s\S]*ADD DecisionSequence int NOT NULL/);
+  assert.match(sameDayMigration, /EXEC sys\.sp_executesql @Sql;[\s\S]*DROP CONSTRAINT[\s\S]*EXEC sys\.sp_executesql @Sql;[\s\S]*UNIQUE\('/);
+  assert.match(sameDayMigration, /BEGIN CATCH[\s\S]*ROLLBACK TRANSACTION[\s\S]*THROW/);
+  assert.doesNotMatch(sameDayMigration, /ALTER TABLE dbo\.CargoRun\w+ ADD CONSTRAINT[^;]*DecisionSequence/i,
+    'a static replacement constraint would reintroduce SQL Server new-column batch binding');
+  assert.match(sameDayPreflight, /CLEAN_PRE_MIGRATION/);
+  assert.match(sameDayPreflight, /CLEAN_MIGRATED/);
+  assert.match(sameDayPreflight, /PARTIAL_OR_INCOMPATIBLE/);
+  assert.match(sameDayPreflight, /PARTIAL_DECISION_SEQUENCE_INSTALL/);
+  assert.match(sameDayVerify, /OBSOLETE_SAME_DAY_UNIQUENESS/);
+  assert.match(sameDayVerify, /DISABLED_OR_UNTRUSTED_FOREIGN_KEY/);
+  assert.match(sameDayVerify, /This is the final result set/);
+  assert.match(mutationSource, /ORDER BY EffectiveFrom DESC,DecisionSequence DESC,ProfileVersionId DESC/);
+  assert.match(mutationSource, /nextDecisionSequence\(oldValue, value\.effectiveFrom\)/);
+  assert.doesNotMatch(mutationSource, /A version already exists for this identity, scope, and effective date/);
+});
+
+test('same-day sequence allocation occurs behind the transaction-owned family lock', () => {
+  const begin = mutationSource.indexOf('await transaction.begin()');
+  const lock = mutationSource.indexOf('await acquireConfigurationLock(transaction, sql, key)');
+  const writer = mutationSource.indexOf('await writer(transaction, sql, value, actor)');
+  assert.ok(begin >= 0 && begin < lock && lock < writer);
+  assert.match(mutationSource, /CargoRun:Configuration:\$\{key\.startsWith\('shc-'\) \? 'shc' : key\}/);
+  assert.match(mutationSource, /WITH \(UPDLOCK,HOLDLOCK\)[\s\S]*ORDER BY EffectiveFrom DESC,DecisionSequence DESC/);
+  assert.match(mutationSource, /if \(!oldValue \|\| dateKey\(oldValue\.EffectiveFrom\) !== effectiveFrom\) return 1;[\s\S]*return current \+ 1/);
+});
+
+test('a duplicate sequence race fails closed and rolls back without audit evidence', async () => {
+  const conflict = Object.assign(new Error('duplicate unique key'), { number: 2627 });
+  const h = adminHarness({
+    oldProfile: { ProfileVersionId: 8, DecisionSequence: 2, EffectiveFrom: new Date('2026-09-21T00:00:00Z') },
+    profileInsertError: conflict
+  });
+  await assert.rejects(
+    executeConfigurationMutation(h.pool, h.sql, 'airlines', airlineInput, { reference: 'admin-id', displayName: 'Admin User' }),
+    error => error.code === 'CONFIGURATION_VERSION_CONFLICT' && error.status === 409
+  );
+  assert.equal(h.state.commits, 0);
+  assert.equal(h.state.rollbacks, 1);
+  assert.equal(h.state.insertedProfiles.length, 0);
+  assert.equal(h.state.audits.length, 0);
+});
+
+test('SHC Admin render path initializes authoritative mapping state and supports assigned filters', () => {
+  const line = name => html.split(/\r?\n/).find(value => value.startsWith(`function ${name}`) || value.startsWith(`async function ${name}`));
+  const context = vm.createContext({
+    state: { imports: [], exports: [] },
+    adminShcFilters: { search: '', group: '', airline: '', unassignedOnly: false },
+    adminToday: () => '2026-09-21',
+    esc: value => String(value ?? ''),
+    adminOptions: () => '',
+    adminTable: (_headers, rows) => rows.join(''),
+    Set, Map, String, Number
+  });
+  for (const name of ['adminLatestRows', 'adminOperationalShcs', 'adminCurrentMappings']) vm.runInContext(line(name), context);
+  const masterLine = html.split(/\r?\n/).find(value => value.includes('function adminShcMaster(c)'));
+  vm.runInContext(masterLine.slice(masterLine.indexOf('function adminShcMaster(c)')), context);
+  context.configuration = {
+    shcs: [
+      { ShcCode: 'COL', Description: 'Cool goods', IsEnabled: true },
+      { ShcCode: 'PIL', Description: 'Pharmaceutical', IsEnabled: true }
+    ],
+    shcMappings: [
+      { MappingId: 1, DecisionSequence: 1, ShcCode: 'COL', GroupKey: 'TEMP', MappingAction: 'INCLUDE', EffectiveFrom: '2020-01-01' },
+      { MappingId: 2, DecisionSequence: 1, ShcCode: 'PIL', GroupKey: 'PHARMA', MappingAction: 'INCLUDE', EffectiveFrom: '2026-09-21' },
+      { MappingId: 3, DecisionSequence: 2, ShcCode: 'PIL', GroupKey: 'PHARMA', MappingAction: 'EXCLUDE', EffectiveFrom: '2026-09-21' }
+    ],
+    shcGroupVersions: [], airlineProfiles: []
+  };
+  const rendered = vm.runInContext('adminShcMaster(configuration)', context);
+  assert.match(rendered, /COL[\s\S]*TEMP/);
+  assert.match(rendered, /PIL[\s\S]*UNASSIGNED/);
+  vm.runInContext('adminShcFilters.unassignedOnly=true', context);
+  const unassigned = vm.runInContext('adminShcMaster(configuration)', context);
+  assert.doesNotMatch(unassigned, /COL/);
+  assert.match(unassigned, /PIL/);
 });

@@ -84,11 +84,17 @@ function scopeRank(row, context) {
 function rowId(row) {
   return String(row.RuleId ?? row.MappingId ?? row.ProfileVersionId ?? row.GroupVersionId ?? row.id ?? '');
 }
+function decisionSequence(row) {
+  const value = Number(row.DecisionSequence ?? row.decisionSequence ?? 1);
+  return Number.isInteger(value) && value > 0 ? value : 1;
+}
 function compareCandidates(a, b, context) {
   const rank = scopeRank(b, context) - scopeRank(a, context);
   if (rank) return rank;
   const from = dateKey(b.EffectiveFrom ?? b.effectiveFrom).localeCompare(dateKey(a.EffectiveFrom ?? a.effectiveFrom));
   if (from) return from;
+  const sequence = decisionSequence(b) - decisionSequence(a);
+  if (sequence) return sequence;
   return rowId(b).localeCompare(rowId(a), undefined, { numeric: true });
 }
 function resolveScoped(rows, context, predicate = () => true) {
@@ -96,7 +102,9 @@ function resolveScoped(rows, context, predicate = () => true) {
   const candidates = (rows || []).filter(row => predicate(row) && isEffective(row, when) && scopeRank(row, context) >= 0).sort((a, b) => compareCandidates(a, b, context));
   if (!candidates.length) return null;
   const first = candidates[0];
-  const tied = candidates.filter(row => scopeRank(row, context) === scopeRank(first, context) && dateKey(row.EffectiveFrom ?? row.effectiveFrom) === dateKey(first.EffectiveFrom ?? first.effectiveFrom));
+  const tied = candidates.filter(row => scopeRank(row, context) === scopeRank(first, context)
+    && dateKey(row.EffectiveFrom ?? row.effectiveFrom) === dateKey(first.EffectiveFrom ?? first.effectiveFrom)
+    && decisionSequence(row) === decisionSequence(first));
   if (tied.length > 1) throw new ConfigurationError('CONFIGURATION_AMBIGUOUS', 'More than one rule has the same scope and effective start date');
   return first;
 }
@@ -177,7 +185,8 @@ function validateRuleSet(rows, naturalKey) {
     const from = dateKey(row.EffectiveFrom ?? row.effectiveFrom);
     const to = dateKey(row.EffectiveTo ?? row.effectiveTo);
     if (!from || (to && to <= from)) throw new ConfigurationError('CONFIGURATION_EFFECTIVE_RANGE_INVALID', 'EffectiveTo must be later than EffectiveFrom');
-    const key = [naturalKey(row), text(row.AirlineCode ?? row.airlineCode) || '*', text(row.StationCode ?? row.stationCode) || '*', from].join('|');
+    const sequence = decisionSequence(row);
+    const key = [naturalKey(row), text(row.AirlineCode ?? row.airlineCode) || '*', text(row.StationCode ?? row.stationCode) || '*', from, sequence].join('|');
     if (seen.has(key)) throw new ConfigurationError('CONFIGURATION_DUPLICATE_VERSION', `Duplicate rule version ${key}`);
     seen.add(key);
   }
@@ -224,7 +233,7 @@ function authorizeCapability({ enforcementMode = 'LEGACY', capabilities = [], re
 
 module.exports = {
   ConfigurationError, SCOPE_PRECEDENCE, PRIORITY_LEVELS, FALLBACK_AIRLINES, FALLBACK_GROUPS,
-  FALLBACK_SHC_GROUPS, FALLBACK_SLAS, isEffective, scopeRank, resolveScoped,
+  FALLBACK_SHC_GROUPS, FALLBACK_SLAS, isEffective, scopeRank, decisionSequence, resolveScoped,
   resolveAirlineConfig, resolveShcGroups, resolvePriorityRules, resolveSlaRule,
   resolveMailRules, resolveDocumentRules, validateRuleSet, resolveCapabilities,
   authorizeCapability

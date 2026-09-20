@@ -19,7 +19,7 @@ const {
   authorizeCapability
 } = require('../api/shared/configuration');
 const { validateConfigurationInput, insertConfigurationAudit } = require('../api/shared/configuration-admin');
-const { REQUIRED_CONFIGURATION_TABLES, loadCachedConfiguration, invalidateConfigurationCache } = require('../api/shared/configuration-store');
+const { REQUIRED_CONFIGURATION_TABLES, DECISION_SEQUENCE_TABLES, assertConfigurationSchema, loadCachedConfiguration, invalidateConfigurationCache } = require('../api/shared/configuration-store');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -63,6 +63,17 @@ test('effective dates retain historical interpretation and use exclusive Effecti
   ];
   assert.equal(resolveScoped(rules, { ...context, operatingDate: '2026-09-19' }).TargetMinutes, 60);
   assert.equal(resolveScoped(rules, { ...context, operatingDate: '2026-11-01' }).TargetMinutes, 45);
+});
+
+test('historical resolution uses the highest same-day sequence without changing earlier dates', () => {
+  const rules = [
+    row({ RuleId: 1, EffectiveFrom: '2026-09-18', DecisionSequence: 1, Value: '#000000' }),
+    row({ RuleId: 2, EffectiveFrom: '2026-09-19', DecisionSequence: 1, Value: '#111111' }),
+    row({ RuleId: 3, EffectiveFrom: '2026-09-19', DecisionSequence: 2, Value: '#222222' }),
+    row({ RuleId: 4, EffectiveFrom: '2026-09-19', DecisionSequence: 3, Value: '#333333' })
+  ];
+  assert.equal(resolveScoped(rules, { ...context, operatingDate: '2026-09-18' }).Value, '#000000');
+  assert.equal(resolveScoped(rules, { ...context, operatingDate: '2026-09-19' }).Value, '#333333');
 });
 
 test('same-scope same-date ambiguity fails closed', () => {
@@ -125,6 +136,7 @@ test('SLA, mail and document rules resolve configured values then current fallba
 test('invalid dates and duplicate effective versions are rejected', () => {
   assert.throws(() => validateRuleSet([row({ EffectiveTo: '2019-01-01' })], () => 'X'), /EffectiveTo/);
   assert.throws(() => validateRuleSet([row({ RuleId: 1 }), row({ RuleId: 2 })], () => 'X'), error => error.code === 'CONFIGURATION_DUPLICATE_VERSION');
+  assert.equal(validateRuleSet([row({ RuleId: 1, DecisionSequence: 1 }), row({ RuleId: 2, DecisionSequence: 2 })], () => 'X'), true);
 });
 
 test('Admin input validation rejects unsafe codes, dates and SLA ranges server-side', () => {
@@ -173,7 +185,7 @@ test('configuration store uses one bounded snapshot query and avoids per-row N+1
     config: { server: 'test-server', database: 'test-db' },
     request() { return { query: async sqlText => {
       queries++;
-      if (/FROM sys\.tables/.test(sqlText)) return { recordset: REQUIRED_CONFIGURATION_TABLES.map(name => ({ name })) };
+      if (/FROM sys\.tables/.test(sqlText)) return { recordset: REQUIRED_CONFIGURATION_TABLES.map(name => ({ name, ColumnName: DECISION_SEQUENCE_TABLES.includes(name) ? 'DecisionSequence' : null })) };
       return { recordsets: Array.from({ length: 12 }, () => []) };
     } }; }
   };
@@ -184,9 +196,15 @@ test('configuration store uses one bounded snapshot query and avoids per-row N+1
   invalidateConfigurationCache();
 });
 
+test('Admin configuration fails closed until every same-day decision column is installed', async () => {
+  const request = { query: async () => ({ recordset: REQUIRED_CONFIGURATION_TABLES.map(name => ({ name, ColumnName: null })) }) };
+  await assert.rejects(assertConfigurationSchema(request), error => error.code === 'ADMIN_CONFIGURATION_SCHEMA_NOT_READY'
+    && error.details.missingDecisionSequence.length === DECISION_SEQUENCE_TABLES.length);
+});
+
 test('migration is additive, normalized, immutable and leaves protected rules outside configuration', () => {
   for (const name of ['CargoRunAirlineProfiles','CargoRunShcGroupMappings','CargoRunSlaRules','CargoRunMailRules','CargoRunDocumentRules','CargoRunCapabilities','CargoRunRoles','CargoRunUserRoleAssignments','CargoRunAdminMessages','CargoRunConfigurationAudit']) assert.match(migration, new RegExp(`CREATE TABLE dbo\\.${name}`));
-  assert.match(migration, /UQ_CargoRunShcGroupMappings_Version UNIQUE\(ShcId,ShcGroupId,AirlineScopeKey,StationScopeKey,EffectiveFrom\)/);
+  assert.match(migration, /UQ_CargoRunShcGroupMappings_Version UNIQUE\(ShcId,ShcGroupId,AirlineScopeKey,StationScopeKey,EffectiveFrom,DecisionSequence\)/);
   assert.match(migration, /TR_CargoRunConfigurationAudit_Immutable/);
   assert.match(migration, /TR_CargoRunRules_Immutable/);
   assert.doesNotMatch(migration, /ON DELETE CASCADE/i);

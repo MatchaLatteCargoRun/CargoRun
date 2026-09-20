@@ -9,6 +9,10 @@ const REQUIRED_CONFIGURATION_TABLES = Object.freeze([
   'CargoRunRoles', 'CargoRunRoleCapabilities', 'CargoRunUserRoleAssignments',
   'CargoRunConfigurationAudit'
 ]);
+const DECISION_SEQUENCE_TABLES = Object.freeze([
+  'CargoRunAirlineProfiles', 'CargoRunShcGroupVersions', 'CargoRunShcGroupMappings',
+  'CargoRunPriorityRules', 'CargoRunSlaRules', 'CargoRunMailRules'
+]);
 
 class ConfigurationStoreError extends Error {
   constructor(code, message, details = {}) {
@@ -24,18 +28,21 @@ const DEFAULT_CACHE_TTL_MS = 60000;
 
 async function assertConfigurationSchema(request) {
   const result = await request.query(`
-    SELECT name
-    FROM sys.tables
+    SELECT tableObject.name,columnObject.name AS ColumnName
+    FROM sys.tables tableObject
+    LEFT JOIN sys.columns columnObject
+      ON columnObject.object_id=tableObject.object_id AND columnObject.name=N'DecisionSequence'
     WHERE schema_id = SCHEMA_ID(N'dbo')
-      AND name LIKE N'CargoRun%';
+      AND tableObject.name LIKE N'CargoRun%';
   `);
   const present = new Set((result.recordset || []).map(row => String(row.name)));
   const missing = REQUIRED_CONFIGURATION_TABLES.filter(name => !present.has(name));
-  if (missing.length) {
+  const missingDecisionSequence = DECISION_SEQUENCE_TABLES.filter(name => !(result.recordset || []).some(row => String(row.name) === name && row.ColumnName === 'DecisionSequence'));
+  if (missing.length || missingDecisionSequence.length) {
     throw new ConfigurationStoreError(
       'ADMIN_CONFIGURATION_SCHEMA_NOT_READY',
       'CargoRun Admin configuration schema is not installed',
-      { missingTables: missing }
+      { missingTables: missing, missingDecisionSequence }
     );
   }
 }
@@ -46,13 +53,13 @@ async function loadConfigurationSnapshot(pool) {
     SELECT s.StationId,s.StationCode,s.DisplayName,s.TimeZoneId,s.IsEnabled
     FROM dbo.CargoRunStations s ORDER BY s.StationCode;
 
-    SELECT a.AirlineId,a.AirlineCode,p.ProfileVersionId,s.StationCode,
+    SELECT a.AirlineId,a.AirlineCode,p.ProfileVersionId,p.DecisionSequence,s.StationCode,
       p.DisplayName,p.BadgeColour,p.BrightBadge,p.IsEnabled,p.OperationalNotes,
       p.EffectiveFrom,p.EffectiveTo,p.CreatedAtUtc,p.CreatedByReference
     FROM dbo.CargoRunAirlines a
     JOIN dbo.CargoRunAirlineProfiles p ON p.AirlineId=a.AirlineId
     LEFT JOIN dbo.CargoRunStations s ON s.StationId=p.StationId
-    ORDER BY a.AirlineCode,p.EffectiveFrom,p.ProfileVersionId;
+    ORDER BY a.AirlineCode,p.EffectiveFrom,p.DecisionSequence,p.ProfileVersionId;
 
     SELECT x.AirlineStationVersionId,a.AirlineCode,s.StationCode,x.AssignmentAction,
       x.EffectiveFrom,x.EffectiveTo,x.CreatedAtUtc,x.CreatedByReference
@@ -68,45 +75,45 @@ async function loadConfigurationSnapshot(pool) {
     JOIN dbo.CargoRunShcVersions v ON v.ShcId=sh.ShcId
     ORDER BY sh.ShcCode,v.EffectiveFrom,v.ShcVersionId;
 
-    SELECT g.ShcGroupId,g.GroupKey,v.GroupVersionId,v.DisplayToken,v.DisplayName,
+    SELECT g.ShcGroupId,g.GroupKey,v.GroupVersionId,v.DecisionSequence,v.DisplayToken,v.DisplayName,
       v.Description,v.DisplayOrder,v.VisualClass,v.IsEnabled,v.EffectiveFrom,v.EffectiveTo
     FROM dbo.CargoRunShcGroups g
     JOIN dbo.CargoRunShcGroupVersions v ON v.ShcGroupId=g.ShcGroupId
-    ORDER BY v.DisplayOrder,g.GroupKey,v.EffectiveFrom;
+    ORDER BY v.DisplayOrder,g.GroupKey,v.EffectiveFrom,v.DecisionSequence,v.GroupVersionId;
 
-    SELECT m.MappingId,sh.ShcCode,g.GroupKey,a.AirlineCode,s.StationCode,
+    SELECT m.MappingId,m.DecisionSequence,sh.ShcCode,g.GroupKey,a.AirlineCode,s.StationCode,
       m.MappingAction,m.EffectiveFrom,m.EffectiveTo,m.CreatedAtUtc,m.CreatedByReference
     FROM dbo.CargoRunShcGroupMappings m
     JOIN dbo.CargoRunShcs sh ON sh.ShcId=m.ShcId
     JOIN dbo.CargoRunShcGroups g ON g.ShcGroupId=m.ShcGroupId
     LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=m.AirlineId
     LEFT JOIN dbo.CargoRunStations s ON s.StationId=m.StationId
-    ORDER BY sh.ShcCode,g.GroupKey,m.EffectiveFrom,m.MappingId;
+    ORDER BY sh.ShcCode,g.GroupKey,m.EffectiveFrom,m.DecisionSequence,m.MappingId;
 
-    SELECT r.PriorityRuleId AS RuleId,g.GroupKey,a.AirlineCode,s.StationCode,
+    SELECT r.PriorityRuleId AS RuleId,r.DecisionSequence,g.GroupKey,a.AirlineCode,s.StationCode,
       r.PriorityLevel,r.CountsAsPriority,r.SupervisorAttention,r.EscalationEnabled,
       r.SlaRuleKeyOverride,r.EffectiveFrom,r.EffectiveTo,r.CreatedAtUtc,r.CreatedByReference
     FROM dbo.CargoRunPriorityRules r
     JOIN dbo.CargoRunShcGroups g ON g.ShcGroupId=r.ShcGroupId
     LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=r.AirlineId
     LEFT JOIN dbo.CargoRunStations s ON s.StationId=r.StationId
-    ORDER BY g.GroupKey,r.EffectiveFrom,r.PriorityRuleId;
+    ORDER BY g.GroupKey,r.EffectiveFrom,r.DecisionSequence,r.PriorityRuleId;
 
-    SELECT r.SlaRuleId AS RuleId,r.RuleKey,a.AirlineCode,s.StationCode,r.Direction,
+    SELECT r.SlaRuleId AS RuleId,r.DecisionSequence,r.RuleKey,a.AirlineCode,s.StationCode,r.Direction,
       r.StartEvent,r.TargetEvent,r.TargetMinutes,r.WarningMinutes,r.BreachMinutes,
       r.IsEnabled,r.ApplicabilityNotes,r.EffectiveFrom,r.EffectiveTo,r.CreatedAtUtc,r.CreatedByReference
     FROM dbo.CargoRunSlaRules r
     LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=r.AirlineId
     LEFT JOIN dbo.CargoRunStations s ON s.StationId=r.StationId
-    ORDER BY r.RuleKey,r.EffectiveFrom,r.SlaRuleId;
+    ORDER BY r.RuleKey,r.EffectiveFrom,r.DecisionSequence,r.SlaRuleId;
 
-    SELECT r.MailRuleId AS RuleId,a.AirlineCode,s.StationCode,r.MailHandlingRequired,
+    SELECT r.MailRuleId AS RuleId,r.DecisionSequence,a.AirlineCode,s.StationCode,r.MailHandlingRequired,
       r.MailScanRequired,r.SlaEnabled,r.SlaRuleKey,r.ReminderEnabled,r.EscalationEnabled,
       r.OperationalInstructions AS Instructions,r.EffectiveFrom,r.EffectiveTo,r.CreatedAtUtc,r.CreatedByReference
     FROM dbo.CargoRunMailRules r
     LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=r.AirlineId
     LEFT JOIN dbo.CargoRunStations s ON s.StationId=r.StationId
-    ORDER BY r.EffectiveFrom,r.MailRuleId;
+    ORDER BY r.EffectiveFrom,r.DecisionSequence,r.MailRuleId;
 
     SELECT r.DocumentRuleId AS RuleId,a.AirlineCode,s.StationCode,r.Direction,r.DocumentType,
       r.IsSupported,r.IsRequired,r.BulkPieceConfirmationEnabled,r.OperationalInstructions,
@@ -151,6 +158,7 @@ function invalidateConfigurationCache() { cache = null; }
 
 module.exports = {
   REQUIRED_CONFIGURATION_TABLES,
+  DECISION_SEQUENCE_TABLES,
   ConfigurationStoreError,
   assertConfigurationSchema,
   loadConfigurationSnapshot,
