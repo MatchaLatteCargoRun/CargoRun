@@ -41,6 +41,7 @@ function boardHarness() {
   ]);
   const context = vm.createContext({
     state,
+    FLIGHTAWARE_ENABLED: false,
     Number,
     Math,
     String,
@@ -95,6 +96,7 @@ function supervisorHarness() {
   const exports = [{ id: 'local-22', azureFlightId: 22, flight: 'MH0148', flightDate: '15 Sep 2026', ulds: [{ status: 'Warehouse' }] }];
   const activeOffload = { azureOffloadId: 31, flightId: 22, flight: 'MH0148', uld: 'AKE12345CX', bay: 'D20', status: 'Requested', requestedAtKnown: 1 };
   const context = vm.createContext({
+    FLIGHTAWARE_ENABLED: false,
     Number,
     Math,
     String,
@@ -148,11 +150,14 @@ test('Supervisor renders attention first, exact flight links, offload overview a
   assert.doesNotMatch(rendered, /undefined|null|NaN/i);
 });
 
-test('desktop refresh preserves arrival, mail, wallboard, FOW and stable offload controls', () => {
+test('desktop refresh hides disabled FlightAware controls and preserves operational controls', () => {
   const source = sourceBetween('function supervisorActiveOffloads(', 'function historyScreen(');
-  for (const control of ['showFlightStatusSettings()', 'syncAllFlightArrivals(false)', "openScreen('machfow')", 'toggleSupervisorWallboard()', 'showConfirmBulkMailScan']) {
+  for (const control of ["openScreen('machfow')", 'toggleSupervisorWallboard()', 'showConfirmBulkMailScan']) {
     assert.ok(source.includes(control), `${control} should remain accessible`);
   }
+  assert.match(source, /FLIGHTAWARE_ENABLED\?`<button class="secondary" onclick="showFlightStatusSettings\(\)">Arrival Settings<\/button><button class="secondary" onclick="syncAllFlightArrivals\(false\)">Sync Arrivals<\/button>`:''/);
+  assert.doesNotMatch(boardHarness().context.flightBoardScreen(), /Arrival Settings|Sync Arrivals/);
+  assert.doesNotMatch(supervisorHarness().supervisorDashboard(), /Arrival Settings|Sync Arrivals/);
   assert.match(source, /stableOperationalId\(o\.azureOffloadId\)/);
   assert.match(source, /showOffloadDetails\('\$\{esc\(id\)\}'\)/);
   assert.match(html, /function handleOffload\(offloadId\)\{const o=findOffloadById\(offloadId\)/);

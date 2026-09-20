@@ -149,6 +149,7 @@ test('mobile detail resolves duplicate visible flight numbers by authoritative F
   ] };
   const context = vm.createContext({
     state,
+    FLIGHTAWARE_ENABLED: false,
     stableOperationalId: value => /^[1-9]\d*$/.test(String(value || '')) ? String(value) : '',
     findFlightByStableId: (type, id) => state[type].find(flight => String(flight.azureFlightId) === String(id)) || null,
     counts: () => ({ done: 0, total: 0 }), pct: () => 0,
@@ -165,6 +166,8 @@ test('mobile detail resolves duplicate visible flight numbers by authoritative F
   assert.match(rendered, /data-selected-flight-id="102"/);
   assert.match(rendered, /14 Sep 2026/);
   assert.doesNotMatch(rendered, /15 Sep 2026/);
+  assert.doesNotMatch(rendered, /Sync arrival/);
+  assert.match(rendered, /Set In Block/);
 });
 
 test('mobile Import offers separate ULD and ELD actions while Export has no manual add action', () => {

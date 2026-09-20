@@ -109,6 +109,25 @@ module.exports = async function (context, req) {
       return;
     }
 
+    const enabledHeader = String(
+      req?.headers?.['x-cargorun-flightaware-enabled'] ||
+      req?.headers?.['X-CargoRun-FlightAware-Enabled'] ||
+      ''
+    ).toLowerCase();
+    if (enabledHeader !== 'true') {
+      sendJson(
+        context,
+        503,
+        {
+          ok: false,
+          code: 'FLIGHTAWARE_DISABLED',
+          error: 'Live flight tracking is disabled.'
+        },
+        { 'Cache-Control': 'no-store' }
+      );
+      return;
+    }
+
     const apiKey = process.env.FLIGHTAWARE_API_KEY;
     const flight = normaliseIdent(query.flight);
     const airport = String(query.arrivalAirport || 'MEL').toUpperCase();
