@@ -104,7 +104,7 @@ function resolveScoped(rows, context, predicate = () => true) {
 function resolveAirlineConfig(snapshot, context) {
   const airlineCode = text(context?.airlineCode);
   const configured = resolveScoped(snapshot?.airlineProfiles, context, row => text(row.AirlineCode ?? row.airlineCode) === airlineCode);
-  if (configured) return { ...configured, source: 'configured' };
+  if (configured && (configured.IsEnabled ?? configured.isEnabled) !== false) return { ...configured, source: 'configured' };
   return { ...(FALLBACK_AIRLINES[airlineCode] || { airlineCode, displayName: airlineCode || 'Unknown airline', badgeColour: '#365f76', brightBadge: false }), source: 'fallback' };
 }
 
@@ -115,6 +115,7 @@ function fallbackGroupsForCode(code, context) {
 }
 function groupDefinition(snapshot, groupKey, context) {
   const configured = resolveScoped(snapshot?.shcGroupVersions, context, row => text(row.GroupKey ?? row.groupKey) === groupKey);
+  if (configured && (configured.IsEnabled ?? configured.isEnabled) === false) return null;
   return configured ? { ...configured, groupKey, source: 'configured' } : FALLBACK_GROUPS[groupKey] ? { ...FALLBACK_GROUPS[groupKey], source: 'fallback' } : null;
 }
 function resolveShcGroups(snapshot, context) {
@@ -156,7 +157,7 @@ function resolvePriorityRules(snapshot, context) {
 function resolveSlaRule(snapshot, context, ruleKey) {
   const key = text(ruleKey);
   const configured = resolveScoped(snapshot?.slaRules, context, row => text(row.RuleKey ?? row.ruleKey) === key);
-  return configured ? { ...configured, source: 'configured' } : FALLBACK_SLAS[key] ? { ...FALLBACK_SLAS[key], source: 'fallback' } : null;
+  return configured && (configured.IsEnabled ?? configured.isEnabled) !== false ? { ...configured, source: 'configured' } : FALLBACK_SLAS[key] ? { ...FALLBACK_SLAS[key], source: 'fallback' } : null;
 }
 function resolveMailRules(snapshot, context) {
   const configured = resolveScoped(snapshot?.mailRules, context);

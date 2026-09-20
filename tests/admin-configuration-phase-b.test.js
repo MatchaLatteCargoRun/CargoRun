@@ -6,7 +6,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {
   validateMutationInput,
-  requiredCapabilityForOperation
+  requiredCapabilityForOperation,
+  validateGroupColour,
+  groupTextColour,
+  resolveGroupColour
 } = require('../api/shared/configuration-admin');
 const {
   ConfigurationMutationError,
@@ -72,6 +75,7 @@ const airlineInput = {
 test('Phase B operation capabilities are explicit and do not accept arbitrary tables', () => {
   assert.equal(requiredCapabilityForOperation('airlines'), 'EDIT_AIRLINE_RULES');
   assert.equal(requiredCapabilityForOperation('shc-mappings'), 'EDIT_SHC_RULES');
+  assert.equal(requiredCapabilityForOperation('shc-group-settings'), 'EDIT_SHC_RULES');
   assert.equal(requiredCapabilityForOperation('priority-rules'), 'EDIT_SHC_RULES');
   assert.equal(requiredCapabilityForOperation('sla-rules'), 'EDIT_SLA_RULES');
   assert.equal(requiredCapabilityForOperation('mail-rules'), 'EDIT_AIRLINE_RULES');
@@ -86,13 +90,23 @@ test('airline versions validate immutable code, colour and effective period serv
 });
 
 test('group, priority and mail inputs retain the Phase A schema contract', () => {
-  const group = validateMutationInput('shc-groups', { groupKey: 'cold_chain', displayToken: 'TEMP', displayName: 'Cold Chain', description: 'Temperature control', displayOrder: 25, visualClass: 'temp', isEnabled: true, effectiveFrom: '2026-09-21' });
+  const group = validateMutationInput('shc-groups', { intent: 'CREATE', groupKey: 'cold_chain', displayToken: 'TEMP', displayName: 'Cold Chain', description: 'Temperature control', displayOrder: 25, displayColour: '#176B79', isEnabled: true, effectiveFrom: '2026-09-21' });
   assert.equal(group.groupKey, 'COLD_CHAIN');
+  assert.equal(group.visualClass, '#176B79');
   const priority = validateMutationInput('priority-rules', { groupKey: 'COLD_CHAIN', priorityLevel: 'high', countsAsPriority: true, supervisorAttention: true, escalationEnabled: false, effectiveFrom: '2026-09-21' });
   assert.equal(priority.priorityLevel, 'HIGH');
   const mail = validateMutationInput('mail-rules', { airlineCode: 'cx', stationCode: 'mel', mailHandlingRequired: true, mailScanRequired: true, slaEnabled: true, slaRuleKey: 'mail_scan', reminderEnabled: true, escalationEnabled: true, effectiveFrom: '2026-09-21' });
   assert.equal(mail.slaRuleKey, 'MAIL_SCAN');
   assert.throws(() => validateMutationInput('mail-rules', { ...mail, slaRuleKey: '', effectiveFrom: '2026-09-21' }), error => error.code === 'CONFIGURATION_MAIL_SLA_REQUIRED');
+});
+
+test('priority edits can move scope without silently creating an unrelated rule', () => {
+  const value = validateMutationInput('priority-rules', { intent: 'UPDATE', groupKey: 'PHARMA', previousGroupKey: 'temp', airlineCode: 'ua', previousAirlineCode: 'cx', stationCode: 'syd', previousStationCode: 'mel', priorityLevel: 'HIGH', countsAsPriority: true, supervisorAttention: true, escalationEnabled: true, effectiveFrom: '2026-09-21' });
+  assert.deepEqual({ group: value.previousGroupKey, airline: value.previousAirlineCode, station: value.previousStationCode }, { group: 'TEMP', airline: 'CX', station: 'MEL' });
+  assert.match(mutationSource, /const moved = value\.intent === 'UPDATE'/);
+  assert.match(mutationSource, /intent: 'DELETE'[\s\S]*intent: 'CREATE'/);
+  assert.match(mutationSource, /requireMutationCapability\(transaction, sql, actor\.reference, value\.previousStationCode/);
+  assert.match(html, /previousGroupKey:adminEditSource\?\.GroupKey/);
 });
 
 test('SLA validation requires event definitions and safe positive ordering', () => {
@@ -109,6 +123,25 @@ test('bulk SHC validation keeps many-to-many selections and explicit INCLUDE or 
   assert.equal(value.groupKey, 'TEMP');
   assert.equal(value.airlineCode, 'CX');
   assert.throws(() => validateMutationInput('shc-mappings', { shcCodes: [], groupKey: 'TEMP', effectiveFrom: '2026-10-01' }), error => error.code === 'CONFIGURATION_SHC_SELECTION_INVALID');
+});
+
+test('normal settings intents are server validated and delete creates inactive successor values', () => {
+  const deletedAirline = validateMutationInput('airlines', { ...airlineInput, intent: 'DELETE' });
+  assert.equal(deletedAirline.isEnabled, false);
+  const deletedPriority = validateMutationInput('priority-rules', { intent: 'DELETE', groupKey: 'TEMP', priorityLevel: 'HIGH', countsAsPriority: true, supervisorAttention: true, escalationEnabled: true, effectiveFrom: '2026-09-21' });
+  assert.deepEqual({ level: deletedPriority.priorityLevel, priority: deletedPriority.countsAsPriority, supervisor: deletedPriority.supervisorAttention }, { level: 'NORMAL', priority: false, supervisor: false });
+  const deletedMail = validateMutationInput('mail-rules', { intent: 'DELETE', slaEnabled: true, effectiveFrom: '2026-09-21' });
+  assert.equal(deletedMail.slaEnabled, false);
+  assert.throws(() => validateMutationInput('airlines', { ...airlineInput, intent: 'DESTROY' }), error => error.code === 'CONFIGURATION_INTENT_INVALID');
+});
+
+test('SHC group colours are strict hex with readable foreground and legacy fallback mapping', () => {
+  assert.equal(validateGroupColour('#c98a00'), '#C98A00');
+  assert.equal(groupTextColour('#FFFFFF'), '#000000');
+  assert.equal(groupTextColour('#063F61'), '#FFFFFF');
+  assert.equal(resolveGroupColour('temp'), '#176B79');
+  assert.equal(resolveGroupColour(null), '#365F76');
+  assert.throws(() => validateGroupColour('temp'), error => error.code === 'CONFIGURATION_COLOUR_INVALID');
 });
 
 test('authenticated non-admin mutation receives 403 and writes nothing', async () => {
@@ -190,16 +223,26 @@ test('authorized airline mutation appends profile and audit atomically with stab
 
 test('new airline identity and first profile commit in the same audited transaction', async () => {
   const h = adminHarness({ airlineExists: false });
-  const result = await executeConfigurationMutation(h.pool, h.sql, 'airlines', { ...airlineInput, airlineCode: 'NZ', displayName: 'Air New Zealand' }, { reference: 'admin-id', displayName: 'Admin User' });
+  const result = await executeConfigurationMutation(h.pool, h.sql, 'airlines', { ...airlineInput, intent: 'CREATE', airlineCode: 'NZ', displayName: 'Air New Zealand' }, { reference: 'admin-id', displayName: 'Admin User' });
   assert.equal(result.count, 1);
   assert.equal(h.state.insertedAirlines.length, 1);
   assert.equal(h.state.insertedProfiles.length, 1);
   assert.equal(h.state.audits.length, 1);
-  assert.match(h.state.audits[0].ConfigurationOperation, /AIRLINE_PROFILE_CREATED/);
+  assert.equal(h.state.audits[0].ConfigurationOperation, 'AIRLINE_CREATED');
+});
+
+test('delete requires the same server capability and appends one audited successor', async () => {
+  const denied = adminHarness({ capabilities: [], oldProfile: { ProfileVersionId: 1, EffectiveFrom: new Date('2020-01-01T00:00:00Z') } });
+  await assert.rejects(executeConfigurationMutation(denied.pool, denied.sql, 'airlines', { ...airlineInput, intent: 'DELETE' }, { reference: 'ordinary-user', displayName: 'User' }), error => error.status === 403);
+  assert.equal(denied.state.insertedProfiles.length, 0);
+  const allowed = adminHarness({ oldProfile: { ProfileVersionId: 1, EffectiveFrom: new Date('2020-01-01T00:00:00Z') } });
+  await executeConfigurationMutation(allowed.pool, allowed.sql, 'airlines', { ...airlineInput, intent: 'DELETE' }, { reference: 'admin-id', displayName: 'Admin' });
+  assert.equal(allowed.state.insertedProfiles[0].IsEnabled, false);
+  assert.equal(allowed.state.audits[0].ConfigurationOperation, 'AIRLINE_DISABLED');
 });
 
 test('audit failure rolls back the configuration version', async () => {
-  const h = adminHarness({ auditFailure: true });
+  const h = adminHarness({ auditFailure: true, oldProfile: { ProfileVersionId: 1, EffectiveFrom: new Date('2020-01-01T00:00:00Z') } });
   await assert.rejects(executeConfigurationMutation(h.pool, h.sql, 'airlines', airlineInput, { reference: 'admin-id', displayName: 'Admin User' }), /audit unavailable/);
   assert.equal(h.state.commits, 0);
   assert.equal(h.state.rollbacks, 1);
@@ -251,6 +294,23 @@ test('shared resolver preview covers many-to-many priority, SLA simulation and m
   assert.equal(mail.sla.targetMinutes, 180);
 });
 
+test('SHC group membership preview uses the shared scoped resolver and exposes colour mode', () => {
+  const base = { EffectiveFrom: '2020-01-01', EffectiveTo: null };
+  const snapshot = {
+    shcs: [{ ShcCode: 'PIL', Description: 'Pharmaceutical' }, { ShcCode: 'COL', Description: 'Cool goods' }],
+    shcGroupVersions: [{ ...base, GroupVersionId: 1, GroupKey: 'TEMP', DisplayToken: 'TEMP', DisplayName: 'Temperature', DisplayOrder: 1, VisualClass: 'temp', IsEnabled: true }],
+    shcMappings: [
+      { ...base, MappingId: 1, ShcCode: 'PIL', GroupKey: 'TEMP', MappingAction: 'INCLUDE' },
+      { ...base, MappingId: 2, ShcCode: 'PIL', GroupKey: 'TEMP', AirlineCode: 'CX', StationCode: 'MEL', MappingAction: 'EXCLUDE' },
+      { ...base, MappingId: 3, ShcCode: 'COL', GroupKey: 'TEMP', AirlineCode: 'CX', StationCode: 'MEL', MappingAction: 'INCLUDE' }
+    ]
+  };
+  const preview = buildConfigurationPreview(snapshot, { kind: 'SHC_GROUP_MEMBERSHIP', groupKey: 'TEMP', airlineCode: 'CX', stationCode: 'MEL', operatingDate: '2026-09-20' });
+  assert.deepEqual(preview.choices.filter(item => item.assigned).map(item => item.shcCode), ['COL']);
+  assert.equal(preview.scope, 'AIRLINE_STATION');
+  assert.deepEqual(preview.colour, { background: '#176B79', foreground: '#FFFFFF', mode: 'LEGACY_FALLBACK' });
+});
+
 test('mutation SQL is append-only across every editable Phase B table', () => {
   for (const table of ['CargoRunAirlineProfiles', 'CargoRunShcGroupVersions', 'CargoRunShcGroupMappings', 'CargoRunPriorityRules', 'CargoRunSlaRules', 'CargoRunMailRules']) {
     assert.match(mutationSource, new RegExp(`INSERT dbo\\.${table}`));
@@ -266,7 +326,7 @@ test('Phase B route and desktop UI expose only explicit operations while legacy 
   assert.deepEqual(trigger.methods, ['get', 'post']);
   assert.equal(trigger.route, 'configuration-control/{operation?}');
   assert.match(html, /fetch\(`\/api\/configuration-control\/\$\{encodeURIComponent\(pending\.operation\)\}`/);
-  for (const operation of ['airlines', 'shc-groups', 'shc-mappings', 'priority-rules', 'sla-rules', 'mail-rules']) assert.match(html, new RegExp(`adminQueueMutation\\('${operation}'`));
+  for (const operation of ['airlines', 'shc-group-settings', 'shc-mappings', 'priority-rules', 'sla-rules', 'mail-rules']) assert.match(html, new RegExp(`adminQueueMutation\\('${operation}'`));
   assert.match(html, /fetch\('\/api\/configuration-control\/preview'/);
   assert.doesNotMatch(apiSource, /req\.body\.(role|capabilities|actorReference)/);
   assert.match(apiSource, /LEGACY_OPERATIONAL_AUTHORIZATION/);
@@ -275,4 +335,20 @@ test('Phase B route and desktop UI expose only explicit operations while legacy 
   assert.match(html, /Admin configuration is available on desktop/);
   assert.match(html, /READ ONLY — enforcement not enabled/);
   assert.match(html, /function adminEffectiveFields\(\)\{[\s\S]*adminDefaultEffectiveDate\(\)[\s\S]*adminEffectiveTo[^>]*value=""/);
+});
+
+test('Admin UI hides version mechanics and exposes normal CRUD plus authoritative group membership controls', () => {
+  assert.doesNotMatch(html, /New (?:Rule )?Version|Version created/i);
+  for (const label of ['New Rule', 'Edit', 'Save Changes', 'Delete Rule', 'New Group', 'Disable Group', 'Select all filtered']) assert.match(html, new RegExp(label));
+  assert.match(html, /kind:'SHC_GROUP_MEMBERSHIP'/);
+  assert.match(html, /expectedShcCodes/);
+  assert.match(html, /selectedShcCodes/);
+  assert.match(mutationSource, /CONFIGURATION_MEMBERSHIP_STALE/);
+  assert.match(mutationSource, /SHC_MAPPING_ADDED/);
+  assert.match(mutationSource, /SHC_MAPPING_REMOVED/);
+  assert.match(mutationSource, /CargoRun:Configuration:\$\{key\.startsWith\('shc-'\) \? 'shc'/);
+  assert.match(html, /Operational CargoRun token colours remain on the reviewed fallback/);
+  assert.match(html, /function adminAuditLabel\(row\)/);
+  assert.match(html, /SHC_GROUP_COLOUR_CHANGED/);
+  assert.doesNotMatch(html, /<strong>\$\{esc\(row\.Operation\)\}<\/strong><small>\$\{esc\(row\.EntityType\)\} • \$\{esc\(row\.EntityId\)\}/);
 });

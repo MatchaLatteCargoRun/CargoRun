@@ -1,8 +1,8 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { ConfigurationError, resolvePriorityRules, resolveSlaRule, resolveMailRules, FALLBACK_SLAS } = require('./configuration');
-const { validateMutationInput, requiredCapabilityForOperation, insertConfigurationAudit } = require('./configuration-admin');
+const { ConfigurationError, resolveScoped, resolveShcGroups, resolvePriorityRules, resolveSlaRule, resolveMailRules, FALLBACK_SLAS } = require('./configuration');
+const { validateMutationInput, requiredCapabilityForOperation, insertConfigurationAudit, resolveGroupColour, groupTextColour } = require('./configuration-admin');
 
 class ConfigurationMutationError extends Error {
   constructor(code, message, status = 400, details = {}) {
@@ -75,7 +75,8 @@ async function requireMutationCapability(transaction, sql, actorReference, stati
 }
 
 async function acquireConfigurationLock(transaction, sql, operation) {
-  const resource = `CargoRun:Configuration:${normaliseOperation(operation)}`;
+  const key = normaliseOperation(operation);
+  const resource = `CargoRun:Configuration:${key.startsWith('shc-') ? 'shc' : key}`;
   const result = await new sql.Request(transaction)
     .input('ConfigurationLockResource', sql.NVarChar(255), resource)
     .query(`
@@ -121,12 +122,24 @@ function addScope(request, sql, scope) {
 function duplicateVersion() {
   throw new ConfigurationMutationError('CONFIGURATION_VERSION_CONFLICT', 'A version already exists for this identity, scope, and effective date', 409);
 }
+function logicalConflict() {
+  throw new ConfigurationMutationError('CONFIGURATION_LOGICAL_RULE_EXISTS', 'This logical rule already exists; edit the existing rule instead', 409);
+}
+function logicalNotFound() {
+  throw new ConfigurationMutationError('CONFIGURATION_LOGICAL_RULE_NOT_FOUND', 'The logical rule no longer exists; refresh before retrying', 404);
+}
+function mutationOperation(value, created, names) {
+  if (value.intent === 'DELETE') return names.deleted;
+  if (created || value.intent === 'CREATE') return names.created;
+  return names.updated;
+}
 
 async function writeAirline(transaction, sql, value, actor) {
   let airlineResult = await new sql.Request(transaction).input('AirlineCode', sql.VarChar(3), value.airlineCode)
     .query(`SELECT AirlineId FROM dbo.CargoRunAirlines WITH (UPDLOCK,HOLDLOCK) WHERE AirlineCode=@AirlineCode;`);
   let airlineId = one(airlineResult)?.AirlineId;
   let createdIdentity = false;
+  if (!airlineId && value.intent !== 'CREATE') logicalNotFound();
   if (!airlineId) {
     airlineResult = await new sql.Request(transaction)
       .input('AirlineCode', sql.VarChar(3), value.airlineCode)
@@ -145,6 +158,8 @@ async function writeAirline(transaction, sql, value, actor) {
       ORDER BY EffectiveFrom DESC,ProfileVersionId DESC;
     `);
   const oldValue = one(existing);
+  if (value.intent === 'CREATE' && oldValue) logicalConflict();
+  if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
   if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
   const inserted = await addPeriod(new sql.Request(transaction), sql, value)
     .input('AirlineId', sql.BigInt, airlineId).input('StationId', sql.BigInt, scope.stationId)
@@ -157,7 +172,7 @@ async function writeAirline(transaction, sql, value, actor) {
       OUTPUT INSERTED.ProfileVersionId
       VALUES(@AirlineId,@StationId,@DisplayName,@BadgeColour,@BrightBadge,@IsEnabled,@OperationalNotes,@EffectiveFrom,@EffectiveTo,@ActorReference);
     `);
-  return { operation: createdIdentity ? 'AIRLINE_PROFILE_CREATED' : 'AIRLINE_PROFILE_CHANGED', entityType: 'AIRLINE_PROFILE', entityId: String(one(inserted).ProfileVersionId), oldValue, newValue: value };
+  return { operation: mutationOperation(value, createdIdentity, { created: 'AIRLINE_CREATED', updated: 'AIRLINE_UPDATED', deleted: 'AIRLINE_DISABLED' }), entityType: 'AIRLINE_PROFILE', entityId: String(one(inserted).ProfileVersionId), oldValue, newValue: value };
 }
 
 async function writeShcGroup(transaction, sql, value, actor) {
@@ -165,6 +180,8 @@ async function writeShcGroup(transaction, sql, value, actor) {
     .query(`SELECT ShcGroupId FROM dbo.CargoRunShcGroups WITH (UPDLOCK,HOLDLOCK) WHERE GroupKey=@GroupKey;`);
   let groupId = one(groupResult)?.ShcGroupId;
   let createdIdentity = false;
+  if (groupId && value.intent === 'CREATE') logicalConflict();
+  if (!groupId && value.intent !== 'CREATE') logicalNotFound();
   if (!groupId) {
     groupResult = await new sql.Request(transaction).input('GroupKey', sql.VarChar(40), value.groupKey)
       .input('ActorReference', sql.NVarChar(150), actor.reference)
@@ -178,6 +195,8 @@ async function writeShcGroup(transaction, sql, value, actor) {
     WHERE ShcGroupId=@ShcGroupId AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,GroupVersionId DESC;
   `);
   const oldValue = one(existing);
+  if (value.intent === 'CREATE' && oldValue) logicalConflict();
+  if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
   if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
   const inserted = await addPeriod(new sql.Request(transaction), sql, value).input('ShcGroupId', sql.BigInt, groupId)
     .input('DisplayToken', sql.NVarChar(20), value.displayToken).input('DisplayName', sql.NVarChar(100), value.displayName)
@@ -189,7 +208,9 @@ async function writeShcGroup(transaction, sql, value, actor) {
       OUTPUT INSERTED.GroupVersionId
       VALUES(@ShcGroupId,@DisplayToken,@DisplayName,@Description,@DisplayOrder,@VisualClass,@IsEnabled,@EffectiveFrom,@EffectiveTo,@ActorReference);
     `);
-  return { operation: createdIdentity ? 'SHC_GROUP_CREATED' : 'SHC_GROUP_CHANGED', entityType: 'SHC_GROUP', entityId: String(one(inserted).GroupVersionId), oldValue, newValue: value };
+  const colourChanged = oldValue && resolveGroupColour(oldValue.VisualClass) !== value.displayColour;
+  const operation = value.intent === 'DELETE' ? 'SHC_GROUP_DISABLED' : colourChanged ? 'SHC_GROUP_COLOUR_CHANGED' : mutationOperation(value, createdIdentity, { created: 'SHC_GROUP_CREATED', updated: 'SHC_GROUP_UPDATED', deleted: 'SHC_GROUP_DISABLED' });
+  return { operation, entityType: 'SHC_GROUP', entityId: String(one(inserted).GroupVersionId), oldValue, newValue: value };
 }
 
 async function groupIdFor(transaction, sql, groupKey) {
@@ -267,12 +288,12 @@ async function writeMappings(transaction, sql, value, actor) {
         OUTPUT INSERTED.MappingId
         VALUES(@ShcId,@ShcGroupId,@AirlineId,@StationId,@MappingAction,@EffectiveFrom,@EffectiveTo,@ActorReference);
       `);
-    events.push({ operation: value.mappingAction === 'INCLUDE' ? 'SHC_MAPPING_GRANTED' : 'SHC_MAPPING_REVOKED', entityType: 'SHC_MAPPING', entityId: String(one(inserted).MappingId), oldValue, newValue: { ...value, shcCodes: [shcCode] } });
+    events.push({ operation: value.mappingAction === 'INCLUDE' ? 'SHC_MAPPING_ADDED' : 'SHC_MAPPING_REMOVED', entityType: 'SHC_MAPPING', entityId: String(one(inserted).MappingId), oldValue, newValue: { ...value, shcCodes: [shcCode] } });
   }
   return events;
 }
 
-async function writePriority(transaction, sql, value, actor) {
+async function writePriorityDecision(transaction, sql, value, actor) {
   const scope = await resolveScopeIds(transaction, sql, value);
   const groupId = await groupIdFor(transaction, sql, value.groupKey);
   await assertSlaReference(transaction, sql, value.slaRuleKeyOverride, scope, value.effectiveFrom);
@@ -283,6 +304,8 @@ async function writePriority(transaction, sql, value, actor) {
       AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,PriorityRuleId DESC;
   `);
   const oldValue = one(existing);
+  if (value.intent === 'CREATE' && oldValue) logicalConflict();
+  if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
   if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
   const inserted = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value).input('ShcGroupId', sql.BigInt, groupId)
     .input('PriorityLevel', sql.VarChar(12), value.priorityLevel).input('CountsAsPriority', sql.Bit, value.countsAsPriority)
@@ -294,7 +317,30 @@ async function writePriority(transaction, sql, value, actor) {
       OUTPUT INSERTED.PriorityRuleId
       VALUES(@ShcGroupId,@AirlineId,@StationId,@PriorityLevel,@CountsAsPriority,@SupervisorAttention,@EscalationEnabled,@SlaRuleKeyOverride,@EffectiveFrom,@EffectiveTo,@ActorReference);
     `);
-  return { operation: 'PRIORITY_RULE_CHANGED', entityType: 'PRIORITY_RULE', entityId: String(one(inserted).PriorityRuleId), oldValue, newValue: value };
+  return { operation: mutationOperation(value, !oldValue, { created: 'PRIORITY_RULE_CREATED', updated: 'PRIORITY_RULE_UPDATED', deleted: 'PRIORITY_RULE_DELETED' }), entityType: 'PRIORITY_RULE', entityId: String(one(inserted).PriorityRuleId), oldValue, newValue: value };
+}
+
+async function writePriority(transaction, sql, value, actor) {
+  const moved = value.intent === 'UPDATE' && value.previousGroupKey && (
+    value.previousGroupKey !== value.groupKey ||
+    (value.previousAirlineCode || null) !== (value.airlineCode || null) ||
+    (value.previousStationCode || null) !== (value.stationCode || null)
+  );
+  if (!moved) return writePriorityDecision(transaction, sql, value, actor);
+  const removed = await writePriorityDecision(transaction, sql, {
+    ...value,
+    intent: 'DELETE',
+    groupKey: value.previousGroupKey,
+    airlineCode: value.previousAirlineCode,
+    stationCode: value.previousStationCode,
+    priorityLevel: 'NORMAL',
+    countsAsPriority: false,
+    supervisorAttention: false,
+    escalationEnabled: false,
+    slaRuleKeyOverride: null
+  }, actor);
+  const created = await writePriorityDecision(transaction, sql, { ...value, intent: 'CREATE' }, actor);
+  return [removed, created];
 }
 
 async function writeSla(transaction, sql, value, actor) {
@@ -306,6 +352,8 @@ async function writeSla(transaction, sql, value, actor) {
       AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,SlaRuleId DESC;
   `);
   const oldValue = one(existing);
+  if (value.intent === 'CREATE' && oldValue) logicalConflict();
+  if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
   if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
   const inserted = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value).input('RuleKey', sql.VarChar(50), value.ruleKey)
     .input('Direction', sql.VarChar(10), value.direction).input('StartEvent', sql.VarChar(50), value.startEvent)
@@ -318,7 +366,7 @@ async function writeSla(transaction, sql, value, actor) {
       OUTPUT INSERTED.SlaRuleId
       VALUES(@RuleKey,@AirlineId,@StationId,@Direction,@StartEvent,@TargetEvent,@TargetMinutes,@WarningMinutes,@BreachMinutes,@IsEnabled,@ApplicabilityNotes,@EffectiveFrom,@EffectiveTo,@ActorReference);
     `);
-  return { operation: 'SLA_RULE_CHANGED', entityType: 'SLA_RULE', entityId: String(one(inserted).SlaRuleId), oldValue, newValue: value };
+  return { operation: mutationOperation(value, !oldValue, { created: 'SLA_RULE_CREATED', updated: 'SLA_RULE_UPDATED', deleted: 'SLA_RULE_DELETED' }), entityType: 'SLA_RULE', entityId: String(one(inserted).SlaRuleId), oldValue, newValue: value };
 }
 
 async function writeMail(transaction, sql, value, actor) {
@@ -331,6 +379,8 @@ async function writeMail(transaction, sql, value, actor) {
       AND EffectiveFrom<=@EffectiveFrom ORDER BY EffectiveFrom DESC,MailRuleId DESC;
   `);
   const oldValue = one(existing);
+  if (value.intent === 'CREATE' && oldValue) logicalConflict();
+  if (value.intent !== 'CREATE' && !oldValue) logicalNotFound();
   if (oldValue && dateKey(oldValue.EffectiveFrom) === value.effectiveFrom) duplicateVersion();
   const inserted = await addPeriod(addScope(new sql.Request(transaction), sql, scope), sql, value)
     .input('MailHandlingRequired', sql.Bit, value.mailHandlingRequired).input('MailScanRequired', sql.Bit, value.mailScanRequired)
@@ -343,12 +393,49 @@ async function writeMail(transaction, sql, value, actor) {
       OUTPUT INSERTED.MailRuleId
       VALUES(@AirlineId,@StationId,@MailHandlingRequired,@MailScanRequired,@SlaEnabled,@SlaRuleKey,@ReminderEnabled,@EscalationEnabled,@OperationalInstructions,@EffectiveFrom,@EffectiveTo,@ActorReference);
     `);
-  return { operation: 'MAIL_RULE_CHANGED', entityType: 'MAIL_RULE', entityId: String(one(inserted).MailRuleId), oldValue, newValue: value };
+  return { operation: mutationOperation(value, !oldValue, { created: 'MAIL_RULE_CREATED', updated: 'MAIL_RULE_UPDATED', deleted: 'MAIL_RULE_DELETED' }), entityType: 'MAIL_RULE', entityId: String(one(inserted).MailRuleId), oldValue, newValue: value };
+}
+
+async function loadShcSnapshot(transaction, sql) {
+  const result = await new sql.Request(transaction).query(`
+    SELECT sh.ShcId,sh.ShcCode,a.AirlineCode,v.ShcVersionId,v.Description,v.StandardIndicator,v.IsEnabled,v.EffectiveFrom,v.EffectiveTo
+    FROM dbo.CargoRunShcs sh LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=sh.CarrierAirlineId
+    JOIN dbo.CargoRunShcVersions v ON v.ShcId=sh.ShcId;
+    SELECT g.ShcGroupId,g.GroupKey,v.GroupVersionId,v.DisplayToken,v.DisplayName,v.Description,v.DisplayOrder,v.VisualClass,v.IsEnabled,v.EffectiveFrom,v.EffectiveTo
+    FROM dbo.CargoRunShcGroups g JOIN dbo.CargoRunShcGroupVersions v ON v.ShcGroupId=g.ShcGroupId;
+    SELECT m.MappingId,sh.ShcCode,g.GroupKey,a.AirlineCode,s.StationCode,m.MappingAction,m.EffectiveFrom,m.EffectiveTo
+    FROM dbo.CargoRunShcGroupMappings m JOIN dbo.CargoRunShcs sh ON sh.ShcId=m.ShcId
+    JOIN dbo.CargoRunShcGroups g ON g.ShcGroupId=m.ShcGroupId
+    LEFT JOIN dbo.CargoRunAirlines a ON a.AirlineId=m.AirlineId LEFT JOIN dbo.CargoRunStations s ON s.StationId=m.StationId;
+  `);
+  return { shcs: result.recordsets?.[0] || [], shcGroupVersions: result.recordsets?.[1] || [], shcMappings: result.recordsets?.[2] || [] };
+}
+function currentGroupMembership(snapshot, value) {
+  const codes = [...new Set((snapshot.shcs || []).map(row => String(row.ShcCode || '').toUpperCase()).filter(Boolean))].sort();
+  const context = { airlineCode: value.airlineCode || '', stationCode: value.stationCode || '', operatingDate: value.effectiveFrom };
+  return codes.filter(code => resolveShcGroups(snapshot, { ...context, rawShcs: [code] }).groups.some(group => String(group.GroupKey ?? group.groupKey).toUpperCase() === value.groupKey));
+}
+function sameCodes(left, right) {
+  return [...left].sort().join('|') === [...right].sort().join('|');
+}
+async function writeGroupSettings(transaction, sql, value, actor) {
+  const before = await loadShcSnapshot(transaction, sql);
+  const current = currentGroupMembership(before, value);
+  if (!sameCodes(current, value.expectedShcCodes)) throw new ConfigurationMutationError('CONFIGURATION_MEMBERSHIP_STALE', 'SHC membership changed; refresh the group before saving', 409, { currentShcCodes: current });
+  const selected = value.intent === 'DELETE' ? current : value.selectedShcCodes;
+  const added = selected.filter(code => !current.includes(code));
+  const removed = current.filter(code => !selected.includes(code));
+  const events = [await writeShcGroup(transaction, sql, value, actor)];
+  if (added.length) events.push(...await writeMappings(transaction, sql, { ...value, intent: 'UPDATE', shcCodes: added, mappingAction: 'INCLUDE' }, actor));
+  if (removed.length) events.push(...await writeMappings(transaction, sql, { ...value, intent: 'UPDATE', shcCodes: removed, mappingAction: 'EXCLUDE' }, actor));
+  events[0].newValue = { ...events[0].newValue, membership: { added, removed, unchanged: selected.filter(code => current.includes(code)) } };
+  return events;
 }
 
 const WRITERS = Object.freeze({
   'airlines': writeAirline,
   'shc-groups': writeShcGroup,
+  'shc-group-settings': writeGroupSettings,
   'shc-mappings': writeMappings,
   'priority-rules': writePriority,
   'sla-rules': writeSla,
@@ -366,6 +453,9 @@ async function executeConfigurationMutation(pool, sql, operation, input, actor) 
     transaction = new sql.Transaction(pool);
     await transaction.begin();
     await requireMutationCapability(transaction, sql, actor.reference, value.stationCode, capability);
+    if (value.previousStationCode && value.previousStationCode !== value.stationCode) {
+      await requireMutationCapability(transaction, sql, actor.reference, value.previousStationCode, capability);
+    }
     await acquireConfigurationLock(transaction, sql, key);
     const written = await writer(transaction, sql, value, actor);
     const events = Array.isArray(written) ? written : [written];
@@ -375,7 +465,7 @@ async function executeConfigurationMutation(pool, sql, operation, input, actor) 
     }
     await transaction.commit();
     transaction = null;
-    return { operation: key, capability, count: events.length, correlationId, records: events.map(event => ({ entityType: event.entityType, entityId: event.entityId })) };
+    return { operation: key, capability, count: events.length, correlationId, state: value, records: events.map(event => ({ entityType: event.entityType, entityId: event.entityId })) };
   } catch (error) {
     if (transaction) { try { await transaction.rollback(); } catch {} }
     if (error instanceof ConfigurationMutationError || error instanceof ConfigurationError) throw error;
@@ -405,6 +495,17 @@ function buildConfigurationPreview(snapshot, input) {
   if (kind === 'SHC') {
     context.rawShcs = Array.isArray(input.rawShcs) ? input.rawShcs : String(input.rawShcs || '').split(/[\s,]+/);
     return { kind, context, result: resolvePriorityRules(snapshot, context) };
+  }
+  if (kind === 'SHC_GROUP_MEMBERSHIP') {
+    const groupKey = String(input.groupKey || '').trim().toUpperCase();
+    if (!/^[A-Z0-9_]{2,40}$/.test(groupKey)) throw new ConfigurationMutationError('CONFIGURATION_GROUP_REQUIRED', 'SHC group is required', 400);
+    const choices = [...new Map((snapshot.shcs || []).map(row => [String(row.ShcCode || '').toUpperCase(), row])).values()]
+      .filter(row => row.ShcCode).sort((a, b) => String(a.ShcCode).localeCompare(String(b.ShcCode)))
+      .map(row => ({ shcCode: String(row.ShcCode).toUpperCase(), description: row.Description || '', assigned: resolveShcGroups(snapshot, { ...context, rawShcs: [row.ShcCode] }).groups.some(group => String(group.GroupKey ?? group.groupKey).toUpperCase() === groupKey) }));
+    const group = resolveScoped(snapshot.shcGroupVersions || [], context, row => String(row.GroupKey ?? row.groupKey).toUpperCase() === groupKey);
+    const background = resolveGroupColour(group?.VisualClass ?? group?.visualClass);
+    const storedColour = group?.VisualClass ?? group?.visualClass ?? '';
+    return { kind, context, groupKey, scope: context.airlineCode && context.stationCode ? 'AIRLINE_STATION' : context.airlineCode ? 'AIRLINE' : context.stationCode ? 'STATION' : 'GLOBAL', choices, colour: { background, foreground: groupTextColour(background), mode: /^#[0-9A-F]{6}$/i.test(String(storedColour)) ? 'CONFIGURED_ADMIN_PREVIEW' : 'LEGACY_FALLBACK' } };
   }
   if (kind === 'SLA') {
     const ruleKey = String(input.ruleKey || '').trim().toUpperCase();

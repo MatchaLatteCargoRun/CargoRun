@@ -57,6 +57,34 @@ function validateHexColour(value) {
   if (!/^#[0-9A-F]{6}$/.test(colour)) throw new ConfigurationError('CONFIGURATION_COLOUR_INVALID', 'BadgeColour must be a six-digit hex colour');
   return colour;
 }
+function validateGroupColour(value) {
+  const colour = requiredText(value, 'DisplayColour', 7).toUpperCase();
+  if (!/^#[0-9A-F]{6}$/.test(colour)) throw new ConfigurationError('CONFIGURATION_COLOUR_INVALID', 'DisplayColour must be a six-digit hex colour');
+  return colour;
+}
+function groupTextColour(background) {
+  const colour = validateGroupColour(background);
+  const values = [1, 3, 5].map(offset => parseInt(colour.slice(offset, offset + 2), 16) / 255)
+    .map(value => value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
+  const luminance = 0.2126 * values[0] + 0.7152 * values[1] + 0.0722 * values[2];
+  return luminance > 0.179 ? '#000000' : '#FFFFFF';
+}
+const LEGACY_GROUP_COLOURS = Object.freeze({ critical: '#8A3442', temp: '#176B79', mail: '#245F7A' });
+function resolveGroupColour(value) {
+  const clean = String(value || '').trim();
+  return /^#[0-9A-F]{6}$/i.test(clean) ? clean.toUpperCase() : (LEGACY_GROUP_COLOURS[clean.toLowerCase()] || '#365F76');
+}
+function validateIntent(value) {
+  const intent = String(value || 'UPDATE').trim().toUpperCase();
+  if (!['CREATE', 'UPDATE', 'DELETE'].includes(intent)) throw new ConfigurationError('CONFIGURATION_INTENT_INVALID', 'Intent must be CREATE, UPDATE, or DELETE');
+  return intent;
+}
+function validateShcCodes(value, field, allowEmpty = false) {
+  const source = Array.isArray(value) ? value : String(value || '').split(/[\s,]+/);
+  const codes = [...new Set(source.filter(Boolean).map(code => validateCode(code, field, /^[A-Z0-9]{2,10}$/, 10)))];
+  if ((!allowEmpty && !codes.length) || codes.length > 500) throw new ConfigurationError('CONFIGURATION_SHC_SELECTION_INVALID', `Select ${allowEmpty ? 'up to' : 'between 1 and'} 500 SHCs`);
+  return codes;
+}
 function validatePositiveMinutes(value, field) {
   const minutes = Number(value);
   if (!Number.isInteger(minutes) || minutes < 0 || minutes > 10080) throw new ConfigurationError('CONFIGURATION_MINUTES_INVALID', `${field} must be a whole number from 0 to 10080`);
@@ -71,6 +99,7 @@ function validateSlaEvent(value, field) {
 const MUTATION_CAPABILITIES = Object.freeze({
   'airlines': 'EDIT_AIRLINE_RULES',
   'shc-groups': 'EDIT_SHC_RULES',
+  'shc-group-settings': 'EDIT_SHC_RULES',
   'shc-mappings': 'EDIT_SHC_RULES',
   'priority-rules': 'EDIT_SHC_RULES',
   'sla-rules': 'EDIT_SLA_RULES',
@@ -83,6 +112,7 @@ function requiredCapabilityForOperation(operation) {
 
 function validateMutationInput(operation, value) {
   const input = value || {};
+  const intent = validateIntent(input.intent);
   const effective = validateEffectivePeriod(input.effectiveFrom, input.effectiveTo);
   const scope = validateScope(input);
   switch (String(operation || '').toLowerCase()) {
@@ -93,12 +123,12 @@ function validateMutationInput(operation, value) {
         displayName: requiredText(input.displayName, 'DisplayName', 100),
         badgeColour: validateHexColour(input.badgeColour),
         brightBadge: booleanValue(input.brightBadge),
-        isEnabled: booleanValue(input.isEnabled),
+        isEnabled: intent === 'DELETE' ? false : booleanValue(input.isEnabled),
         operationalNotes: optionalText(input.operationalNotes, 'OperationalNotes', 1000),
-        ...effective
+        intent, ...effective
       };
     case 'shc-groups': {
-      const visualClass = optionalCode(input.visualClass, 'VisualClass', /^[A-Z0-9_-]{1,30}$/, 30);
+      const displayColour = validateGroupColour(input.displayColour || input.visualClass);
       const displayOrder = Number(input.displayOrder);
       if (!Number.isInteger(displayOrder) || displayOrder < 0 || displayOrder > 10000) throw new ConfigurationError('CONFIGURATION_DISPLAY_ORDER_INVALID', 'DisplayOrder must be from 0 to 10000');
       return {
@@ -107,9 +137,19 @@ function validateMutationInput(operation, value) {
         displayName: requiredText(input.displayName, 'DisplayName', 100),
         description: optionalText(input.description, 'Description', 500),
         displayOrder,
-        visualClass: visualClass?.toLowerCase() || null,
-        isEnabled: booleanValue(input.isEnabled),
-        ...effective
+        visualClass: displayColour,
+        displayColour,
+        textColour: groupTextColour(displayColour),
+        isEnabled: intent === 'DELETE' ? false : booleanValue(input.isEnabled),
+        intent, ...effective
+      };
+    }
+    case 'shc-group-settings': {
+      const group = validateMutationInput('shc-groups', input);
+      return {
+        ...group, ...scope,
+        expectedShcCodes: validateShcCodes(input.expectedShcCodes, 'ExpectedShcCode', true),
+        selectedShcCodes: validateShcCodes(input.selectedShcCodes, 'SelectedShcCode', true)
       };
     }
     case 'shc-mappings': {
@@ -117,19 +157,22 @@ function validateMutationInput(operation, value) {
       const shcCodes = [...new Set(source.filter(Boolean).map(code => validateCode(code, 'ShcCode', /^[A-Z0-9]{2,10}$/, 10)))];
       if (!shcCodes.length || shcCodes.length > 200) throw new ConfigurationError('CONFIGURATION_SHC_SELECTION_INVALID', 'Select between 1 and 200 SHCs');
       const mappingAction = validateCode(input.mappingAction || 'INCLUDE', 'MappingAction', /^(INCLUDE|EXCLUDE)$/, 10);
-      return { shcCodes, groupKey: validateCode(input.groupKey, 'GroupKey', /^[A-Z0-9_]{2,40}$/, 40), mappingAction, ...scope, ...effective };
+      return { shcCodes, groupKey: validateCode(input.groupKey, 'GroupKey', /^[A-Z0-9_]{2,40}$/, 40), mappingAction, intent, ...scope, ...effective };
     }
     case 'priority-rules': {
       const priorityLevel = validateCode(input.priorityLevel, 'PriorityLevel', /^(NORMAL|PRIORITY|HIGH|CRITICAL)$/, 12);
       if (!PRIORITY_LEVELS.has(priorityLevel)) throw new ConfigurationError('CONFIGURATION_PRIORITY_LEVEL_INVALID', 'PriorityLevel is invalid');
       return {
         groupKey: validateCode(input.groupKey, 'GroupKey', /^[A-Z0-9_]{2,40}$/, 40),
-        priorityLevel,
-        countsAsPriority: booleanValue(input.countsAsPriority),
-        supervisorAttention: booleanValue(input.supervisorAttention),
-        escalationEnabled: booleanValue(input.escalationEnabled),
-        slaRuleKeyOverride: optionalCode(input.slaRuleKeyOverride, 'SlaRuleKeyOverride', /^[A-Z0-9_]{2,50}$/, 50),
-        ...scope, ...effective
+        priorityLevel: intent === 'DELETE' ? 'NORMAL' : priorityLevel,
+        countsAsPriority: intent === 'DELETE' ? false : booleanValue(input.countsAsPriority),
+        supervisorAttention: intent === 'DELETE' ? false : booleanValue(input.supervisorAttention),
+        escalationEnabled: intent === 'DELETE' ? false : booleanValue(input.escalationEnabled),
+        slaRuleKeyOverride: intent === 'DELETE' ? null : optionalCode(input.slaRuleKeyOverride, 'SlaRuleKeyOverride', /^[A-Z0-9_]{2,50}$/, 50),
+        previousGroupKey: optionalCode(input.previousGroupKey, 'PreviousGroupKey', /^[A-Z0-9_]{2,40}$/, 40),
+        previousAirlineCode: optionalCode(input.previousAirlineCode, 'PreviousAirlineCode', /^[A-Z0-9]{2,3}$/, 3),
+        previousStationCode: optionalCode(input.previousStationCode, 'PreviousStationCode', /^[A-Z]{3}$/, 3),
+        intent, ...scope, ...effective
       };
     }
     case 'sla-rules': {
@@ -146,23 +189,23 @@ function validateMutationInput(operation, value) {
         startEvent: validateSlaEvent(input.startEvent, 'StartEvent'),
         targetEvent: validateSlaEvent(input.targetEvent, 'TargetEvent'),
         targetMinutes, warningMinutes, breachMinutes,
-        isEnabled: booleanValue(input.isEnabled),
+        isEnabled: intent === 'DELETE' ? false : booleanValue(input.isEnabled),
         applicabilityNotes: optionalText(input.applicabilityNotes, 'ApplicabilityNotes', 500),
-        ...scope, ...effective
+        intent, ...scope, ...effective
       };
     }
     case 'mail-rules': {
       const slaEnabled = booleanValue(input.slaEnabled);
       const slaRuleKey = optionalCode(input.slaRuleKey, 'SlaRuleKey', /^[A-Z0-9_]{2,50}$/, 50);
-      if (slaEnabled && !slaRuleKey) throw new ConfigurationError('CONFIGURATION_MAIL_SLA_REQUIRED', 'SlaRuleKey is required when mail SLA is enabled');
+      if (intent !== 'DELETE' && slaEnabled && !slaRuleKey) throw new ConfigurationError('CONFIGURATION_MAIL_SLA_REQUIRED', 'SlaRuleKey is required when mail SLA is enabled');
       return {
-        mailHandlingRequired: booleanValue(input.mailHandlingRequired),
-        mailScanRequired: booleanValue(input.mailScanRequired),
-        slaEnabled, slaRuleKey,
-        reminderEnabled: booleanValue(input.reminderEnabled),
-        escalationEnabled: booleanValue(input.escalationEnabled),
+        mailHandlingRequired: intent === 'DELETE' ? false : booleanValue(input.mailHandlingRequired),
+        mailScanRequired: intent === 'DELETE' ? false : booleanValue(input.mailScanRequired),
+        slaEnabled: intent === 'DELETE' ? false : slaEnabled, slaRuleKey: intent === 'DELETE' ? null : slaRuleKey,
+        reminderEnabled: intent === 'DELETE' ? false : booleanValue(input.reminderEnabled),
+        escalationEnabled: intent === 'DELETE' ? false : booleanValue(input.escalationEnabled),
         operationalInstructions: optionalText(input.operationalInstructions, 'OperationalInstructions', 1000),
-        ...scope, ...effective
+        intent, ...scope, ...effective
       };
     }
     default:
@@ -223,6 +266,9 @@ module.exports = {
   validateMinutes,
   validateMutationInput,
   validateHexColour,
+  validateGroupColour,
+  groupTextColour,
+  resolveGroupColour,
   requiredCapabilityForOperation,
   SLA_EVENTS,
   insertConfigurationAudit
