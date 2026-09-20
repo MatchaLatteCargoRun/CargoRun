@@ -97,17 +97,21 @@ test('operational ordering is requested time ascending with OffloadId as tie-bre
   assert.deepEqual(Array.from(h.context.filteredOperationalOffloads(), o => o.azureOffloadId), ['10', '11', '12']);
 });
 
-test('mobile queue exposes ULD, status, bay, age, and stable-ID action controls', () => {
+test('mobile queue groups by exact FlightId then exposes stable-ID actions in detail', () => {
   const h = harness();
   h.context.state.offloads = [offload(90, 'Requested', { uld: 'AKE90999CX', flight: 'CX0998', bay: 'D20', requestInstruction: 'Collect from cold room' })];
-  const rendered = h.context.mobileOffloads();
-  assert.match(rendered, /mobile-offload-card/);
-  assert.match(rendered, /AKE90999CX/);
-  assert.match(rendered, /CX0998 • Bay D20/);
-  assert.match(rendered, />Requested</);
-  assert.match(rendered, />Collect<\/button>/);
-  assert.match(rendered, /handleOffload\('90'\)/);
-  assert.match(rendered, /showOffloadDetails\('90'\)/);
+  const list = h.context.mobileOffloads();
+  assert.match(list, /mobile-work-group-card mobile-offload-card/);
+  assert.match(list, /data-flight-id="25"/);
+  assert.match(list, /openScreen\('offloads','detail','flight-25'\)/);
+  assert.match(list, /CX0998/);
+  const detail = h.context.mobileOffloads('flight-25');
+  assert.match(detail, /AKE90999CX/);
+  assert.match(detail, /CX0998 • Bay D20/);
+  assert.match(detail, />Requested</);
+  assert.match(detail, />Collect<\/button>/);
+  assert.match(detail, /handleOffload\('90'\)/);
+  assert.match(detail, /showOffloadDetails\('90'\)/);
   assert.match(html, /\.mobile-offload-preview\{[^}]*-webkit-line-clamp:2;[^}]*overflow:hidden/);
 });
 

@@ -34,7 +34,7 @@ function reportHarness() {
   return context;
 }
 
-test('Add ULD is exposed only in the desktop Import branch and submits exact FlightId', () => {
+test('Add ULD and ELD use exact FlightId on desktop and mobile Import while Export stays protected', () => {
   const actions = sourceBetween('function desktopFlightActions(', 'function desktopFlightWorkspace(');
   assert.match(actions, /data-import-add-uld/);
   assert.match(actions, /showAddImportUld\('\$\{esc\(f\.azureFlightId\|\|''\)\}'\)/);
@@ -44,7 +44,13 @@ test('Add ULD is exposed only in the desktop Import branch and submits exact Fli
   assert.match(addFlow, /fetch\('\/api\/ulds'/);
   assert.match(addFlow, /flightId:stableFlightId/);
   assert.match(addFlow, /isEmptyLoadDevice/);
-  assert.doesNotMatch(sourceBetween('function mobileFlightDetail(', 'function mobileOffloads('), /data-import-add-uld|showAddImportUld/);
+  const mobile = sourceBetween('function mobileFlightDetail(', 'function operationalOffloadRequestedAt(');
+  assert.match(mobile, /data-mobile-add-uld data-flight-id="\$\{esc\(f\.azureFlightId\|\|''\)\}"/);
+  assert.match(mobile, /showAddImportUld\('\$\{esc\(f\.azureFlightId\|\|''\)\}',true\)/);
+  assert.match(mobile, /\$\{isImport\?`<div class="mobile-add-actions">/);
+  assert.doesNotMatch(mobile.slice(mobile.indexOf("const lifecycleActions=isImport?") + 32), /showAddImportUld[^`]*Flight Statement/);
+  assert.match(addFlow, /defaultIsEld=false/);
+  assert.match(addFlow, /\$\{eld\?'checked':''\}/);
   assert.match(html, /\.shell\{width:min\(1680px,100%\)/);
   assert.match(html, /<div class="ops-page-head"><div><h1>History<\/h1><p>Operational evidence and completed flights/);
 });
