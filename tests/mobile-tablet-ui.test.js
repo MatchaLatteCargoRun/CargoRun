@@ -34,24 +34,26 @@ test('mobile home contains only the four operational module tiles', () => {
   assert.match(source, /onclick="openScreen\('\$\{screen\}'\$\{type\?`,'\$\{type\}'`:''\}\)"/);
   assert.match(html, /\.mobile-module-grid\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
   assert.match(html, /\.mobile-module-art\{position:absolute[\s\S]*height:61%[\s\S]*overflow:hidden[\s\S]*mask-image:linear-gradient/);
-  assert.match(html, /\.mobile-module-art-image\{position:absolute[\s\S]*width:145%[\s\S]*height:auto[\s\S]*transform:translateX\(-50%\)/);
-  assert.match(html, /@media\(min-width:701px\) and \(max-width:1024px\)\{[\s\S]*\.mobile-module-art-image\{top:-25%;width:96%\}/);
+  assert.match(html, /\.mobile-module-art-image\{position:absolute[\s\S]*top:50%[\s\S]*width:112%[\s\S]*height:auto[\s\S]*transform:translate\(-50%,-54%\)/);
+  assert.match(html, /@media\(min-width:701px\) and \(max-width:1024px\)\{[\s\S]*\.mobile-module-art-image\{top:50%;width:100%\}/);
   assert.match(html, /\.mobile-module-copy\{position:relative;z-index:1/);
 });
 
-test('mobile Home uses the four exact approved card assets with live HTML over them', () => {
+test('mobile Home uses the same four exact approved assets as bottom navigation', () => {
   const context = vm.createContext({});
-  vm.runInContext(sourceBetween('const MOBILE_MODULE_ART=', 'function mobileHome('), context);
+  vm.runInContext(sourceBetween('const MOBILE_NAV_ART=', 'function mobileHome('), context);
   const expected = {
-    imports: 'assets/mobile-art/cargo_imports_dashboard_card.png',
-    exports: 'assets/mobile-art/exports_dashboard_card.png',
-    offloads: 'assets/mobile-art/offloads_21_active_retrieval_work.png',
-    priority: 'assets/mobile-art/priority_courier_cargo_card.png'
+    imports: 'assets/mobile-art/rider_on_descending_airplane_icon.png',
+    exports: 'assets/mobile-art/white_airplane_rider_takeoff_icon.png',
+    offloads: 'assets/mobile-art/white_parachute_cargo_icon.png',
+    priority: 'assets/mobile-art/priority_courier_in_motion.png'
   };
   for (const [kind, asset] of Object.entries(expected)) {
     const artwork = context.mobileModuleArtwork(kind);
+    const navArtwork = context.mobileNavArtwork(kind);
     assert.match(artwork, new RegExp(`^<span class="mobile-module-art artwork-${kind}" data-module-art="${kind}"`));
     assert.ok(artwork.includes(`src="${asset}"`));
+    assert.ok(navArtwork.includes(`src="${asset}"`));
     assert.match(artwork, /<img class="mobile-module-art-image"[\s\S]*width="1254" height="1254" alt="" draggable="false"/);
     assert.doesNotMatch(artwork, /<svg/);
     const bytes = fs.readFileSync(path.resolve(__dirname, '..', asset));
@@ -59,6 +61,7 @@ test('mobile Home uses the four exact approved card assets with live HTML over t
     assert.equal(bytes.readUInt32BE(16), 1254);
     assert.equal(bytes.readUInt32BE(20), 1254);
   }
+  assert.doesNotMatch(html, /cargo_imports_dashboard_card|exports_dashboard_card|offloads_21_active_retrieval_work|priority_courier_cargo_card/);
   assert.doesNotMatch(html, /mobileAircraftRiderShapes|mobileAircraftMotionLines|mobileOffloadShapes|mobilePriorityRunnerShapes|mobileArtworkScene|mobileArtworkSvg/);
 });
 
@@ -71,15 +74,18 @@ test('mobile bottom navigation is limited to Home and four operational areas', (
   assert.match(source, /item\('priority','Priority',priority,'priority'\)/);
   assert.doesNotMatch(source, /More|History|Scan|Supervisor|Admin|↙|↗|◇/);
   assert.match(source, /data-mobile-nav="\$\{kind\}"/);
+  assert.match(source, /aria-current="\$\{active\?'page':'false'\}"/);
   assert.match(source, /mobileNavArtwork\(kind\)/);
   assert.match(html, /\.mobile-nav-art\{display:block;width:28px;height:28px;object-fit:contain/);
   assert.match(html, /\.mobile-nav-btn:not\(\.active\) \.mobile-nav-art\{opacity:\.58\}/);
-  assert.match(html, /\.mobile-nav-btn\.active \.mobile-nav-icon\.home\{background:rgba\(44,201,255,\.13\)/);
+  assert.match(source, /<span class="mobile-nav-icon">\$\{mobileNavArtwork\(kind\)\}<\/span>/);
+  assert.doesNotMatch(source, /kind==='home'\?'home'/);
+  assert.doesNotMatch(html, /\.mobile-nav-btn\.active \.mobile-nav-icon\.home/);
 });
 
 test('bottom navigation uses the four dedicated approved assets and keeps Home as a house', () => {
   const context = vm.createContext({});
-  vm.runInContext(sourceBetween('const MOBILE_MODULE_ART=', 'function mobileHome('), context);
+  vm.runInContext(sourceBetween('const MOBILE_NAV_ART=', 'function mobileHome('), context);
   const home = context.mobileNavArtwork('home');
   assert.match(home, /nav-art-home[\s\S]*data-nav-art="home"[\s\S]*<path/);
   assert.doesNotMatch(home, /<img/);
