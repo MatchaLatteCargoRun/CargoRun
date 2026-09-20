@@ -27,12 +27,40 @@ test('mobile home contains only the four operational module tiles', () => {
   }
   assert.doesNotMatch(source, /showUploadFlightData|openScreen\('history'\)|openScreen\('supervisor'\)|showScan/);
   assert.match(html, /\.mobile-module-grid\{display:grid;grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(html, /\.mobile-module-icon\{width:80px;height:80px/);
+  assert.match(html, /\.mobile-module-icon img\{width:60px;height:60px/);
 });
 
 test('mobile bottom navigation is limited to Home and four operational areas', () => {
   const source = sourceBetween('function mobileBottomNav(', 'function fowSampleXml(');
   for (const label of ['Home', 'Imports', 'Exports', 'Offloads', 'Priority']) assert.match(source, new RegExp(`<span>${label}<\\/span>`));
   assert.doesNotMatch(source, /<span>More<\/span>|<span>History<\/span>|<span>Scan<\/span>|Supervisor|Admin/);
+  assert.match(html, /\.mobile-nav-icon\{width:34px;height:28px[\s\S]*font-size:24px/);
+  assert.match(html, /\.mobile-nav-btn\.active \.mobile-nav-icon\{background:rgba\(44,201,255,\.13\)/);
+});
+
+test('mobile flight cards show export ETD and tidy import priority state', () => {
+  const context = vm.createContext({
+    counts: () => ({ done: 2, total: 4 }), pct: () => 50,
+    flightBoardState: () => ({ cls: 'clear', level: 'green', label: 'Loading' }),
+    handlingCounts: () => ({ intact: 0, breakdown: 0 }),
+    flightPriorityTags: flight => flight.priorityTags || [],
+    flightBoardFlightMeta: () => ({ route: 'MEL → HKG', date: '20 Sep 2026' }),
+    exportDepartureMs: flight => flight.departure || 0,
+    fmtTime: value => value === 123 ? '21:48' : '—',
+    airlineBadge: () => '<badge />', manifestStateBadge: () => '',
+    priorityBadges: () => '', esc: value => String(value ?? '')
+  });
+  vm.runInContext(sourceBetween('function mobileFlightCard(', 'function mobileHome('), context);
+  const exportWithEtd = context.mobileFlightCard({ azureFlightId: '501', flight: 'CX0998', departure: 123 }, 'exports');
+  assert.match(exportWithEtd, />ETD 21:48<\/span>/);
+  assert.doesNotMatch(exportWithEtd, />Loading<\/span>/i);
+  const exportWithoutEtd = context.mobileFlightCard({ azureFlightId: '502', flight: 'CX0999' }, 'exports');
+  assert.match(exportWithoutEtd, /mobile-flight-status neutral">ETD —<\/span>/);
+  const priorityImport = context.mobileFlightCard({ azureFlightId: '601', flight: 'CX0163', priorityTags: [{ level: 'critical' }] }, 'imports');
+  assert.match(priorityImport, /mobile-flight-status red">PRIORITY<\/span>/);
+  const standardImport = context.mobileFlightCard({ azureFlightId: '602', flight: 'CX0164' }, 'imports');
+  assert.match(standardImport, /mobile-flight-status green">ACTIVE<\/span>/);
 });
 
 test('mobile flight list exposes route, operating date, counts, and exact FlightId', () => {
