@@ -129,6 +129,13 @@ validation, rich ULD fields, separate bulk cargo, read-only preview, explicit
 review, immutable operational status, source/audit metadata, and the existing
 FINAL confirmation boundary.
 
+The Import ULD/report checks cover desktop-only operator addition, exact
+FlightId plus canonical ULD identity, transactional authoritative audit, ELD
+metadata, expected-versus-operator-added reporting, clean edge states, and the
+five-section printable Shift Report. The additive Import ULD metadata migration
+must be applied and verified before deploying application code that references
+its new ULD columns; follow `migrations/import-uld-metadata-review.md`.
+
 Before deployment, use an isolated SQL test database with the existing schema
 and indexes to run simultaneous manual/FOW requests against the same existing
 flight, including one with no ULDs. Verify one ULD, independent message links,

@@ -161,7 +161,11 @@ test('upload response links canonical server number to formatted pending ULD', a
 // It verifies transaction/locking use, not SQL Server's lock implementation.
 function apiHarness(initialRows = []) {
   const state = { rows: structuredClone(initialRows), messages: [], links: [], audits: [], calls: [], commits: 0, rollbacks: 0 };
-  const flights = [1, 2].map(FlightId => ({ FlightId, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'EXPORT', InclusionReason: 'OPERATING_TODAY' }));
+  const flights = [
+    { FlightId: 1, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'EXPORT', InclusionReason: 'OPERATING_TODAY' },
+    { FlightId: 2, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'IMPORT', InclusionReason: 'OPERATING_TODAY' },
+    { FlightId: 3, FlightNumber: 'CX0179', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'IMPORT', InclusionReason: 'OPERATING_TODAY' }
+  ];
   class Transaction {
     async begin() { this.active = true; this.snapshot = structuredClone({ rows: state.rows, messages: state.messages, links: state.links, audits: state.audits }); }
     async commit() { assert.equal(this.active, true); this.active = false; state.commits++; }
@@ -190,7 +194,7 @@ function apiHarness(initialRows = []) {
       }
       if (q.includes('FROM dbo.Flights')) {
         if (q.startsWith('SELECT FlightId, FlightNumber FROM dbo.Flights')) return result([]); // Manifest creates a new flight.
-        const flightId = p.SelectedFlightId ?? p.FlightId;
+        const flightId = p.SelectedFlightId ?? p.LockedFlightId ?? p.FlightId;
         return result(flightId ? flights.filter(x => String(x.FlightId) === String(flightId)) : [flights[0]]);
       }
       if (q.startsWith('INSERT INTO dbo.Flights')) return result([{ ...p, FlightId: 3 }]);
@@ -203,7 +207,7 @@ function apiHarness(initialRows = []) {
       }
       if (q.startsWith('INSERT INTO dbo.ULDs')) {
         assert.ok(this.tx?.active);
-        const row = { ...p, UldId: 100 + state.rows.length, CurrentStatus: p.CurrentStatus || 'WAREHOUSE', IdentityVerified: 0 };
+        const row = { ...p, UldId: 100 + state.rows.length, CurrentStatus: q.includes("'UNARRIVED'") ? 'UNARRIVED' : (p.CurrentStatus || 'WAREHOUSE'), IsOperatorAdded: q.includes('IsOperatorAdded') ? 1 : 0, OperatorAddedAtUtc: q.includes('SYSUTCDATETIME()') ? '2026-09-17T00:00:00.000Z' : null, OperatorAddedByReference: p.OperatorAddedByReference || null, OperatorAddedByDisplayName: p.OperatorAddedByDisplayName || null, OperatorAddNote: p.OperatorAddNote || null, IdentityVerified: 0 };
         state.rows.push(row); return result([row]);
       }
       if (q.startsWith('UPDATE dbo.ULDs')) {
@@ -212,7 +216,7 @@ function apiHarness(initialRows = []) {
         row.SourceType ??= p.SourceType; row.MachDocumentCorId ??= p.MachDocumentCorId; return result([]);
       }
       if (q.startsWith('INSERT INTO dbo.MachFowShipments')) { state.links.push({ ...p }); return result([]); }
-      if (q.startsWith('INSERT INTO dbo.AuditEvents')) { const row = { ...p, AuditEventId: state.audits.length + 1 }; state.audits.push(row); return result([row]); }
+      if (q.startsWith('INSERT INTO dbo.AuditEvents')) { assert.ok(this.tx?.active, 'required audit must share the ULD transaction'); const row = { ...p, AuditEventId: state.audits.length + 1 }; state.audits.push(row); return result([row]); }
       if (q.includes('FROM dbo.Offloads WITH')) return result([]);
       if (q.startsWith('INSERT INTO dbo.Offloads')) return result([{ ...p, OffloadId: 1 }]);
       throw new Error('Unexpected SQL in test: ' + q);
@@ -251,22 +255,36 @@ function apiHarness(initialRows = []) {
   return { state, call };
 }
 
-test('manual creation canonicalizes, scopes by FlightId and rejects legacy duplicates', async () => {
-  const legacy = { FlightId: 1, UldId: 7, UldNumber: 'ake\t00123-cx', CurrentStatus: 'TRANSIT', IdentityVerified: 1 };
+test('manual Import creation canonicalizes, scopes by FlightId and rejects legacy duplicates', async () => {
+  const legacy = { FlightId: 2, UldId: 7, UldNumber: 'ake\t00123-cx', CurrentStatus: 'TRANSIT', IdentityVerified: 1 };
   const api = apiHarness([legacy]);
-  const duplicate = await api.call('ulds', { flightId: 1, uldNumber: 'AKE 00123 CX' });
+  const duplicate = await api.call('ulds', { flightId: 2, uldNumber: 'AKE 00123 CX' });
   assert.equal(duplicate.status, 409); assert.equal(duplicate.body.uldId, 7);
   assert.deepEqual(api.state.rows, [legacy]);
-  const created = await api.call('ulds', { flightId: 2, uldNumber: 'ake-00123-cx' });
+  const created = await api.call('ulds', { flightId: 3, uldNumber: 'ake-00123-cx', isEmptyLoadDevice: true, note: 'Extra physical empty' });
   assert.equal(created.status, 201); assert.equal(created.body.uld.UldNumber, 'AKE00123CX');
-  assert.equal(created.body.uld.CurrentStatus, 'WAREHOUSE');
+  assert.equal(created.body.uld.CurrentStatus, 'UNARRIVED');
+  assert.equal(created.body.uld.IsEmptyLoadDevice, true);
+  assert.equal(created.body.uld.IsOperatorAdded, 1);
+  assert.equal(api.state.audits.length, 1);
+  assert.equal(api.state.audits[0].AuditAction, 'IMPORT_ULD_ADDED');
+  assert.equal(JSON.parse(api.state.audits[0].AuditDetailsJson).flightId, '3');
   assert.equal(api.state.commits, 1);
 });
 
+test('manual ULD creation is forbidden for Export flights', async () => {
+  const api = apiHarness();
+  const response = await api.call('ulds', { flightId: 1, uldNumber: 'AKE12345CX' });
+  assert.equal(response.status, 403);
+  assert.equal(response.body.code, 'IMPORT_ULD_ONLY');
+  assert.equal(api.state.rows.length, 0);
+  assert.equal(api.state.audits.length, 0);
+});
+
 test('manual creation refuses multiple canonical legacy matches without writing', async () => {
-  const rows = [{ FlightId: 1, UldId: 7, UldNumber: 'AKE12345CX' }, { FlightId: 1, UldId: 8, UldNumber: 'AKE-12345-CX' }];
+  const rows = [{ FlightId: 2, UldId: 7, UldNumber: 'AKE12345CX' }, { FlightId: 2, UldId: 8, UldNumber: 'AKE-12345-CX' }];
   const api = apiHarness(rows);
-  const response = await api.call('ulds', { flightId: 1, uldNumber: 'ake 12345 cx' });
+  const response = await api.call('ulds', { flightId: 2, uldNumber: 'ake 12345 cx' });
   assert.equal(response.status, 409); assert.deepEqual(response.body.conflictingUldIds, [7, 8]);
   assert.deepEqual(api.state.rows, rows); assert.equal(api.state.commits, 0);
 });

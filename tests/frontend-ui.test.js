@@ -265,7 +265,7 @@ test('Shift Report renders imports, exports, offloads, users and exceptions in o
   const start = html.indexOf('function shiftReportBody(');
   const end = html.indexOf('function shiftReportDocument(', start);
   const source = html.slice(start, end);
-  const labels = ['<strong>Imports</strong>', '<strong>Exports</strong>', '<strong>Offloads</strong>', '<strong>Runner / User Activity</strong>', '<strong>Exceptions / Notes</strong>'];
+  const labels = ['<strong>IMPORTS</strong>', '<strong>EXPORTS</strong>', '<strong>OFFLOADS</strong>', '<strong>PRIORITY / EXCEPTIONS</strong>', '<strong>OPERATOR ACTIVITY</strong>'];
   let previous = -1;
   for (const label of labels) {
     const index = source.indexOf(label);
@@ -273,5 +273,5 @@ test('Shift Report renders imports, exports, offloads, users and exceptions in o
     previous = index;
   }
   assert.match(source, /Offload #\$\{esc\(o\.offloadId\)\}/);
-  assert.match(source, /<th>Requested<\/th><th>Collected<\/th><th>Completed<\/th><th>Bay<\/th><th>Location<\/th>/);
+  assert.match(source, /<th>Flight<\/th><th>ULD<\/th><th>Bay<\/th><th>Requested<\/th><th>Collected<\/th><th>Completed<\/th><th>Status<\/th><th>Elapsed<\/th>/);
 });

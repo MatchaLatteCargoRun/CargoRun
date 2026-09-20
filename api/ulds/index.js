@@ -1,6 +1,31 @@
 const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
 const { acquireFlightIdentityLock } = require('../shared/flight');
+const { insertAuditEvent } = require('../shared/audit');
+
+function getHeader(req, name) {
+  const headers = req?.headers || {};
+  if (typeof headers.get === 'function') return headers.get(name);
+  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || null;
+}
+
+function getActor(req) {
+  try {
+    const raw = getHeader(req, 'x-ms-client-principal');
+    if (!raw) return null;
+    const principal = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
+    const roles = Array.isArray(principal.userRoles) ? principal.userRoles : [];
+    if (!roles.includes('authenticated')) return null;
+    const reference = String(principal.userId || '').trim().slice(0, 150);
+    if (!reference) return null;
+    return {
+      displayName: String(principal.userDetails || 'Authenticated user').slice(0, 150),
+      reference
+    };
+  } catch {
+    return null;
+  }
+}
 
 function sendJson(context, status, body) {
   context.res = {
@@ -11,11 +36,6 @@ function sendJson(context, status, body) {
     },
     body: JSON.stringify(body)
   };
-}
-
-function clean(value) {
-  if (value === null || value === undefined || value === '') return null;
-  return String(value).trim().toUpperCase();
 }
 
 module.exports = async function (context, req) {
@@ -81,22 +101,20 @@ module.exports = async function (context, req) {
 
     /* POST /api/ulds */
     const body = req.body || {};
+    const actor = getActor(req);
+
+    if (!actor) {
+      sendJson(context, 401, {
+        ok: false,
+        error: 'Microsoft Entra sign-in is required'
+      });
+      return;
+    }
 
     const flightId = String(body.flightId || '').trim();
     const uldNumber = normalizeUldNumber(body.uldNumber);
-    const handlingType = clean(body.handlingType);
-    const remarks = body.remarks ? String(body.remarks).trim() : null;
-
-    const weightKg =
-      body.weightKg === null ||
-      body.weightKg === undefined ||
-      body.weightKg === ''
-        ? null
-        : Number(body.weightKg);
-
-    const shcs = Array.isArray(body.shcs)
-      ? [...new Set(body.shcs.map(clean).filter(Boolean))]
-      : [];
+    const isEmptyLoadDevice = body.isEmptyLoadDevice === true;
+    const operatorAddNote = body.note ? String(body.note).trim().slice(0, 500) : null;
 
     if (!/^\d+$/.test(flightId)) {
       sendJson(context, 400, {
@@ -110,22 +128,6 @@ module.exports = async function (context, req) {
       sendJson(context, 400, {
         ok: false,
         error: 'uldNumber must be a nonempty string of at most 20 characters after normalization'
-      });
-      return;
-    }
-
-    if (handlingType && !['INTACT', 'BREAKDOWN'].includes(handlingType)) {
-      sendJson(context, 400, {
-        ok: false,
-        error: 'handlingType must be INTACT or BREAKDOWN'
-      });
-      return;
-    }
-
-    if (weightKg !== null && (!Number.isFinite(weightKg) || weightKg < 0)) {
-      sendJson(context, 400, {
-        ok: false,
-        error: 'weightKg must be a valid positive number'
       });
       return;
     }
@@ -148,8 +150,6 @@ module.exports = async function (context, req) {
     }
 
     const selectedFlight = flightResult.recordset[0];
-    const direction = String(selectedFlight.Direction || '').toUpperCase();
-    const currentStatus = direction === 'EXPORT' ? 'WAREHOUSE' : 'UNARRIVED';
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
@@ -170,6 +170,8 @@ module.exports = async function (context, req) {
         sendJson(context, 404, { ok: false, error: 'Flight not found' });
         return;
       }
+      const locked = lockedFlight.recordset[0];
+      const direction = String(locked.Direction || '').toUpperCase();
       if (direction === 'EXPORT') {
         const finalResult = await new sql.Request(transaction)
           .input('ManualFinalFlightId', sql.BigInt, flightId)
@@ -184,6 +186,24 @@ module.exports = async function (context, req) {
           });
           return;
         }
+      }
+      if (direction !== 'IMPORT') {
+        await transaction.rollback();
+        sendJson(context, 403, {
+          ok: false,
+          code: 'IMPORT_ULD_ONLY',
+          error: 'Operational ULD creation is available only for Import flights'
+        });
+        return;
+      }
+      if (String(locked.FlightStatus || '').toUpperCase() !== 'ACTIVE') {
+        await transaction.rollback();
+        sendJson(context, 409, {
+          ok: false,
+          code: 'IMPORT_FLIGHT_NOT_ACTIVE',
+          error: 'ULDs can be added only while the Import flight is active'
+        });
+        return;
       }
       // Keep the flight's ULD range locked through commit, including an empty range.
       // Compare legacy values without rewriting them or duplicating whitespace rules in SQL.
@@ -214,56 +234,78 @@ module.exports = async function (context, req) {
       const insertResult = await new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
         .input('UldNumber', sql.NVarChar(20), uldNumber)
-        .input('HandlingType', sql.VarChar(20), handlingType)
-        .input('WeightKg', sql.Decimal(10, 1), weightKg)
-        .input('Remarks', sql.NVarChar(500), remarks)
-        .input('CurrentStatus', sql.VarChar(30), currentStatus)
+        .input('IsEmptyLoadDevice', sql.Bit, isEmptyLoadDevice)
+        .input('OperatorAddedByReference', sql.NVarChar(150), actor.reference)
+        .input('OperatorAddedByDisplayName', sql.NVarChar(150), actor.displayName)
+        .input('OperatorAddNote', sql.NVarChar(500), operatorAddNote)
         .query(`
           INSERT INTO dbo.ULDs
           (
             FlightId,
             UldNumber,
-            HandlingType,
-            WeightKg,
-            Remarks,
-            CurrentStatus
+            CurrentStatus,
+            IsEmptyLoadDevice,
+            IsOperatorAdded,
+            OperatorAddedAtUtc,
+            OperatorAddedByReference,
+            OperatorAddedByDisplayName,
+            OperatorAddNote
           )
           OUTPUT
             INSERTED.UldId,
             INSERTED.FlightId,
             INSERTED.UldNumber,
-            INSERTED.HandlingType,
-            INSERTED.WeightKg,
             INSERTED.CurrentStatus,
-            INSERTED.CreatedAtUtc
+            INSERTED.CreatedAtUtc,
+            INSERTED.IsEmptyLoadDevice,
+            INSERTED.IsOperatorAdded,
+            INSERTED.OperatorAddedAtUtc,
+            INSERTED.OperatorAddedByReference,
+            INSERTED.OperatorAddedByDisplayName,
+            INSERTED.OperatorAddNote
           VALUES
           (
             @FlightId,
             @UldNumber,
-            @HandlingType,
-            @WeightKg,
-            @Remarks,
-            @CurrentStatus
+            'UNARRIVED',
+            @IsEmptyLoadDevice,
+            1,
+            SYSUTCDATETIME(),
+            @OperatorAddedByReference,
+            @OperatorAddedByDisplayName,
+            @OperatorAddNote
           );
         `);
 
       const uld = insertResult.recordset[0];
 
-      for (const code of shcs) {
-        await new sql.Request(transaction)
-          .input('UldId', sql.BigInt, uld.UldId)
-          .input('Code', sql.NVarChar(10), code)
-          .query(`
-            INSERT INTO dbo.UldSpecialHandlingCodes (UldId, Code)
-            VALUES (@UldId, @Code);
-          `);
-      }
+      await insertAuditEvent(transaction, sql, {
+        type: 'ULD',
+        action: 'IMPORT_ULD_ADDED',
+        actorDisplayName: actor.displayName,
+        actorReference: actor.reference,
+        entityType: 'ULD',
+        entityId: uld.UldId,
+        flightId,
+        flightNumber: locked.FlightNumber,
+        uldId: uld.UldId,
+        uldNumber,
+        fromStatus: null,
+        toStatus: 'UNARRIVED',
+        detail: `Import ULD added${isEmptyLoadDevice ? ' as ELD' : ''}${operatorAddNote ? `: ${operatorAddNote}` : ''}`,
+        details: {
+          operation: 'IMPORT_ULD_ADDED',
+          normalizedUldNumber: uldNumber,
+          isEmptyLoadDevice,
+          note: operatorAddNote
+        }
+      });
 
       await transaction.commit();
 
       sendJson(context, 201, {
         ok: true,
-        uld: { ...uld, shcs }
+        uld: { ...uld, SHCs: '' }
       });
 
     } catch (err) {
