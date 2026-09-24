@@ -154,29 +154,84 @@ module.exports = async function (context, req) {
         return;
       }
 
-      const expectedStatus = clean(body.expectedStatus || 'ACTIVE');
+      const expectedStatus = clean(body.expectedStatus);
       const nextStatus = clean(body.nextStatus);
-      if (!['CLOSED', 'FINALISED', 'FINALIZED'].includes(nextStatus)) {
-        sendJson(context, 400, { ok: false, error: 'nextStatus must be CLOSED or FINALISED' });
+      if (expectedStatus !== 'ACTIVE' || nextStatus !== 'CLOSED') {
+        sendJson(context, 400, {
+          ok: false,
+          error: 'Generic flight lifecycle changes only support ACTIVE to CLOSED',
+          code: 'INVALID_FLIGHT_TRANSITION'
+        });
         return;
       }
       transaction = new sql.Transaction(pool);
       await transaction.begin();
-      const result = await new sql.Request(transaction)
+
+      const selected = await new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
-        .input('ExpectedStatus', sql.NVarChar(30), expectedStatus)
-        .input('NextStatus', sql.NVarChar(30), nextStatus)
-        .query(`UPDATE dbo.Flights SET FlightStatus=@NextStatus OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.FlightStatus WHERE FlightId=@FlightId AND UPPER(FlightStatus)=@ExpectedStatus;`);
-      if (!result.recordset.length) {
-        const current = await new sql.Request(transaction)
-          .input('FlightId2', sql.BigInt, flightId)
-          .query(`SELECT FlightStatus FROM dbo.Flights WHERE FlightId=@FlightId2;`);
+        .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction FROM dbo.Flights WHERE FlightId=@FlightId;`);
+      if (!selected.recordset.length) {
+        await transaction.rollback();
+        transaction = null;
+        sendJson(context, 404, { ok: false, error: 'Flight not found' });
+        return;
+      }
+
+      const selectedFlight = selected.recordset[0];
+      await acquireFlightIdentityLock(
+        transaction,
+        sql,
+        selectedFlight.OperatingDateIso,
+        selectedFlight.FlightNumber
+      );
+
+      const current = await new sql.Request(transaction)
+        .input('LockedFlightId', sql.BigInt, flightId)
+        .query(`SELECT FlightId,FlightNumber,Direction,FlightStatus FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
+      if (!current.recordset.length) {
+        await transaction.rollback();
+        transaction = null;
+        sendJson(context, 404, { ok: false, error: 'Flight not found' });
+        return;
+      }
+      const currentFlight = current.recordset[0];
+      if (clean(currentFlight.Direction) !== 'IMPORT') {
+        await transaction.rollback();
+        transaction = null;
+        sendJson(context, 400, {
+          ok: false,
+          error: 'Manual close is only supported for import flights',
+          code: 'INVALID_FLIGHT_TRANSITION'
+        });
+        return;
+      }
+      const currentStatus = clean(currentFlight.FlightStatus);
+      if (currentStatus !== 'ACTIVE') {
         await transaction.rollback();
         transaction = null;
         sendJson(context, 409, {
           ok: false,
           error: 'Flight status changed on another device',
-          currentStatus: current.recordset?.[0]?.FlightStatus || null
+          code: 'STALE_FLIGHT_STATUS',
+          currentStatus: currentFlight.FlightStatus || null
+        });
+        return;
+      }
+
+      const result = await new sql.Request(transaction)
+        .input('CloseFlightId', sql.BigInt, flightId)
+        .query(`UPDATE dbo.Flights SET FlightStatus='CLOSED' OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.FlightStatus WHERE FlightId=@CloseFlightId AND UPPER(FlightStatus)='ACTIVE';`);
+      if (!result.recordset.length) {
+        const latest = await new sql.Request(transaction)
+          .input('LatestFlightId', sql.BigInt, flightId)
+          .query(`SELECT FlightStatus FROM dbo.Flights WHERE FlightId=@LatestFlightId;`);
+        await transaction.rollback();
+        transaction = null;
+        sendJson(context, 409, {
+          ok: false,
+          error: 'Flight status changed on another device',
+          code: 'STALE_FLIGHT_STATUS',
+          currentStatus: latest.recordset?.[0]?.FlightStatus || null
         });
         return;
       }
@@ -190,8 +245,8 @@ module.exports = async function (context, req) {
         entityId: flight.FlightId,
         flightId: flight.FlightId,
         flightNumber: flight.FlightNumber,
-        fromStatus: expectedStatus,
-        toStatus: nextStatus,
+        fromStatus: 'ACTIVE',
+        toStatus: 'CLOSED',
         detail: 'Closed with supervisor passcode'
       });
       await transaction.commit();
@@ -271,7 +326,7 @@ module.exports = async function (context, req) {
       try { await transaction.rollback(); } catch {}
     }
     context.log.error('Flights API failed', err);
-    sendJson(context, 500, { ok: false, error: 'Flights API failed', detail: err.message });
+    sendJson(context, 500, { ok: false, error: 'Flights API failed' });
   } finally {
     try { await pool?.close(); } catch {}
   }
