@@ -282,12 +282,14 @@ test('History exposes completed-flight and stable actor filters', () => {
   assert.match(html, /actorReference:String\(e\.actorReference\|\|''\)/);
 });
 
-test('History API exposes stable actor and entity references without changing audit storage', () => {
+test('History API exposes stable actor and entity references through read-only access', () => {
   const api = fs.readFileSync(path.resolve(__dirname, '..', 'api', 'history', 'index.js'), 'utf8');
   assert.match(api, /actorReference: String\(get\(\['ActorObjectId', 'ActorId', 'ActorReference'\]\)/);
   assert.match(api, /entityType: get\(\['EntityType'\]\)/);
   assert.match(api, /entityId: String\(get\(\['EntityId'\]\)/);
-  assert.match(api, /detailsJson = JSON\.stringify\(\{ type:payload\.type, action:payload\.action, user:payload\.user, actorReference:payload\.actorReference, entityType:payload\.entityType, entityId:payload\.entityId/);
+  assert.match(api, /toUpperCase\(\) !== 'GET'/);
+  assert.match(api, /sendJson\(context, 405/);
+  assert.doesNotMatch(api, /INSERT\s+INTO\s+dbo\.AuditEvents/i);
 });
 
 test('Shift Report renders imports, exports, offloads, users and exceptions in order', () => {
