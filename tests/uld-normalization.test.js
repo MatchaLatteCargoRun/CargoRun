@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const { normalizeUldNumber } = require('../api/shared/uld');
 const flightHelpers = require('../api/shared/flight');
 const { insertAuditEvent } = require('../api/shared/audit');
+const operationalAuthorization = require('./helpers/operational-authorization-stub');
 const fixtures = require('./uld-fixtures.json');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -244,6 +245,8 @@ function apiHarness(initialRows = []) {
               ? require('../api/shared/export-manifest-final')
             : name === '../shared/export-uws'
               ? require('../api/shared/export-uws')
+            : name === '../shared/operational-authorization'
+              ? operationalAuthorization
             : require(name)
     }, { filename: endpoint + '/index.js' });
     const log = Object.assign(() => {}, { error() {}, warn() {} });

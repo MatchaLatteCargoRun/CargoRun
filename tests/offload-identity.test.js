@@ -224,13 +224,13 @@ test('COMPLETE history permanently blocks a matching ULD while mismatched legacy
  assert.equal(h.state.offload,null);assert.equal(h.state.audits.length,0);assert.deepEqual(h.state.extraOffloads,before);
 });
 
-test('legacy Offload 9 progresses by ID without flight/ULD inference or eligibility and rejects stale retry',async()=>{
+test('legacy Offload 9 without authoritative FlightId fails closed before transition or audit',async()=>{
  const h=setup({offload:{OffloadId:'9',FlightId:null,UldId:null,UldNumber:'QKE52521QR',OffloadStatus:'REQUESTED'}});
  const collect={offloadId:'9',expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT'};
- assert.equal((await call(h.handler,'PATCH',collect)).status,200);
- assert.equal((await call(h.handler,'PATCH',collect)).body.code,'STALE_STATUS');
- assert.equal((await call(h.handler,'PATCH',{offloadId:'9',expectedCurrentStatus:'TRANSIT',nextStatus:'COMPLETE',deliveredLocation:'Cool Room 4'})).status,200);
- assert.equal(h.state.offload.FlightId,null);assert.equal(h.state.offload.UldId,null);assert.equal(h.state.audits.length,2);
+ const response=await call(h.handler,'PATCH',collect);
+ assert.equal(response.status,403);assert.equal(response.body.code,'STATION_ACCESS_DENIED');
+ assert.equal(h.state.offload.OffloadStatus,'REQUESTED');
+ assert.equal(h.state.offload.FlightId,null);assert.equal(h.state.offload.UldId,null);assert.equal(h.state.audits.length,0);
  assert.equal(h.state.queries.some(x=>x.q.includes('FROM dbo.Flights')),false);
 });
 
@@ -239,11 +239,13 @@ test('live-schema required audit failure rolls back creation',async()=>{
  assert.equal(r.status,500);assert.equal(h.state.offload,null);assert.equal(h.state.audits.length,0);
 });
 
-test('before migration new creation fails closed while old legacy transition still works',async()=>{
+test('before migration both new creation and stationless legacy transition fail closed',async()=>{
  const h=setup({migrated:false,offload:{OffloadId:'9',FlightId:null,UldNumber:'QKE52521QR',OffloadStatus:'REQUESTED'}});
  const r=await call(h.handler,'POST',body);assert.equal(r.status,503);assert.equal(r.body.code,'OFFLOAD_SCHEMA_NOT_READY');
  assert.equal(h.state.audits.length,0);
- assert.equal((await call(h.handler,'PATCH',{offloadId:'9',expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT'})).status,200);
+ const transition=await call(h.handler,'PATCH',{offloadId:'9',expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT'});
+ assert.equal(transition.status,403);assert.equal(transition.body.code,'STATION_ACCESS_DENIED');
+ assert.equal(h.state.offload.OffloadStatus,'REQUESTED');
  assert.equal(h.state.offload.FlightId,null);assert.equal(h.state.offload.UldId,undefined);
 });
 

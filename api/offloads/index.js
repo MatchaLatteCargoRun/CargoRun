@@ -4,6 +4,12 @@ const { normalizeFlightNumber } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
 const { appendOffloadAmendmentIfRequired, CompletionAmendmentError } = require('../shared/completion-amendments');
 const { operationalId, acquireOffloadFlightLock, evaluateOffloadEligibility } = require('../shared/offload-eligibility');
+const {
+  OperationalAuthorizationError,
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 
 function getHeader(req, name) {
@@ -62,7 +68,7 @@ async function selectOffloadFlights(request, flightId = null, lockForUpdate = fa
   return request.input('SelectedFlightId', sql.BigInt, flightId).query(`
     SELECT CONVERT(varchar(20), FlightId) AS FlightId, FlightNumber,
       CONVERT(char(10), OperatingDate, 23) AS OperatingDate,
-      CreatedAtUtc, Direction, FlightStatus
+      CreatedAtUtc, Direction,OriginAirport,DestinationAirport, FlightStatus
     FROM dbo.Flights ${flightId && lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
     WHERE ${flightId ? 'FlightId = @SelectedFlightId' : `Direction = 'EXPORT'
       AND FlightStatus IN (${offloadFlightStatuses.map(status => `'${status}'`).join(',')})`}
@@ -211,11 +217,7 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const identity = getActor(req);
-    if (!identity) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const identity = authenticatedActor(req);
 
     pool = await new sql.ConnectionPool(connectionString).connect();
     const columns = await columnsFor(pool.request(), 'Offloads');
@@ -414,6 +416,7 @@ module.exports = async function (context, req) {
         sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select an ACTIVE, CLOSED or FINALISED export flight' });
         return;
       }
+      await requireOperationalCapability(transaction, sql, identity, selectedFlight, 'REQUEST_OFFLOAD');
       const contextMismatch =
         (requestedFlightNumber && normalizeFlightNumber(requestedFlightNumber) !== normalizeFlightNumber(flightNumber)) ||
         (requestedOperatingDate && requestedOperatingDate !== operatingDate);
@@ -572,12 +575,31 @@ module.exports = async function (context, req) {
     if (amendmentFlightId) {
       const amendmentFlight = await new sql.Request(transaction)
         .input('AmendmentMutationFlightId', sql.BigInt, amendmentFlightId)
-        .query(`SELECT FlightStatus FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)
+        .query(`SELECT FlightStatus,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)
           WHERE FlightId=@AmendmentMutationFlightId;`);
       if (amendmentFlight.recordset.length !== 1) {
-        throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Offload flight identity is missing or ambiguous');
+        throw new OperationalAuthorizationError(
+          'STATION_ACCESS_DENIED',
+          'The operational station could not be authorized',
+          403
+        );
       }
-      amendmentFlightStatus = amendmentFlight.recordset[0].FlightStatus;
+      const authorizationFlight = amendmentFlight.recordset[0];
+      await requireOperationalCapability(
+        transaction,
+        sql,
+        identity,
+        authorizationFlight,
+        nextStatus === 'TRANSIT' ? 'COLLECT_OFFLOAD' : 'COMPLETE_OFFLOAD'
+      );
+      amendmentFlightStatus = authorizationFlight.FlightStatus;
+    } else {
+      throw new OperationalAuthorizationError(
+        'STATION_ACCESS_DENIED',
+        'The operational station could not be authorized',
+        403
+      );
     }
 
     const request = new sql.Request(transaction)
@@ -683,6 +705,7 @@ module.exports = async function (context, req) {
     sendJson(context, 200, { ok: true, offload: changed, amendment });
   } catch (err) {
     if (transaction) { try { await transaction.rollback(); } catch {} }
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     if (err instanceof CompletionAmendmentError) {
       sendJson(context, err.status, { ok: false, code: err.code, error: err.message });
       return;

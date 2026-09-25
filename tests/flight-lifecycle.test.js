@@ -9,6 +9,7 @@ const crypto = require('node:crypto');
 const flightHelpers = require('../api/shared/flight');
 const { insertAuditEvent } = require('../api/shared/audit');
 const completionSnapshot = require('../api/shared/completion-snapshot');
+const operationalAuthorization = require('./helpers/operational-authorization-stub');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -53,6 +54,7 @@ function loadHandler(file, sql, replacements = {}) {
         if (name === '../shared/flight') return flightHelpers;
         if (name === '../shared/audit') return { insertAuditEvent };
         if (name === '../shared/completion-snapshot') return completionSnapshot;
+        if (name === '../shared/operational-authorization') return operationalAuthorization;
         return require(name);
       }
     },

@@ -1,5 +1,10 @@
 const sql = require('mssql');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 
 function getHeader(req, name) {
@@ -104,11 +109,7 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const actor = getActor(req);
-    if (!actor) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const actor = authenticatedActor(req);
 
     const body = req.body || {};
     const uldId = String(body.uldId || '').trim();
@@ -148,6 +149,8 @@ module.exports = async function (context, req) {
           u.UldNumber,
           u.CurrentStatus,
           f.Direction,
+          f.OriginAirport,
+          f.DestinationAirport,
           f.FlightNumber
         FROM dbo.ULDs u
         INNER JOIN dbo.Flights f
@@ -163,6 +166,7 @@ module.exports = async function (context, req) {
     }
 
     const current = currentResult.recordset[0];
+    await requireOperationalCapability(transaction, sql, actor, current, 'MOVE_ULD');
     const direction = canonicalStatus(current.Direction);
     const currentStatus = canonicalStatus(current.CurrentStatus);
 
@@ -412,6 +416,7 @@ module.exports = async function (context, req) {
       try { await transaction.rollback(); } catch {}
     }
 
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('ULD status API failed', err);
     sendJson(context, 500, {
       ok: false,

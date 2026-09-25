@@ -10,6 +10,11 @@ const {
   manifestHash,
   publicReconciliation
 } = require('../shared/export-manifest-final');
+const {
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -51,7 +56,7 @@ async function loadFlight(request, flightId, locked = false) {
   const result = await request
     .input(locked ? 'LockedFlightId' : 'SelectedFlightId', sql.BigInt, flightId)
     .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
-        OperatingDate,Direction,FlightStatus
+        OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
       FROM dbo.Flights${hint}
       WHERE FlightId=@${locked ? 'LockedFlightId' : 'SelectedFlightId'};`);
   return result.recordset?.[0] || null;
@@ -114,11 +119,7 @@ module.exports = async function exportManifestFinal(context, req) {
       sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' });
       return;
     }
-    const actor = getActor(req);
-    if (!actor) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const actor = authenticatedActor(req);
 
     const flightId = operationalId(req.method === 'GET' ? req.query?.flightId : req.body?.flightId);
     if (!flightId) {
@@ -171,6 +172,7 @@ module.exports = async function exportManifestFinal(context, req) {
     );
     const flight = await loadFlight(new sql.Request(transaction), flightId, true);
     validateFlight(flight);
+    await requireOperationalCapability(transaction, sql, actor, flight, 'CONFIRM_EXPORT_FINAL');
     const currentFinal = await getFinal(new sql.Request(transaction), flightId, true);
     if (currentFinal) {
       await transaction.rollback();
@@ -276,6 +278,7 @@ module.exports = async function exportManifestFinal(context, req) {
     if (transaction) {
       try { await transaction.rollback(); } catch {}
     }
+    if (sendOperationalAuthorizationError(context, error, sendJson)) return;
     if (error instanceof ManifestFinalError) {
       sendJson(context, error.status, {
         ok: false,

@@ -6,6 +6,11 @@ const {
 } = require('../shared/flight');
 const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 /* ============================================================
    CargoRun MACH FOW Receiver
@@ -543,11 +548,18 @@ module.exports = async function(
     }
 
 
-    const actor =
-      actorFromRequest(req);
-
     const machine =
       machineAuth(req);
+
+    let actor = null;
+    if (req.method === 'GET' || (req.method === 'POST' && !machine.ok)) {
+      try {
+        actor = authenticatedActor(req);
+      } catch (error) {
+        if (sendOperationalAuthorizationError(context, error, sendJson)) return;
+        throw error;
+      }
+    }
 
 
     /* --------------------------------------------------------
@@ -1099,6 +1111,44 @@ module.exports = async function(
        Exact same MACH message = ignore.
        ======================================================== */
 
+    const requestedFlight =
+      padFlight(
+        carrier,
+        carrierNum
+      );
+
+    if (!live) {
+      const authorizationCandidates = await pool.request()
+        .input('AuthorizationOperatingDate', sql.Date, operatingDate)
+        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE OperatingDate=@AuthorizationOperatingDate;`);
+      const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
+      if (authorizationMatches.length > 1) {
+        sendJson(context, 409, {
+          ok: false,
+          code: 'FLIGHT_IDENTITY_CONFLICT',
+          error: 'Multiple flights have the same canonical identity',
+          flightIds: authorizationMatches.map(existing => existing.FlightId)
+        });
+        return;
+      }
+      const authorizationFlight = authorizationMatches[0] || {
+        Direction: 'EXPORT',
+        OriginAirport: origin || station,
+        DestinationAirport: destination
+      };
+      if (authorizationMatches[0] && String(authorizationFlight.Direction || '').toUpperCase() !== 'EXPORT') {
+        sendJson(context, 409, {
+          ok: false,
+          code: 'FLIGHT_IDENTITY_CONFLICT',
+          error: 'Flight identity already exists with incompatible direction',
+          flightIds: [authorizationFlight.FlightId]
+        });
+        return;
+      }
+      await requireOperationalCapability(pool, sql, actor, authorizationFlight, 'UPLOAD_FLIGHT_DATA');
+    }
+
     const duplicate =
       await existingMessage(
         pool,
@@ -1162,13 +1212,6 @@ module.exports = async function(
     }
 
 
-    const requestedFlight =
-      padFlight(
-        carrier,
-        carrierNum
-      );
-
-
     /* ========================================================
        START TRANSACTION
        ======================================================== */
@@ -1177,6 +1220,32 @@ module.exports = async function(
       new sql.Transaction(pool);
 
     await tx.begin();
+
+    await acquireFlightIdentityLock(tx, sql, operatingDate, requestedFlight);
+    if (!live) {
+      const authorizationCandidates = await new sql.Request(tx)
+        .input('LockedAuthorizationOperatingDate', sql.Date, operatingDate)
+        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE OperatingDate=@LockedAuthorizationOperatingDate;`);
+      const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
+      if (authorizationMatches.length > 1) {
+        await tx.rollback();
+        tx = null;
+        sendJson(context, 409, {
+          ok: false,
+          code: 'FLIGHT_IDENTITY_CONFLICT',
+          error: 'Multiple flights have the same canonical identity',
+          flightIds: authorizationMatches.map(existing => existing.FlightId)
+        });
+        return;
+      }
+      const authorizationFlight = authorizationMatches[0] || {
+        Direction: 'EXPORT',
+        OriginAirport: origin || station,
+        DestinationAirport: destination
+      };
+      await requireOperationalCapability(tx, sql, actor, authorizationFlight, 'UPLOAD_FLIGHT_DATA');
+    }
 
 
     /* --------------------------------------------------------
@@ -1357,13 +1426,6 @@ module.exports = async function(
     /* ========================================================
        FIND FLIGHT
        ======================================================== */
-
-    await acquireFlightIdentityLock(
-      tx,
-      sql,
-      operatingDate,
-      requestedFlight
-    );
 
     const candidates =
       await new sql.Request(tx)
@@ -2161,6 +2223,8 @@ module.exports = async function(
         await tx.rollback();
       }
     } catch {}
+
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
 
 
     context.log.error(

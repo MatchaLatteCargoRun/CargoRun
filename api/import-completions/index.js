@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
 const { acquireFlightIdentityLock, flightIdentityLockResource } = require('../shared/flight');
 const { buildCompletionSnapshot, CompletionSnapshotError } = require('../shared/completion-snapshot');
+const { authenticatedActor, requireOperationalCapability, sendOperationalAuthorizationError } = require('../shared/operational-authorization');
 
 class ImportCompletionConflict extends Error {
   constructor(code, message, record = null) {
@@ -44,7 +45,7 @@ function normalize(row,columns,flightNumber){const get=names=>{const c=pick(colu
 
 module.exports=async function(context,req){let pool,tx;try{
   const cs=process.env.DATABASE_CONNECTION_STRING;if(!cs){sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'});return}
-  const identity=getActor(req);if(!identity){sendJson(context,401,{ok:false,error:'Microsoft Entra sign-in is required'});return}
+  const identity=authenticatedActor(req);
   pool=await new sql.ConnectionPool(cs).connect();
   const columns=await columnsFor(pool.request(),'ImportCompletionRecords');if(!columns.length){sendJson(context,500,{ok:false,error:'dbo.ImportCompletionRecords table was not found. Run add_import_completion_records.sql first.'});return}
 
@@ -71,6 +72,7 @@ module.exports=async function(context,req){let pool,tx;try{
   const flight=lockedResult.recordset[0];
   if(flightIdentityLockResource(initialFlight.OperatingDateIso||initialFlight.OperatingDate,initialFlight.FlightNumber)!==flightIdentityLockResource(flight.OperatingDateIso||flight.OperatingDate,flight.FlightNumber)){throw new ImportCompletionConflict('IMPORT_FLIGHT_CHANGED','The selected Import flight identity changed before finalisation could begin')}
   if(String(flight.Direction||'').trim().toUpperCase()!=='IMPORT'){await tx.rollback();tx=null;sendJson(context,400,{ok:false,code:'IMPORT_FLIGHT_REQUIRED',error:'Only import flights can be finalised here'});return}
+  await requireOperationalCapability(tx,sql,identity,flight,'FINALISE_FLIGHT');
   const flightIdCol=pick(columns,['FlightId']);
   if(flightIdCol){const existing=await new sql.Request(tx).input('CompletionFlightId',sql.BigInt,flightId).query(`SELECT TOP (2) * FROM dbo.ImportCompletionRecords WITH (UPDLOCK,HOLDLOCK) WHERE ${q(flightIdCol)}=@CompletionFlightId;`);if(existing.recordset.length){throw new ImportCompletionConflict('IMPORT_ALREADY_FINALISED','Import completion record already exists',normalize(existing.recordset[0],columns,flight.FlightNumber))}}
   if(String(flight.FlightStatus||'').trim().toUpperCase()!=='ACTIVE'){throw new ImportCompletionConflict('IMPORT_FLIGHT_NOT_ACTIVE','Only an ACTIVE Import flight can be finalised')}
@@ -96,4 +98,4 @@ module.exports=async function(context,req){let pool,tx;try{
   await insertAuditEvent(tx,sql,{type:'Flight',action:'Import finalised',actorDisplayName:identity.displayName,actorReference:identity.reference,entityType:'Flight',entityId:flightId,flightId,flightNumber:flight.FlightNumber,fromStatus:flight.FlightStatus,toStatus:'FINALISED',detail:`Import finalised${exceptionReason?` with exception: ${exceptionReason}`:''} • Record ${auditRecord.verificationId}`,details:{completionRecordId:auditRecord.id,verificationId:auditRecord.verificationId,pendingCount}});
   await tx.commit();tx=null;
   const rec=normalize(inserted.recordset[0],columns,flight.FlightNumber);rec.recordHash=hash;sendJson(context,201,{ok:true,record:rec,pendingCount});
-}catch(err){if(tx){try{await tx.rollback()}catch{}}if(err instanceof ImportCompletionConflict){sendJson(context,409,{ok:false,code:err.code,error:err.message,...(err.record?{record:err.record}:{})});return}if(err instanceof CompletionSnapshotError){sendJson(context,err.status,{ok:false,code:err.code,error:err.message});return}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed',detail:err.message})}finally{try{await pool?.close()}catch{}}};
+}catch(err){if(tx){try{await tx.rollback()}catch{}}if(sendOperationalAuthorizationError(context,err,sendJson))return;if(err instanceof ImportCompletionConflict){sendJson(context,409,{ok:false,code:err.code,error:err.message,...(err.record?{record:err.record}:{})});return}if(err instanceof CompletionSnapshotError){sendJson(context,err.status,{ok:false,code:err.code,error:err.message});return}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed',detail:err.message})}finally{try{await pool?.close()}catch{}}};

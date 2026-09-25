@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const flightHelpers = require('../api/shared/flight');
 const { normalizeUldNumber } = require('../api/shared/uld');
 const { insertAuditEvent } = require('../api/shared/audit');
+const operationalAuthorization = require('./helpers/operational-authorization-stub');
 
 const root = path.resolve(__dirname, '..');
 const principal = Buffer.from(JSON.stringify({
@@ -348,6 +349,8 @@ function harness(initialFlights = []) {
                 ? require('../api/shared/export-manifest-final')
               : name === '../shared/export-uws'
                 ? require('../api/shared/export-uws')
+              : name === '../shared/operational-authorization'
+                ? operationalAuthorization
               : require(name)
       },
       { filename: endpoint + '/index.js' }

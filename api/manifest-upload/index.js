@@ -16,6 +16,11 @@ const {
   parseExportUws,
   matchExportUwsFlight
 } = require('../shared/export-uws');
+const {
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -138,14 +143,7 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const actor = getActor(req);
-    if (!actor) {
-      sendJson(context, 401, {
-        ok: false,
-        error: 'Microsoft Entra sign-in is required'
-      });
-      return;
-    }
+    const actor = authenticatedActor(req);
 
     const body = req.body || {};
     const action = clean(body.action) || 'CREATE';
@@ -192,6 +190,7 @@ module.exports = async function (context, req) {
         await loadUwsOperationalRows(new sql.Request(transaction), matchedFlight.FlightId, true),
         items
       );
+      await requireOperationalCapability(transaction, sql, actor, matchedFlight, 'CONFIRM_EXPORT_FINAL');
 
       await new sql.Request(transaction)
         .input('UwsUploadFlightId', sql.BigInt, matchedFlight.FlightId)
@@ -404,6 +403,12 @@ module.exports = async function (context, req) {
       return;
     }
 
+    await requireOperationalCapability(transaction, sql, actor, {
+      Direction: direction,
+      OriginAirport: originAirport,
+      DestinationAirport: destinationAirport
+    }, 'UPLOAD_FLIGHT_DATA');
+
     const flightResult = await new sql.Request(transaction)
       .input('FlightNumber', sql.NVarChar(12), flightNumber)
       .input('OperatingDate', sql.Date, operatingDate)
@@ -549,6 +554,7 @@ module.exports = async function (context, req) {
       try { await transaction.rollback(); } catch {}
     }
 
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     if (err instanceof ExportUwsError || err instanceof ManifestFinalError) {
       sendJson(context, err.status || 400, {
         ok: false,

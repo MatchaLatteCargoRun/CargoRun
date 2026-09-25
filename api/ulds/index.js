@@ -2,6 +2,11 @@ const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
 const { acquireFlightIdentityLock } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -101,15 +106,7 @@ module.exports = async function (context, req) {
 
     /* POST /api/ulds */
     const body = req.body || {};
-    const actor = getActor(req);
-
-    if (!actor) {
-      sendJson(context, 401, {
-        ok: false,
-        error: 'Microsoft Entra sign-in is required'
-      });
-      return;
-    }
+    const actor = authenticatedActor(req);
 
     const flightId = String(body.flightId || '').trim();
     const uldNumber = normalizeUldNumber(body.uldNumber);
@@ -163,7 +160,7 @@ module.exports = async function (context, req) {
       );
       const lockedFlight = await new sql.Request(transaction)
         .input('LockedFlightId', sql.BigInt, flightId)
-        .query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,FlightStatus
+        .query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
           FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
       if (!lockedFlight.recordset.length) {
         await transaction.rollback();
@@ -171,6 +168,7 @@ module.exports = async function (context, req) {
         return;
       }
       const locked = lockedFlight.recordset[0];
+      await requireOperationalCapability(transaction, sql, actor, locked, 'MOVE_ULD');
       const direction = String(locked.Direction || '').toUpperCase();
       if (direction === 'EXPORT') {
         const finalResult = await new sql.Request(transaction)
@@ -314,6 +312,7 @@ module.exports = async function (context, req) {
     }
 
   } catch (err) {
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('ULD API failed', err);
     sendJson(context, 500, {
       ok: false,
