@@ -398,11 +398,15 @@ function completionHarness(direction, options = {}) {
       }
       if (query.includes('sys.sp_getapplock')) return response([{ LockResult: 0 }]);
       if (query.startsWith('SELECT FlightId,FlightNumber')) {
-        const row = state.flights.find(item => String(item.FlightId) === String(parameters.FlightId));
+        const selectedFlightId = parameters.InitialFlightId ?? parameters.LockedFlightId ?? parameters.FlightId;
+        const row = state.flights.find(item => String(item.FlightId) === String(selectedFlightId));
         return response(row ? [{ ...row }] : []);
       }
+      if (query.startsWith('SELECT UldId,UldNumber,CurrentStatus FROM dbo.ULDs WITH (UPDLOCK,HOLDLOCK)')) {
+        return response(state.ulds.filter(item => String(item.FlightId) === String(parameters.LockedUldFlightId)));
+      }
       if (query.startsWith('SELECT COUNT(*) AS Pending FROM dbo.ULDs')) {
-        const pending = state.ulds.filter(item => String(item.FlightId) === '501' && (
+        const pending = state.ulds.filter(item => String(item.FlightId) === String(parameters.PendingFlightId ?? '501') && (
           isImport
             ? String(item.CurrentStatus).toUpperCase() !== 'RECEIVED'
             : String(item.CurrentStatus).toUpperCase() !== 'AT_AIRCRAFT'
@@ -434,7 +438,7 @@ function completionHarness(direction, options = {}) {
           CompletionTimeIso: '2026-09-25T01:02:03.000Z'
         }]);
       }
-      if (query.startsWith('SELECT TOP 1 * FROM dbo.ImportCompletionRecords') || query.startsWith('SELECT TOP 1 * FROM dbo.ExportCompletionRecords')) {
+      if (query.startsWith('SELECT TOP (2) * FROM dbo.ImportCompletionRecords') || query.startsWith('SELECT TOP 1 * FROM dbo.ExportCompletionRecords')) {
         return response(state.completions);
       }
       if (query.startsWith('INSERT INTO dbo.ImportCompletionRecords') || query.startsWith('INSERT INTO dbo.ExportCompletionRecords')) {
@@ -454,10 +458,11 @@ function completionHarness(direction, options = {}) {
         return response([row], [1]);
       }
       if (query.startsWith("UPDATE dbo.Flights SET FlightStatus='FINALISED'")) {
-        const id = parameters.FlightId4;
+        const id = parameters.FinaliseFlightId ?? parameters.FlightId4;
         const row = state.flights.find(item => String(item.FlightId) === String(id));
-        if (row) row.FlightStatus = 'FINALISED';
-        return response([], row ? [1] : [0]);
+        const affected = Boolean(row && String(row.FlightStatus).trim().toUpperCase() === 'ACTIVE');
+        if (affected) row.FlightStatus = 'FINALISED';
+        return response([], affected ? [1] : [0]);
       }
       if (query.startsWith('INSERT INTO dbo.AuditEvents')) {
         if (options.failAudit) throw new Error('forced audit failure');

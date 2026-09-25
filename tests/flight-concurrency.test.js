@@ -16,8 +16,8 @@ const principal = Buffer.from(JSON.stringify({
   userId: 'test-user'
 })).toString('base64');
 
-function result(recordset = []) {
-  return { recordset };
+function result(recordset = [], rowsAffected = []) {
+  return { recordset, rowsAffected };
 }
 
 function harness(initialFlights = []) {
@@ -29,6 +29,7 @@ function harness(initialFlights = []) {
     uploads: [],
     finals: [],
     finalMembers: [],
+    completions: [],
     audits: [],
     shcs: [],
     calls: [],
@@ -36,7 +37,13 @@ function harness(initialFlights = []) {
     rollbacks: 0,
     failAfterFlight: false,
     lockResult: 0,
-    lockError: null
+    lockError: null,
+    lockHolds: [],
+    activeFlightLocks: 0,
+    maxActiveFlightLocks: 0,
+    failAudit: false,
+    forceFinaliseCasLoss: false,
+    mutateBeforeLockedRead: null
   };
   const lockTails = new Map();
 
@@ -46,9 +53,16 @@ function harness(initialFlights = []) {
     const current = new Promise(resolve => { release = resolve; });
     lockTails.set(resource, previous.then(() => current));
     await previous;
+    state.activeFlightLocks++;
+    state.maxActiveFlightLocks = Math.max(state.maxActiveFlightLocks, state.activeFlightLocks);
+    const hold = state.lockHolds.shift();
+    if (hold) {
+      hold.markAcquired();
+      await hold.waitForRelease;
+    }
     tx.releaseLock = () => {
+      state.activeFlightLocks--;
       release();
-      if (lockTails.get(resource) === current) lockTails.delete(resource);
     };
   }
 
@@ -57,14 +71,22 @@ function harness(initialFlights = []) {
     async begin() { this.active = true; }
     async commit() {
       this.active = false;
-      for (const collection of [state.flights, state.ulds, state.messages, state.links, state.uploads, state.finals, state.finalMembers, state.audits, state.shcs]) {
+      for (const collection of [state.flights, state.ulds, state.messages, state.links, state.uploads, state.finals, state.finalMembers, state.completions, state.audits, state.shcs]) {
         for (const row of collection) delete row.__tx;
       }
+      for (const row of state.flights) delete row.__previousFlightStatus;
       state.commits++;
       this.releaseLock?.();
     }
     async rollback() {
-      for (const name of ['flights', 'ulds', 'messages', 'links', 'uploads', 'finals', 'finalMembers', 'audits', 'shcs']) {
+      for (const row of state.flights) {
+        if (row.__tx === this.id && Object.hasOwn(row, '__previousFlightStatus')) {
+          row.FlightStatus = row.__previousFlightStatus;
+          delete row.__previousFlightStatus;
+          delete row.__tx;
+        }
+      }
+      for (const name of ['flights', 'ulds', 'messages', 'links', 'uploads', 'finals', 'finalMembers', 'completions', 'audits', 'shcs']) {
         state[name] = state[name].filter(row => row.__tx !== this.id);
       }
       this.active = false;
@@ -87,8 +109,26 @@ function harness(initialFlights = []) {
         if (state.lockResult !== 0 && state.lockResult !== 1) {
           return result([{ LockResult: state.lockResult }]);
         }
+        if (state.mutateBeforeLockedRead) {
+          const mutate = state.mutateBeforeLockedRead;
+          state.mutateBeforeLockedRead = null;
+          mutate(state);
+        }
         await acquire(this.tx, p.FlightIdentityLockResource);
         return result([{ LockResult: state.lockResult }]);
+      }
+      if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS') && p.TableName === 'ImportCompletionRecords') {
+        return result([
+          { COLUMN_NAME: 'ImportCompletionRecordId', IS_NULLABLE: 'NO', COLUMN_DEFAULT: null, DATA_TYPE: 'bigint', IS_IDENTITY: 1 },
+          { COLUMN_NAME: 'FlightId', IS_NULLABLE: 'NO', COLUMN_DEFAULT: null, DATA_TYPE: 'bigint', IS_IDENTITY: 0 },
+          { COLUMN_NAME: 'VerificationId', IS_NULLABLE: 'NO', COLUMN_DEFAULT: '(newid())', DATA_TYPE: 'uniqueidentifier', IS_IDENTITY: 0 },
+          { COLUMN_NAME: 'FinalisedAtUtc', IS_NULLABLE: 'NO', COLUMN_DEFAULT: null, DATA_TYPE: 'datetime2', IS_IDENTITY: 0 },
+          { COLUMN_NAME: 'FinalisedByDisplayName', IS_NULLABLE: 'NO', COLUMN_DEFAULT: null, DATA_TYPE: 'nvarchar', IS_IDENTITY: 0 },
+          { COLUMN_NAME: 'FinalisedByObjectId', IS_NULLABLE: 'NO', COLUMN_DEFAULT: null, DATA_TYPE: 'nvarchar', IS_IDENTITY: 0 },
+          { COLUMN_NAME: 'ExceptionReason', IS_NULLABLE: 'YES', COLUMN_DEFAULT: null, DATA_TYPE: 'nvarchar', IS_IDENTITY: 0 },
+          { COLUMN_NAME: 'SnapshotJson', IS_NULLABLE: 'NO', COLUMN_DEFAULT: null, DATA_TYPE: 'nvarchar', IS_IDENTITY: 0 },
+          { COLUMN_NAME: 'RecordHash', IS_NULLABLE: 'NO', COLUMN_DEFAULT: null, DATA_TYPE: 'nvarchar', IS_IDENTITY: 0 }
+        ]);
       }
       if (q.includes('FROM dbo.IncomingMachMessages')) {
         return result(state.messages.filter(row => row.DocumentCorID === p.DocumentCorID));
@@ -131,6 +171,7 @@ function harness(initialFlights = []) {
           .map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
       if (q.startsWith('INSERT INTO dbo.AuditEvents')) {
+        if (state.failAudit) throw new Error('forced audit failure');
         const row = { ...p, __tx: this.tx.id };
         state.audits.push(row);
         return result([row]);
@@ -154,7 +195,7 @@ function harness(initialFlights = []) {
         return result();
       }
       if (q.includes('FROM dbo.Flights')) {
-        const exactId = p.SelectedFlightId ?? p.LockedFlightId;
+        const exactId = p.SelectedFlightId ?? p.InitialFlightId ?? p.LockedFlightId ?? p.FlightId;
         const operatingDate = p.OperatingDate ?? p.UwsOperatingDate ?? p.LockedUwsOperatingDate;
         return result(state.flights.filter(row => exactId
           ? String(row.FlightId) === String(exactId)
@@ -177,8 +218,43 @@ function harness(initialFlights = []) {
         return result();
       }
       if (q.includes('FROM dbo.ULDs')) {
-        const id = p.FlightId ?? p.PostFinalFlightId ?? p.LockedUldFlightId ?? p.PreviewUldFlightId ?? p.UwsUldFlightId ?? p.LockedUwsUldFlightId;
+        const id = p.FlightId ?? p.PostFinalFlightId ?? p.LockedUldFlightId ?? p.PendingFlightId ?? p.CompletionUldFlightId ?? p.PreviewUldFlightId ?? p.UwsUldFlightId ?? p.LockedUwsUldFlightId;
+        if (q.startsWith('SELECT COUNT(*) AS Pending')) {
+          const pending = state.ulds.filter(row => String(row.FlightId) === String(id) && String(row.CurrentStatus || '').toUpperCase().replace(/ /g, '_') !== 'RECEIVED').length;
+          return result([{ Pending: pending }]);
+        }
         return result(state.ulds.filter(row => String(row.FlightId) === String(id)));
+      }
+      if (q.startsWith('SELECT TOP (2) * FROM dbo.ImportCompletionRecords')) {
+        return result(state.completions.filter(row => String(row.FlightId) === String(p.CompletionFlightId)).slice(0, 2));
+      }
+      if (q.startsWith('INSERT INTO dbo.ImportCompletionRecords')) {
+        const row = {
+          ImportCompletionRecordId: state.completions.length + 1,
+          FlightId: p.FlightId,
+          VerificationId: `verification-${state.completions.length + 1}`,
+          FinalisedAtUtc: p.FinalisedAtUtc,
+          FinalisedByDisplayName: p.Actor,
+          FinalisedByObjectId: p.ActorId,
+          ExceptionReason: p.ExceptionReason,
+          SnapshotJson: p.SnapshotJson,
+          RecordHash: p.RecordHash,
+          __tx: this.tx.id
+        };
+        state.completions.push(row);
+        return result([row], [1]);
+      }
+      if (q.startsWith("UPDATE dbo.Flights SET FlightStatus='FINALISED'")) {
+        const row = state.flights.find(item => String(item.FlightId) === String(p.FinaliseFlightId));
+        if (state.forceFinaliseCasLoss) {
+          if (row) row.FlightStatus = 'CLOSED';
+          return result([], [0]);
+        }
+        if (!row || String(row.FlightStatus || '').trim().toUpperCase() !== 'ACTIVE') return result([], [0]);
+        row.__previousFlightStatus = row.FlightStatus;
+        row.__tx = this.tx.id;
+        row.FlightStatus = 'FINALISED';
+        return result([], [1]);
       }
       if (q.startsWith('INSERT INTO dbo.ULDs')) {
         const row = {
@@ -228,7 +304,7 @@ function harness(initialFlights = []) {
     Int: 'int',
     Bit: 'bit',
     Date: 'date',
-    DateTime2: 'datetime2',
+    DateTime2: () => 'datetime2',
     Char: () => 'char',
     MAX: 'max'
   };
@@ -250,6 +326,24 @@ function harness(initialFlights = []) {
               ? { normalizeUldNumber }
               : name === '../shared/audit'
                 ? { insertAuditEvent }
+              : name === '../shared/completion-snapshot'
+                ? {
+                    CompletionSnapshotError: class CompletionSnapshotError extends Error {},
+                    buildCompletionSnapshot: async (transaction, _sql, options) => ({
+                      completionTimeUtc: new Date('2026-09-25T01:02:03.000Z'),
+                      snapshot: {
+                        flight: options.flight.FlightNumber,
+                        flightId: String(options.flightId),
+                        direction: 'IMPORT',
+                        finalizedBy: options.actor.displayName,
+                        finalizedById: options.actor.reference,
+                        exceptionReason: options.exceptionReason || null,
+                        ulds: state.ulds
+                          .filter(row => String(row.FlightId) === String(options.flightId))
+                          .map(row => ({ uldId: String(row.UldId), num: row.UldNumber, status: row.CurrentStatus }))
+                      }
+                    })
+                  }
               : name === '../shared/export-manifest-final'
                 ? require('../api/shared/export-manifest-final')
               : name === '../shared/export-uws'
@@ -271,7 +365,16 @@ function harness(initialFlights = []) {
     return { status: context.res.status, body: JSON.parse(context.res.body) };
   }
 
-  return { state, call };
+  function holdNextFlightLock() {
+    let markAcquired;
+    let release;
+    const acquired = new Promise(resolve => { markAcquired = resolve; });
+    const waitForRelease = new Promise(resolve => { release = resolve; });
+    state.lockHolds.push({ markAcquired, waitForRelease });
+    return { acquired, release };
+  }
+
+  return { state, call, holdNextFlightLock };
 }
 
 const manual = (flightNumber = 'CX0178', operatingDate = '2026-09-17') => ({
@@ -514,6 +617,150 @@ test('all flight writers use the shared transaction-owned identity lock', () => 
   const helper = fs.readFileSync(path.join(root, 'api/shared/flight.js'), 'utf8');
   assert.match(helper, /sys\.sp_getapplock/);
   assert.match(helper, /@LockOwner = 'Transaction'/);
+});
+
+const importFlight = (flightId = 41, operatingDate = '2026-09-25', status = 'ACTIVE') => ({
+  FlightId: flightId,
+  FlightNumber: 'CX0134',
+  OperatingDate: operatingDate,
+  Direction: 'IMPORT',
+  FlightStatus: status,
+  AirlineCode: 'CX',
+  OriginAirport: 'HKG',
+  DestinationAirport: 'MEL'
+});
+
+test('Import Add ULD first makes finalisation wait and evaluate the committed pending ULD', async () => {
+  const api = harness([importFlight()]);
+  const hold = api.holdNextFlightLock();
+  const adding = api.call('ulds', { flightId: '41', uldNumber: 'AKE12345CX' });
+  await hold.acquired;
+  const finalising = api.call('import-completions', { flightId: '41' });
+  hold.release();
+
+  const [added, finalised] = await Promise.all([adding, finalising]);
+  assert.equal(added.status, 201);
+  assert.equal(finalised.status, 409);
+  assert.equal(finalised.body.code, 'IMPORT_ULDS_PENDING');
+  assert.equal(api.state.ulds.length, 1);
+  assert.equal(api.state.completions.length, 0);
+  assert.equal(api.state.flights[0].FlightStatus, 'ACTIVE');
+  assert.equal(api.state.maxActiveFlightLocks, 1);
+});
+
+test('Import finalisation first makes Add ULD wait and then reject the FINALISED flight', async () => {
+  const api = harness([importFlight()]);
+  const hold = api.holdNextFlightLock();
+  const finalising = api.call('import-completions', { flightId: '41' });
+  await hold.acquired;
+  const adding = api.call('ulds', { flightId: '41', uldNumber: 'AKE12345CX' });
+  hold.release();
+
+  const [finalised, added] = await Promise.all([finalising, adding]);
+  assert.equal(finalised.status, 201);
+  assert.equal(added.status, 409);
+  assert.equal(added.body.code, 'IMPORT_FLIGHT_NOT_ACTIVE');
+  assert.equal(api.state.ulds.length, 0);
+  assert.equal(api.state.completions.length, 1);
+  assert.equal(api.state.flights[0].FlightStatus, 'FINALISED');
+  assert.equal(api.state.maxActiveFlightLocks, 1);
+});
+
+test('simultaneous Import finalisers create one completion and one audit', async () => {
+  const api = harness([importFlight()]);
+  const responses = await Promise.all([
+    api.call('import-completions', { flightId: '41' }),
+    api.call('import-completions', { flightId: '41' })
+  ]);
+
+  assert.deepEqual(responses.map(item => item.status).sort(), [201, 409]);
+  assert.equal(responses.find(item => item.status === 409).body.code, 'IMPORT_ALREADY_FINALISED');
+  assert.equal(api.state.completions.length, 1);
+  assert.equal(api.state.audits.length, 1);
+  assert.equal(api.state.flights[0].FlightStatus, 'FINALISED');
+  assert.equal(api.state.maxActiveFlightLocks, 1);
+});
+
+test('Import finalisation rejects non-active and non-Import flights under the canonical lock', async () => {
+  const inactive = harness([importFlight(41, '2026-09-25', 'CLOSED')]);
+  const inactiveResult = await inactive.call('import-completions', { flightId: '41' });
+  assert.equal(inactiveResult.status, 409);
+  assert.equal(inactiveResult.body.code, 'IMPORT_FLIGHT_NOT_ACTIVE');
+  assert.equal(inactive.state.completions.length, 0);
+
+  const exported = harness([{ ...importFlight(), Direction: 'EXPORT' }]);
+  const exportResult = await exported.call('import-completions', { flightId: '41' });
+  assert.equal(exportResult.status, 400);
+  assert.equal(exportResult.body.code, 'IMPORT_FLIGHT_REQUIRED');
+  assert.equal(exported.state.completions.length, 0);
+});
+
+test('Import finalisation detects lifecycle change between identity lookup and locked re-read', async () => {
+  const api = harness([importFlight()]);
+  api.state.mutateBeforeLockedRead = state => { state.flights[0].FlightStatus = 'CLOSED'; };
+  const response = await api.call('import-completions', { flightId: '41' });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'IMPORT_FLIGHT_NOT_ACTIVE');
+  assert.equal(api.state.completions.length, 0);
+  assert.equal(api.state.audits.length, 0);
+});
+
+test('Import finalisation keeps exact FlightId when visible flight numbers repeat', async () => {
+  const api = harness([
+    importFlight(41, '2026-09-24'),
+    importFlight(42, '2026-09-25')
+  ]);
+  api.state.ulds.push({ FlightId: 42, UldId: 71, UldNumber: 'AKE12345CX', CurrentStatus: 'RECEIVED', IdentityVerified: 1 });
+  const response = await api.call('import-completions', { flightId: '42' });
+
+  assert.equal(response.status, 201);
+  assert.equal(String(api.state.completions[0].FlightId), '42');
+  assert.equal(api.state.flights.find(row => row.FlightId === 41).FlightStatus, 'ACTIVE');
+  assert.equal(api.state.flights.find(row => row.FlightId === 42).FlightStatus, 'FINALISED');
+
+  const transactionalSql = api.state.calls.filter(call => call.inTransaction).map(call => call.q);
+  const lockIndex = transactionalSql.findIndex(query => query.includes('sys.sp_getapplock'));
+  const flightRowIndex = transactionalSql.findIndex(query => query.includes('FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK)'));
+  const completionIndex = transactionalSql.findIndex(query => query.includes('FROM dbo.ImportCompletionRecords WITH (UPDLOCK,HOLDLOCK)'));
+  const uldRangeIndex = transactionalSql.findIndex(query => query.includes('FROM dbo.ULDs WITH (UPDLOCK,HOLDLOCK)'));
+  const insertIndex = transactionalSql.findIndex(query => query.startsWith('INSERT INTO dbo.ImportCompletionRecords'));
+  const lifecycleIndex = transactionalSql.findIndex(query => query.startsWith("UPDATE dbo.Flights SET FlightStatus='FINALISED'"));
+  const auditIndex = transactionalSql.findIndex(query => query.startsWith('INSERT INTO dbo.AuditEvents'));
+  assert.ok(lockIndex < flightRowIndex);
+  assert.ok(flightRowIndex < completionIndex);
+  assert.ok(completionIndex < uldRangeIndex);
+  assert.ok(uldRangeIndex < insertIndex);
+  assert.ok(insertIndex < lifecycleIndex);
+  assert.ok(lifecycleIndex < auditIndex);
+  assert.match(transactionalSql[lifecycleIndex], /FlightId=@FinaliseFlightId AND UPPER\(LTRIM\(RTRIM\(FlightStatus\)\)\)='ACTIVE'/);
+  const lockCall = api.state.calls.find(call => call.q.includes('sys.sp_getapplock'));
+  assert.equal(lockCall.p.FlightIdentityLockResource, 'CargoRun:Flight:2026-09-25:CX134');
+});
+
+test('Import finalisation rolls back completion when lifecycle compare-and-set loses', async () => {
+  const api = harness([importFlight()]);
+  api.state.forceFinaliseCasLoss = true;
+  const response = await api.call('import-completions', { flightId: '41' });
+
+  assert.equal(response.status, 409);
+  assert.equal(response.body.code, 'IMPORT_FINALISATION_CONFLICT');
+  assert.equal(api.state.completions.length, 0);
+  assert.equal(api.state.audits.length, 0);
+  assert.equal(api.state.flights[0].FlightStatus, 'CLOSED');
+  assert.equal(api.state.rollbacks, 1);
+});
+
+test('Import finalisation audit failure rolls back completion and FINALISED state', async () => {
+  const api = harness([importFlight()]);
+  api.state.failAudit = true;
+  const response = await api.call('import-completions', { flightId: '41' });
+
+  assert.equal(response.status, 500);
+  assert.equal(api.state.completions.length, 0);
+  assert.equal(api.state.audits.length, 0);
+  assert.equal(api.state.flights[0].FlightStatus, 'ACTIVE');
+  assert.equal(api.state.rollbacks, 1);
 });
 
 const finalManifest = (flightId, ulds) => ({
