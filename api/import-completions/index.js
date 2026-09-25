@@ -1,6 +1,7 @@
 const sql = require('mssql');
 const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
+const { buildCompletionSnapshot, CompletionSnapshotError } = require('../shared/completion-snapshot');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -19,9 +20,9 @@ function getActor(req) {
   if (!principal) return null;
   const roles = Array.isArray(principal.userRoles) ? principal.userRoles : [];
   if (!roles.includes('authenticated')) return null;
-  return {
+  const reference=String(principal.userId||'').trim().slice(0,150);if(!reference)return null;return {
     displayName: String(principal.userDetails || 'Authenticated user').slice(0,150),
-    reference: String(principal.userId || '').slice(0,150)
+    reference
   };
 }
 function sendJson(context,status,body){context.res={status,headers:{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'},body:JSON.stringify(body)}}
@@ -51,7 +52,7 @@ module.exports=async function(context,req){let pool,tx;try{
   const b=req.body||{};const flightId=String(b.flightId||'').trim();if(!/^\d+$/.test(flightId)){sendJson(context,400,{ok:false,error:'flightId is required'});return}
   const exceptionReason=clean(b.exceptionReason,500);
   tx=new sql.Transaction(pool);await tx.begin();
-  const f=await new sql.Request(tx).input('FlightId',sql.BigInt,flightId).query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,FlightStatus FROM dbo.Flights WHERE FlightId=@FlightId;`);
+  const f=await new sql.Request(tx).input('FlightId',sql.BigInt,flightId).query(`SELECT FlightId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,AirlineCode,OriginAirport,DestinationAirport,FlightStatus FROM dbo.Flights WHERE FlightId=@FlightId;`);
   if(!f.recordset.length){await tx.rollback();tx=null;sendJson(context,404,{ok:false,error:'Flight not found'});return}
   const flight=f.recordset[0];
   if(String(flight.Direction||'').toUpperCase()!=='IMPORT'){await tx.rollback();tx=null;sendJson(context,400,{ok:false,error:'Only import flights can be finalised here'});return}
@@ -63,11 +64,12 @@ module.exports=async function(context,req){let pool,tx;try{
   const flightIdCol=pick(columns,['FlightId']);
   if(flightIdCol){const existing=await new sql.Request(tx).input('FlightId3',sql.BigInt,flightId).query(`SELECT TOP 1 * FROM dbo.ImportCompletionRecords WHERE ${q(flightIdCol)}=@FlightId3;`);if(existing.recordset.length){await tx.rollback();tx=null;sendJson(context,409,{ok:false,error:'Import completion record already exists',record:normalize(existing.recordset[0],columns,flight.FlightNumber)});return}}
 
-  const snapshot={...(b.snapshot||{}),flight:flight.FlightNumber,flightId:String(flightId),flightDate:b.snapshot?.flightDate||flight.OperatingDate,finalizedBy:identity.displayName,finalizedById:identity.reference,exceptionReason,ulds:Array.isArray(b.snapshot?.ulds)?b.snapshot.ulds:[]};
+  const authored=await buildCompletionSnapshot(tx,sql,{direction:'IMPORT',flightId,flight,actor:identity,exceptionReason});
+  const snapshot=authored.snapshot;
   const snapshotJson=JSON.stringify(snapshot);const hash=crypto.createHash('sha256').update(snapshotJson).digest('hex');
-  const request=new sql.Request(tx).input('FlightId',sql.BigInt,flightId).input('Actor',sql.NVarChar(150),identity.displayName).input('ActorId',sql.NVarChar(150),identity.reference).input('ExceptionReason',sql.NVarChar(500),exceptionReason).input('SnapshotJson',sql.NVarChar(sql.MAX),snapshotJson).input('RecordHash',sql.NVarChar(128),hash);
+  const request=new sql.Request(tx).input('FlightId',sql.BigInt,flightId).input('Actor',sql.NVarChar(150),identity.displayName).input('ActorId',sql.NVarChar(150),identity.reference).input('FinalisedAtUtc',sql.DateTime2(3),authored.completionTimeUtc).input('ExceptionReason',sql.NVarChar(500),exceptionReason).input('SnapshotJson',sql.NVarChar(sql.MAX),snapshotJson).input('RecordHash',sql.NVarChar(128),hash);
   const names=[];const values=[];const add=(cands,expr)=>{const c=pick(columns,cands);if(c&&!names.includes(c)){names.push(c);values.push(expr)}};
-  add(['FlightId'],'@FlightId');add(['VerificationId'],'NEWID()');add(['FinalisedAtUtc','FinalizedAtUtc','FinalisedAt','FinalizedAt'],'SYSUTCDATETIME()');add(['FinalisedByDisplayName','FinalizedByDisplayName','FinalisedByName','FinalizedByName'],'@Actor');add(['FinalisedByObjectId','FinalizedByObjectId','FinalisedById','FinalizedById'],'@ActorId');add(['ExceptionReason','CompletionReason','Reason'],'@ExceptionReason');add(['SnapshotJson','Snapshot','DetailsJson'],'@SnapshotJson');add(['RecordHash','Hash'],'@RecordHash');
+  add(['FlightId'],'@FlightId');add(['VerificationId'],'NEWID()');add(['FinalisedAtUtc','FinalizedAtUtc','FinalisedAt','FinalizedAt'],'@FinalisedAtUtc');add(['FinalisedByDisplayName','FinalizedByDisplayName','FinalisedByName','FinalizedByName'],'@Actor');add(['FinalisedByObjectId','FinalizedByObjectId','FinalisedById','FinalizedById'],'@ActorId');add(['ExceptionReason','CompletionReason','Reason'],'@ExceptionReason');add(['SnapshotJson','Snapshot','DetailsJson'],'@SnapshotJson');add(['RecordHash','Hash'],'@RecordHash');
   const mapped=new Set(names.map(x=>x.toLowerCase()));const requiredUnknown=columns.filter(c=>c.IS_NULLABLE==='NO'&&!c.COLUMN_DEFAULT&&Number(c.IS_IDENTITY)!==1&&!mapped.has(String(c.COLUMN_NAME).toLowerCase()));if(requiredUnknown.length){await tx.rollback();tx=null;sendJson(context,500,{ok:false,error:`ImportCompletionRecords has unmapped required columns: ${requiredUnknown.map(c=>c.COLUMN_NAME).join(', ')}`});return}
   const inserted=await request.query(`INSERT INTO dbo.ImportCompletionRecords (${names.map(q).join(',')}) OUTPUT INSERTED.* VALUES (${values.join(',')});`);
   await new sql.Request(tx).input('FlightId4',sql.BigInt,flightId).query(`UPDATE dbo.Flights SET FlightStatus='FINALISED' WHERE FlightId=@FlightId4;`);
@@ -75,4 +77,4 @@ module.exports=async function(context,req){let pool,tx;try{
   await insertAuditEvent(tx,sql,{type:'Flight',action:'Import finalised',actorDisplayName:identity.displayName,actorReference:identity.reference,entityType:'Flight',entityId:flightId,flightId,flightNumber:flight.FlightNumber,fromStatus:flight.FlightStatus,toStatus:'FINALISED',detail:`Import finalised${exceptionReason?` with exception: ${exceptionReason}`:''} • Record ${auditRecord.verificationId}`,details:{completionRecordId:auditRecord.id,verificationId:auditRecord.verificationId,pendingCount}});
   await tx.commit();tx=null;
   const rec=normalize(inserted.recordset[0],columns,flight.FlightNumber);rec.recordHash=hash;sendJson(context,201,{ok:true,record:rec,pendingCount});
-}catch(err){if(tx){try{await tx.rollback()}catch{}}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed',detail:err.message})}finally{try{await pool?.close()}catch{}}};
+}catch(err){if(tx){try{await tx.rollback()}catch{}}if(err instanceof CompletionSnapshotError){sendJson(context,err.status,{ok:false,code:err.code,error:err.message});return}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed',detail:err.message})}finally{try{await pool?.close()}catch{}}};

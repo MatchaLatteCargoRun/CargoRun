@@ -5,8 +5,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
+const crypto = require('node:crypto');
 const flightHelpers = require('../api/shared/flight');
 const { insertAuditEvent } = require('../api/shared/audit');
+const completionSnapshot = require('../api/shared/completion-snapshot');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -50,6 +52,7 @@ function loadHandler(file, sql, replacements = {}) {
         if (Object.hasOwn(replacements, name)) return replacements[name];
         if (name === '../shared/flight') return flightHelpers;
         if (name === '../shared/audit') return { insertAuditEvent };
+        if (name === '../shared/completion-snapshot') return completionSnapshot;
         return require(name);
       }
     },
@@ -301,8 +304,43 @@ function completionColumns(direction) {
   }));
 }
 
-function completionHarness(direction) {
+function completionHarness(direction, options = {}) {
   const isImport = direction === 'IMPORT';
+  const authoritativeUlds = options.ulds || [{
+    UldId: 701,
+    FlightId: 501,
+    UldNumber: 'AKE-12345-CX',
+    CurrentStatus: isImport ? 'RECEIVED' : 'AT_AIRCRAFT',
+    IdentityVerified: 1,
+    HandlingType: 'INTACT',
+    WeightKg: 825,
+    Remarks: 'Authoritative handling note',
+    PriorityText: '',
+    SHCs: isImport ? 'PIL,COL' : 'DGR',
+    IsOperatorAdded: isImport ? 1 : 0,
+    IsEmptyLoadDevice: 0,
+    OperatorAddedAtUtc: isImport ? '2026-09-25T00:50:00.000Z' : null,
+    OperatorAddedByDisplayName: isImport ? 'Planning Operator' : null,
+    OperatorAddedByReference: isImport ? 'planner-object-id' : null,
+    OperatorAddNote: isImport ? 'Extra load device' : null,
+    AcceptedAtUtc: isImport ? '2026-09-25T01:00:00.000Z' : null,
+    AcceptedByDisplayName: isImport ? 'Acceptance Operator' : null,
+    AcceptedByObjectId: isImport ? 'acceptance-object-id' : null,
+    ReceivedAtUtc: isImport ? '2026-09-25T01:10:00.000Z' : null,
+    ReceivedByDisplayName: isImport ? 'Receiving Operator' : null,
+    ReceivedByObjectId: isImport ? 'receiving-object-id' : null,
+    WarehouseDepartedAtUtc: isImport ? null : '2026-09-25T01:00:00.000Z',
+    WarehouseDepartedByDisplayName: isImport ? null : 'Warehouse Operator',
+    WarehouseDepartedByObjectId: isImport ? null : 'warehouse-object-id',
+    AtAircraftAtUtc: isImport ? null : '2026-09-25T01:10:00.000Z',
+    AtAircraftByDisplayName: isImport ? null : 'Ramp Operator',
+    AtAircraftByObjectId: isImport ? null : 'ramp-object-id'
+  }];
+  const finalManifest = isImport
+    ? null
+    : Object.prototype.hasOwnProperty.call(options, 'finalManifest')
+      ? options.finalManifest
+      : { FinalManifestId: 801, FinalUldCount: authoritativeUlds.length };
   const state = {
     flights: [{
       FlightId: 501,
@@ -310,11 +348,16 @@ function completionHarness(direction) {
       OperatingDate: '2026-09-25',
       OperatingDateIso: '2026-09-25',
       Direction: direction,
-      FlightStatus: 'ACTIVE'
+      FlightStatus: 'ACTIVE',
+      AirlineCode: 'CX',
+      OriginAirport: isImport ? 'HKG' : 'MEL',
+      DestinationAirport: isImport ? 'MEL' : 'HKG'
     }],
-    ulds: [{ FlightId: 501, CurrentStatus: isImport ? 'RECEIVED' : 'AT_AIRCRAFT' }],
+    ulds: structuredClone(authoritativeUlds),
+    finalManifest,
     completions: [],
     audits: [],
+    auditMovements: structuredClone(options.auditMovements || []),
     calls: [],
     commits: 0,
     rollbacks: 0
@@ -348,7 +391,9 @@ function completionHarness(direction) {
       state.calls.push({ query, parameters, transactional: Boolean(this.transaction?.active) });
 
       if (query.includes('FROM INFORMATION_SCHEMA.COLUMNS')) {
-        if (parameters.AuditTableName === 'AuditEvents') return response(auditColumns());
+        if (parameters.AuditTableName === 'AuditEvents' || parameters.CompletionAuditTableName === 'AuditEvents') {
+          return response(auditColumns());
+        }
         return response(completionColumns(direction));
       }
       if (query.includes('sys.sp_getapplock')) return response([{ LockResult: 0 }]);
@@ -363,6 +408,31 @@ function completionHarness(direction) {
             : String(item.CurrentStatus).toUpperCase() !== 'AT_AIRCRAFT'
         )).length;
         return response([{ Pending: pending }]);
+      }
+      if (query.startsWith('SELECT FinalManifestId,FinalUldCount FROM dbo.ExportManifestFinals')) {
+        return response(state.finalManifest ? [state.finalManifest] : []);
+      }
+      if (query.includes('FROM dbo.ExportManifestFinalUlds m')) {
+        return response(options.finalMembers || state.ulds.map((item, index) => ({
+          ...item,
+          __UldIdText: String(item.UldId),
+          FinalUldNumber: item.UldNumber,
+          ManifestOrdinal: index + 1
+        })));
+      }
+      if (query.includes('FROM dbo.ULDs u') && parameters.CompletionUldFlightId) {
+        return response(state.ulds
+          .filter(item => String(item.FlightId) === String(parameters.CompletionUldFlightId))
+          .map(item => ({ ...item, __UldIdText: String(item.UldId) })));
+      }
+      if (query.includes('FROM dbo.AuditEvents a') && parameters.CompletionAuditFlightId) {
+        return response(state.auditMovements);
+      }
+      if (query.startsWith('DECLARE @CompletionTimeUtc')) {
+        return response([{
+          CompletionTimeUtc: new Date('2026-09-25T01:02:03.000Z'),
+          CompletionTimeIso: '2026-09-25T01:02:03.000Z'
+        }]);
       }
       if (query.startsWith('SELECT TOP 1 * FROM dbo.ImportCompletionRecords') || query.startsWith('SELECT TOP 1 * FROM dbo.ExportCompletionRecords')) {
         return response(state.completions);
@@ -390,6 +460,7 @@ function completionHarness(direction) {
         return response([], row ? [1] : [0]);
       }
       if (query.startsWith('INSERT INTO dbo.AuditEvents')) {
+        if (options.failAudit) throw new Error('forced audit failure');
         state.audits.push(parameters);
         return response();
       }
@@ -409,6 +480,7 @@ function completionHarness(direction) {
     Request,
     BigInt: 'bigint',
     Int: 'int',
+    DateTime2: () => 'datetime2',
     NVarChar: value => `nvarchar(${value})`,
     MAX: 'max'
   };
@@ -428,7 +500,20 @@ for (const direction of ['IMPORT', 'EXPORT']) {
     const result = await invoke(harness.handler, 'POST', {
       flightId: '501',
       exceptionReason: '',
-      snapshot: { evidenceMarker: `${direction}-evidence`, ulds: [{ num: 'AKE12345CX' }] }
+      finalizedBy: 'Forged Browser Actor',
+      finalizedById: 'forged-browser-id',
+      finalizedAt: '1999-01-01T00:00:00.000Z',
+      snapshot: {
+        evidenceMarker: `${direction}-browser-evidence`,
+        flight: 'FAKE999',
+        flightId: '999',
+        flightDate: '1999-01-01',
+        finalizedBy: 'Forged Snapshot Actor',
+        finalizedById: 'forged-snapshot-id',
+        finalizedAt: '1999-01-01T00:00:00.000Z',
+        summary: { expected: 999, received: 0 },
+        ulds: [{ uldId: '999', num: 'FAKE99999XX', status: 'Warehouse', weight: 1, shcs: ['AVI'] }]
+      }
     });
 
     assert.equal(result.status, 201);
@@ -441,7 +526,202 @@ for (const direction of ['IMPORT', 'EXPORT']) {
     assert.equal(harness.state.commits, 1);
     assert.equal(harness.state.rollbacks, 0);
     const snapshot = JSON.parse(harness.state.completions[0].SnapshotJson);
-    assert.equal(snapshot.evidenceMarker, `${direction}-evidence`);
+    assert.equal(snapshot.evidenceMarker, undefined);
+    assert.equal(snapshot.flight, direction === 'IMPORT' ? 'CX0134' : 'CX0998');
+    assert.equal(snapshot.flightId, '501');
+    assert.equal(snapshot.flightDate, '2026-09-25');
+    assert.equal(snapshot.finalizedBy, 'Trusted Operator');
+    assert.equal(snapshot.finalizedById, 'operator-object-id');
+    assert.equal(snapshot.finalizedAt, '2026-09-25T01:02:03.000Z');
+    assert.equal(snapshot.ulds.length, 1);
+    assert.equal(snapshot.ulds[0].uldId, '701');
+    assert.equal(snapshot.ulds[0].num, 'AKE12345CX');
+    assert.equal(snapshot.ulds[0].status, direction === 'IMPORT' ? 'Received' : 'At Aircraft');
+    assert.equal(snapshot.ulds[0].weight, 825);
+    assert.deepEqual(snapshot.ulds[0].shcs, direction === 'IMPORT' ? ['COL', 'PIL'] : ['DGR']);
+    assert.equal(snapshot.ulds.some(uld => uld.num === 'FAKE99999XX'), false);
+    assert.equal(harness.state.completions[0].FinalisedByDisplayName, 'Trusted Operator');
+    assert.equal(harness.state.completions[0].FinalisedByObjectId, 'operator-object-id');
+    assert.equal(harness.state.completions[0].FinalisedAtUtc, '2026-09-25T01:02:03.000Z');
+    assert.equal(
+      harness.state.completions[0].RecordHash,
+      crypto.createHash('sha256').update(harness.state.completions[0].SnapshotJson).digest('hex')
+    );
     if (direction === 'EXPORT') assert.equal(snapshot.evidencePreserved, true);
   });
+
+  test(`${direction} completion needs no browser snapshot`, async () => {
+    const harness = completionHarness(direction);
+    const result = await invoke(harness.handler, 'POST', {
+      flightId: '501',
+      exceptionReason: direction === 'IMPORT' ? 'Permitted operator intent' : undefined
+    });
+
+    assert.equal(result.status, 201);
+    const snapshot = JSON.parse(harness.state.completions[0].SnapshotJson);
+    assert.deepEqual(snapshot.ulds.map(uld => [uld.uldId, uld.num]), [['701', 'AKE12345CX']]);
+    assert.equal(snapshot.exceptionReason, direction === 'IMPORT' ? 'Permitted operator intent' : undefined);
+  });
+
+  test(`${direction} completion audit failure rolls back evidence and lifecycle together`, async () => {
+    const harness = completionHarness(direction, { failAudit: true });
+    const result = await invoke(harness.handler, 'POST', { flightId: '501' });
+
+    assert.equal(result.status, 500);
+    assert.equal(harness.state.flights[0].FlightStatus, 'ACTIVE');
+    assert.equal(harness.state.completions.length, 0);
+    assert.equal(harness.state.audits.length, 0);
+    assert.equal(harness.state.commits, 0);
+    assert.equal(harness.state.rollbacks, 1);
+  });
 }
+
+test('completion fails closed on duplicate normalized authoritative ULD identity', async () => {
+  const harness = completionHarness('IMPORT', {
+    ulds: [
+      { UldId: 701, FlightId: 501, UldNumber: 'AKE-12345-CX', CurrentStatus: 'RECEIVED' },
+      { UldId: 702, FlightId: 501, UldNumber: 'ake12345cx', CurrentStatus: 'RECEIVED' }
+    ]
+  });
+  const result = await invoke(harness.handler, 'POST', { flightId: '501' });
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, 'COMPLETION_ULD_IDENTITY_CONFLICT');
+  assert.equal(harness.state.completions.length, 0);
+  assert.equal(harness.state.flights[0].FlightStatus, 'ACTIVE');
+  assert.equal(harness.state.rollbacks, 1);
+});
+
+test('export completion fails closed when FINAL count is inconsistent', async () => {
+  const harness = completionHarness('EXPORT', {
+    finalManifest: { FinalManifestId: 801, FinalUldCount: 2 }
+  });
+  const result = await invoke(harness.handler, 'POST', { flightId: '501' });
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, 'EXPORT_FINAL_MEMBERSHIP_INVALID');
+  assert.equal(harness.state.completions.length, 0);
+  assert.equal(harness.state.flights[0].FlightStatus, 'ACTIVE');
+});
+
+test('export completion fails closed when FINAL UldId and UldNumber pairing is inconsistent', async () => {
+  const harness = completionHarness('EXPORT', {
+    finalMembers: [{
+      UldId: 701,
+      __UldIdText: '701',
+      FlightId: 501,
+      UldNumber: 'AKE12345CX',
+      FinalUldNumber: 'AKE99999CX',
+      ManifestOrdinal: 1,
+      CurrentStatus: 'AT_AIRCRAFT',
+      IdentityVerified: 1
+    }]
+  });
+  const result = await invoke(harness.handler, 'POST', { flightId: '501' });
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, 'EXPORT_FINAL_MEMBERSHIP_INVALID');
+  assert.equal(harness.state.completions.length, 0);
+  assert.equal(harness.state.flights[0].FlightStatus, 'ACTIVE');
+});
+
+test('completion fails closed when an authoritative ULD status is incomplete', async () => {
+  const harness = completionHarness('IMPORT', {
+    ulds: [{ UldId: 701, FlightId: 501, UldNumber: 'AKE12345CX', CurrentStatus: null, IdentityVerified: 1 }]
+  });
+  const result = await invoke(harness.handler, 'POST', {
+    flightId: '501',
+    exceptionReason: 'Incomplete source state must still fail closed'
+  });
+
+  assert.equal(result.status, 409);
+  assert.equal(result.body.code, 'COMPLETION_ULD_STATE_INVALID');
+  assert.equal(harness.state.completions.length, 0);
+  assert.equal(harness.state.flights[0].FlightStatus, 'ACTIVE');
+});
+
+test('server snapshot preserves authoritative Export movement evidence from the audit trail', async () => {
+  const harness = completionHarness('EXPORT', {
+    ulds: [{
+      UldId: 701,
+      FlightId: 501,
+      UldNumber: 'AKE12345CX',
+      CurrentStatus: 'AT_AIRCRAFT',
+      IdentityVerified: 1,
+      WarehouseDepartedAtUtc: null,
+      WarehouseDepartedByDisplayName: null,
+      AtAircraftAtUtc: null,
+      AtAircraftByDisplayName: null
+    }],
+    auditMovements: [
+      {
+        __UldIdText: '701',
+        FromStatus: 'TRANSIT',
+        ToStatus: 'AT_AIRCRAFT',
+        OccurredAtUtc: '2026-09-25T01:10:00.000Z',
+        ActorDisplayName: 'Ramp Operator',
+        ActorReference: 'ramp-object-id'
+      },
+      {
+        __UldIdText: '701',
+        FromStatus: 'WAREHOUSE',
+        ToStatus: 'TRANSIT',
+        OccurredAtUtc: '2026-09-25T01:00:00.000Z',
+        ActorDisplayName: 'Warehouse Operator',
+        ActorReference: 'warehouse-object-id'
+      }
+    ]
+  });
+
+  const result = await invoke(harness.handler, 'POST', { flightId: '501' });
+  assert.equal(result.status, 201);
+  const uld = JSON.parse(harness.state.completions[0].SnapshotJson).ulds[0];
+  assert.equal(uld.departedWarehouseAt, Date.parse('2026-09-25T01:00:00.000Z'));
+  assert.equal(uld.departedWarehouseBy, 'Warehouse Operator');
+  assert.equal(uld.departedWarehouseById, 'warehouse-object-id');
+  assert.equal(uld.atAircraftAt, Date.parse('2026-09-25T01:10:00.000Z'));
+  assert.equal(uld.deliveredBy, 'Ramp Operator');
+  assert.equal(uld.deliveredById, 'ramp-object-id');
+});
+
+test('server snapshot accepts valid Import TRANSIT state and uses authoritative acceptance audit evidence', async () => {
+  const harness = completionHarness('IMPORT', {
+    ulds: [{
+      UldId: 701,
+      FlightId: 501,
+      UldNumber: 'AKE12345CX',
+      CurrentStatus: 'TRANSIT',
+      IdentityVerified: 1,
+      AcceptedAtUtc: null,
+      AcceptedByDisplayName: null
+    }],
+    auditMovements: [{
+      __UldIdText: '701',
+      FromStatus: 'UNARRIVED',
+      ToStatus: 'ARRIVED',
+      OccurredAtUtc: '2026-09-25T01:00:00.000Z',
+      ActorDisplayName: 'Acceptance Operator',
+      ActorReference: 'acceptance-object-id'
+    }]
+  });
+
+  const result = await invoke(harness.handler, 'POST', {
+    flightId: '501',
+    exceptionReason: 'ULD remains in transit'
+  });
+  assert.equal(result.status, 201);
+  const uld = JSON.parse(harness.state.completions[0].SnapshotJson).ulds[0];
+  assert.equal(uld.status, 'Transit');
+  assert.equal(uld.acceptedAt, Date.parse('2026-09-25T01:00:00.000Z'));
+  assert.equal(uld.acceptedBy, 'Acceptance Operator');
+  assert.equal(uld.acceptedById, 'acceptance-object-id');
+});
+
+test('frontend completion requests contain only stable FlightId and permitted Import intent', () => {
+  const exportFlow = html.slice(html.indexOf('async function finalizeExport('), html.indexOf('function completedExportsSection('));
+  const importFlow = html.slice(html.indexOf('async function finalizeImport('), html.indexOf('function normaliseImportRecord('));
+  assert.match(exportFlow, /body:JSON\.stringify\(\{flightId:f\.azureFlightId\}\)/);
+  assert.doesNotMatch(exportFlow, /snapshot\s*:|finalizedBy\s*:|finalizedAt\s*:|ulds\s*:/);
+  assert.match(importFlow, /body:JSON\.stringify\(\{flightId:f\.azureFlightId,exceptionReason\}\)/);
+  assert.doesNotMatch(importFlow, /snapshot\s*:|finalizedBy\s*:|finalizedAt\s*:|ulds\s*:/);
+});

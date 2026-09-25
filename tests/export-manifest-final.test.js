@@ -157,7 +157,8 @@ test('operational flight finalisation stays separate and uses FINAL membership o
   assert.match(completion, /UPDATE dbo\.Flights SET FlightStatus='FINALISED'/);
   assert.doesNotMatch(completion, /UPDATE dbo\.ExportManifestFinals/);
   assert.match(html, /const expected=expectedUldsForFlight\(f,'exports'\);if\(!expected\.length\|\|!expected\.every/);
-  assert.match(html, /const operator=currentUser\(\);const ulds=f\.ulds\.map/);
-  assert.match(html, /manifestDisposition:f\.exportManifestFinal\?\(u\.isFinalManifestMember\?'FINAL':'NOT_ON_FINAL'\)/);
+  assert.match(completion, /buildCompletionSnapshot\(tx,sql,\{direction:'EXPORT',flightId,flight,actor:identity\}\)/);
+  assert.match(html, /body:JSON\.stringify\(\{flightId:f\.azureFlightId\}\)/);
+  assert.doesNotMatch(html, /body:JSON\.stringify\(\{flightId:f\.azureFlightId,finalizedBy:/);
   assert.match(html, /activeExp\.forEach\(f=>\{const expected=expectedUldsForFlight\(f,'exports'\)/);
 });
