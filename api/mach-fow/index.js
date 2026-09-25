@@ -8,6 +8,9 @@ const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
@@ -617,9 +620,27 @@ module.exports = async function(
 
     if (req.method === 'GET') {
 
+      const access =
+        await requireOperationalStations(
+          pool,
+          sql,
+          actor,
+          'VIEW_SUPERVISOR'
+        );
+
+      const messageRequest =
+        pool.request();
+
+      const messageStations =
+        bindStationParameters(
+          messageRequest,
+          sql,
+          access.stations,
+          'MachReadStation'
+        );
+
       const r =
-        await pool
-          .request()
+        await messageRequest
           .query(`
             SELECT TOP 50
 
@@ -675,9 +696,12 @@ module.exports = async function(
 
             FROM dbo.IncomingMachMessages m
 
-            LEFT JOIN dbo.Flights f
+            INNER JOIN dbo.Flights f
               ON f.FlightId =
                  m.MatchedFlightId
+
+            WHERE
+              ${flightStationPredicate('f', messageStations)}
 
             ORDER BY
               m.ReceivedAtUtc DESC,
@@ -686,15 +710,22 @@ module.exports = async function(
 
 
       const stats =
-        await pool
-          .request()
+        await (() => {
+          const statsRequest = pool.request();
+          const statsStations = bindStationParameters(
+            statsRequest,
+            sql,
+            access.stations,
+            'MachStatsStation'
+          );
+          return statsRequest
           .query(`
             SELECT
 
               SUM(
                 CASE
                   WHEN
-                    SourceType =
+                    m.SourceType =
                     'MACH_FOW_LIVE'
                   THEN 1
                   ELSE 0
@@ -704,14 +735,17 @@ module.exports = async function(
               MAX(
                 CASE
                   WHEN
-                    SourceType =
+                    m.SourceType =
                     'MACH_FOW_LIVE'
-                  THEN ReceivedAtUtc
+                  THEN m.ReceivedAtUtc
                 END
               ) AS LastLiveReceivedAtUtc
 
-            FROM dbo.IncomingMachMessages;
+            FROM dbo.IncomingMachMessages m
+            INNER JOIN dbo.Flights f ON f.FlightId=m.MatchedFlightId
+            WHERE ${flightStationPredicate('f', statsStations)};
           `);
+        })();
 
 
       sendJson(
@@ -2329,10 +2363,7 @@ module.exports = async function(
         ok: false,
 
         error:
-          'MACH FOW intake failed',
-
-        detail:
-          err.message
+          'MACH FOW intake failed'
       }
     );
 

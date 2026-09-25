@@ -27,17 +27,12 @@ module.exports = async function (context) {
 
     pool = await sql.connect(connectionString);
 
-    const result = await pool.request().query(`
-      SELECT
-        DB_NAME() AS DatabaseName,
-        COUNT(*) AS FlightCount
-      FROM dbo.Flights;
-    `);
+    await pool.request().query('SELECT 1 AS DatabaseReachable;');
 
     sendJson(context, 200, {
       ok: true,
-      database: result.recordset[0].DatabaseName,
-      flightCount: result.recordset[0].FlightCount,
+      service: 'CargoRun database connectivity',
+      databaseReachable: true,
       serverTimeUtc: new Date().toISOString()
     });
 
@@ -46,8 +41,7 @@ module.exports = async function (context) {
 
     sendJson(context, 500, {
       ok: false,
-      error: 'Database connection failed',
-      detail: err.message
+      error: 'Database connection failed'
     });
 
   } finally {

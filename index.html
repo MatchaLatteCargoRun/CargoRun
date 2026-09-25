@@ -695,6 +695,7 @@ const seed={
  history:[]
 };
 let state=loadState();
+let cargoRunAccess={status:'checking',stations:[],capabilities:[],error:'',code:''};
 let route={screen:'home',type:null,id:null};
 let selectedOffloadId='';
 let offloadQueueFilter='Active';
@@ -1038,14 +1039,19 @@ async function syncAzureImportCompletions(quiet=true,skipRender=false){
  try{const res=await fetch('/api/import-completions',{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||`Import completions API ${res.status}`);state.completedImports=(data.records||[]).map(remoteImportCompletionToUi);save();if(!skipRender)render();return true}catch(err){console.error('CargoRun import completion sync failed',err);if(!quiet)toast(err?.message||'Import completion sync unavailable');return false}
 }
 const CENTRAL_SYNC_SERVICE_NAMES=Object.freeze(['flights','offloads','history','exportCompletions','importCompletions']);
+const CENTRAL_SYNC_SERVICE_CAPABILITIES=Object.freeze({flights:'VIEW_FLIGHTS',offloads:'VIEW_FLIGHTS',history:'VIEW_HISTORY',exportCompletions:'VIEW_FLIGHT_STATEMENT',importCompletions:'VIEW_FLIGHT_STATEMENT'});
 function centralSyncServices(options={}){
- if(options.full===true)return [...CENTRAL_SYNC_SERVICE_NAMES];
- if(Array.isArray(options.services))return [...new Set(options.services.filter(name=>CENTRAL_SYNC_SERVICE_NAMES.includes(name)))];
- const screen=options.screen||route.screen;
- if(screen==='admin')return [];
- if(screen==='history')return ['history','exportCompletions','importCompletions'];
- if(screen==='supervisor'||screen==='machfow')return [...CENTRAL_SYNC_SERVICE_NAMES];
- return ['flights','offloads'];
+ let requested;
+ if(options.full===true)requested=[...CENTRAL_SYNC_SERVICE_NAMES];
+ else if(Array.isArray(options.services))requested=[...new Set(options.services.filter(name=>CENTRAL_SYNC_SERVICE_NAMES.includes(name)))];
+ else{
+  const screen=options.screen||route.screen;
+  if(screen==='admin')requested=[];
+  else if(screen==='history')requested=['history','exportCompletions','importCompletions'];
+  else if(screen==='supervisor'||screen==='machfow')requested=[...CENTRAL_SYNC_SERVICE_NAMES];
+  else requested=['flights','offloads'];
+ }
+ return requested.filter(name=>hasCargoRunCapability(CENTRAL_SYNC_SERVICE_CAPABILITIES[name]));
 }
 function centralActiveFlightCount(){
  const known=Number(state?.azureSync?.flightCount);
@@ -1073,7 +1079,7 @@ async function performCentralDataSync(options={}){
 }
 const centralSyncScheduler=CargoRunCentralSyncScheduler.createCentralSyncScheduler({
  sync:options=>performCentralDataSync({...options,screen:options.screen||route.screen}),
- canRun:canUseCargoRunApi,
+ canRun:()=>canUseCargoRunApi()&&cargoRunAccess.status==='provisioned',
  isVisible:()=>document.visibilityState==='visible',
  getCadence:()=>CargoRunCentralSyncScheduler.cadenceFor(route.screen,centralActiveFlightCount()),
  onError:error=>console.error('CargoRun central scheduler failed',error)
@@ -1121,6 +1127,40 @@ async function loadEntraIdentity(){
   console.error('CargoRun Entra identity load failed',err);
   return false;
  }
+}
+async function loadCargoRunSession(){
+ try{
+  const res=await fetch('/api/session',{headers:{Accept:'application/json'},cache:'no-store'});
+  const data=await res.json().catch(()=>({}));
+  if(!res.ok||data.ok===false){const error=new Error(data.error||`CargoRun session API ${res.status}`);error.code=data.code||'';error.status=res.status;throw error}
+  if(data.authenticated!==true||typeof data.provisioned!=='boolean')throw new Error('CargoRun access response is invalid');
+  cargoRunAccess={
+   status:data.provisioned?'provisioned':'unprovisioned',
+   stations:Array.isArray(data.stations)?data.stations:[],
+   capabilities:Array.isArray(data.capabilities)?data.capabilities:[],
+   error:'',code:''
+  };
+  if(data.displayName)state.sessionUser={...state.sessionUser,name:String(data.displayName)};
+  if(!data.provisioned){
+   for(const key of ['imports','exports','flightCatalog','offloads','completedOffloads','completedExports','completedImports','history'])state[key]=[];
+   machFowRecent=[];machFowReceiver=null;machFowLoaded=false;
+  }
+  return data.provisioned;
+ }catch(error){
+  console.error('CargoRun session authorization failed',error);
+  cargoRunAccess={status:'error',stations:[],capabilities:[],error:error?.message||'CargoRun access could not be verified',code:error?.code||''};
+  return false;
+ }
+}
+function hasCargoRunCapability(capability){return cargoRunAccess.status==='provisioned'&&cargoRunAccess.capabilities.includes(capability)}
+function canOpenAdmin(){return ['PUBLISH_MESSAGES','EDIT_AIRLINE_RULES','EDIT_SHC_RULES','EDIT_SLA_RULES','MANAGE_USERS','VIEW_ADMIN_AUDIT'].some(hasCargoRunCapability)}
+function accessGateScreen(){
+ const checking=cargoRunAccess.status==='checking';
+ const unprovisioned=cargoRunAccess.status==='unprovisioned';
+ const title=checking?'Checking CargoRun accessâ€¦':unprovisioned?'Access not provisioned':'Access could not be verified';
+ const detail=checking?'Confirming your CargoRun role and station access.':unprovisioned?'Your Microsoft account has authenticated successfully, but it has not been granted access to CargoRun.':'CargoRun could not verify your application access. No operational data has been loaded.';
+ const action=checking?'':unprovisioned?'<p style="margin-top:12px;color:var(--muted)">Contact a CargoRun administrator.</p>':'<button class="primary" style="margin-top:14px" onclick="location.reload()">Try again</button>';
+ return `<main class="shell"><section class="ops-panel" style="max-width:620px;margin:12vh auto 0;padding:28px;text-align:center"><img src="${CARGORUN_MASCOT}" alt="CargoRun" style="width:78px;height:78px;object-fit:contain"><h1 style="margin:12px 0 6px">CargoRun</h1><h2 style="margin:0 0 10px;font-size:20px">${title}</h2><p style="margin:0;color:var(--muted);line-height:1.6">${detail}</p>${action}</section></main>`
 }
 let actionLoaderDepth=0,actionLoaderTimer=null;
 function showActionLoader(title='Saving change…',sub='Updating CargoRun'){const el=document.getElementById('actionLoader');if(!el)return;actionLoaderDepth++;const t=document.getElementById('actionLoaderTitle'),s=document.getElementById('actionLoaderSub');if(t)t.textContent=title;if(s)s.textContent=sub;if(actionLoaderDepth===1&&!el.classList.contains('show'))actionLoaderTimer=setTimeout(()=>{actionLoaderTimer=null;if(actionLoaderDepth>0)revealLoader(el,mascotLoaderInstances.action)},LOADER_REVEAL_DELAY_MS)}
@@ -1223,7 +1263,7 @@ function firstStatus(type){return type==='imports'?'Unarrived':'Warehouse'}
 function isIdentityVerified(type,u){return u.identityVerified===true||u.status!==firstStatus(type)}
 function verificationBadge(type,u){return isIdentityVerified(type,u)?'<div class="verified">✓ ULD verified</div>':''}
 function modalHead(title){return `<div class="modal-head"><div class="modal-mascot-frame"><img src="${CARGORUN_MASCOT}" alt="CargoRun mascot"></div><h2>${title}</h2></div>`}
-function openScreen(screen,type=null,id=null){let selected=null,flightId=null;if(screen==='flight'){const stableId=stableOperationalId(id);selected=stableId?findFlightByStableId(type,stableId):(state[type]||[]).find(f=>f.id===id)||null;flightId=stableId||(selected?stableOperationalId(selected.azureFlightId):null)}if(screen==='admin')adminConfigState={...adminConfigState,status:'loading'};route={screen,type,id:selected?.id||id,flightId};window.scrollTo({top:0,behavior:'smooth'});render();if(typeof centralSyncScheduler!=='undefined')centralSyncScheduler.reschedule();if(screen==='history')void refreshHistoryOnEntry();if(screen==='admin')void loadAdminConfiguration()}
+function openScreen(screen,type=null,id=null){if(screen==='admin'&&!canOpenAdmin())return;let selected=null,flightId=null;if(screen==='flight'){const stableId=stableOperationalId(id);selected=stableId?findFlightByStableId(type,stableId):(state[type]||[]).find(f=>f.id===id)||null;flightId=stableId||(selected?stableOperationalId(selected.azureFlightId):null)}if(screen==='admin')adminConfigState={...adminConfigState,status:'loading'};route={screen,type,id:selected?.id||id,flightId};window.scrollTo({top:0,behavior:'smooth'});render();if(typeof centralSyncScheduler!=='undefined')centralSyncScheduler.reschedule();if(screen==='history')void refreshHistoryOnEntry();if(screen==='admin')void loadAdminConfiguration()}
 function activeFlights(type){return state[type].filter(f=>!f.closed)}
 function expectedUldsForFlight(f,type){const rows=Array.isArray(f?.ulds)?f.ulds:[];return type==='exports'&&f?.exportManifestFinal?rows.filter(u=>u.isFinalManifestMember):rows}
 function counts(f,type){const done=type==='imports'?'Received':'At Aircraft',rows=expectedUldsForFlight(f,type);return {done:rows.filter(u=>u.status===done).length,total:rows.length}}
@@ -1275,7 +1315,7 @@ function acceptanceBadge(f,u){if(u.status!=='Unarrived'&&!u.acceptedAt)return ''
 function arrivalSummaryHtml(f){const fs=f.flightStatus||{},start=arrivalTimerStart(f),sla=flightAcceptanceSummary(f);let label='Arrival not synced',cls='offline';if(toMs(fs.inBlockAt||fs.actualIn)){label=`In block ${fmtTime(toMs(fs.inBlockAt||fs.actualIn))}`;cls=sla.late?'late':sla.warn?'warn':'live'}else if(toMs(fs.landedAt||fs.actualOn)){label=`Landed ${fmtTime(toMs(fs.landedAt||fs.actualOn))}`;cls=sla.late?'late':sla.warn?'warn':'live'}else if(toMs(fs.estimatedArrival)){label=`ETA ${fmtTime(toMs(fs.estimatedArrival))}`;cls='offline'}return `<div class="arrival-line"><span class="arrival-pill ${cls}">${esc(label)}</span>${start?`<span>${Math.max(0,ageMinutes(start.ts))}m since timer start</span>`:''}${fs.provider?`<span>${esc(fs.provider)}</span>`:''}</div>`}
 function localDateTimeValue(ts=Date.now()){const d=new Date(ts),off=d.getTimezoneOffset()*60000;return new Date(d.getTime()-off).toISOString().slice(0,16)}
 function canUseFlightStatusApi(){return FLIGHTAWARE_ENABLED&&(location.protocol==='http:'||location.protocol==='https:')}
-async function syncFlightArrivalById(id,quiet=false){if(!FLIGHTAWARE_ENABLED)return false;const f=state.imports.find(x=>x.id===id);if(!f||f.closed)return false;const s=flightStatusSettings();if(!canUseFlightStatusApi()){if(!quiet)toast('Live arrival sync activates once CargoRun is hosted in Azure. Manual In Block works now.');return false}try{const qs=new URLSearchParams({flight:f.flight,arrivalAirport:s.arrivalAirport||'MEL',date:flightDateISO(f)});const res=await fetch(`${s.endpoint||'/api/flight-status'}?${qs}`,{headers:{Accept:'application/json','X-CargoRun-FlightAware-Enabled':String(FLIGHTAWARE_ENABLED)}});let data={};try{data=await res.json()}catch{}if(!res.ok)throw new Error(data.error||`Flight status ${res.status}`);f.flightStatus={...(f.flightStatus||{}),provider:data.provider||'FlightAware AeroAPI',status:data.status||'',scheduledArrival:data.scheduledArrival||null,estimatedArrival:data.estimatedArrival||null,landedAt:data.landedAt||null,inBlockAt:data.inBlockAt||null,lastChecked:Date.now(),matchedFlight:data.matchedFlight||f.flight,source:'azure'};logEvent('Flight','Arrival status synced',{flight:f.flight,detail:`${f.flightStatus.inBlockAt?'In block '+fmtDateTime(toMs(f.flightStatus.inBlockAt)):f.flightStatus.landedAt?'Landed '+fmtDateTime(toMs(f.flightStatus.landedAt)):'Flight status updated'}`,user:'CargoRun'});save();if(!quiet){toast(`${f.flight} arrival status updated`);render()}return true}catch(err){f.flightStatus={...(f.flightStatus||{}),lastChecked:Date.now(),lastError:err.message||'Flight status unavailable'};save();if(!quiet)toast(`${f.flight}: ${err.message||'flight status unavailable'}`);return false}}
+async function syncFlightArrivalById(id,quiet=false){if(!FLIGHTAWARE_ENABLED)return false;const f=state.imports.find(x=>x.id===id),flightId=stableOperationalId(f?.azureFlightId);if(!f||f.closed||!flightId)return false;const s=flightStatusSettings();if(!canUseFlightStatusApi()){if(!quiet)toast('Live arrival sync activates once CargoRun is hosted in Azure. Manual In Block works now.');return false}try{const qs=new URLSearchParams({flightId});const res=await fetch(`${s.endpoint||'/api/flight-status'}?${qs}`,{headers:{Accept:'application/json','X-CargoRun-FlightAware-Enabled':String(FLIGHTAWARE_ENABLED)}});let data={};try{data=await res.json()}catch{}if(!res.ok)throw new Error(data.error||`Flight status ${res.status}`);f.flightStatus={...(f.flightStatus||{}),provider:data.provider||'FlightAware AeroAPI',status:data.status||'',scheduledArrival:data.scheduledArrival||null,estimatedArrival:data.estimatedArrival||null,landedAt:data.landedAt||null,inBlockAt:data.inBlockAt||null,lastChecked:Date.now(),matchedFlight:data.matchedFlight||f.flight,source:'azure'};logEvent('Flight','Arrival status synced',{flight:f.flight,detail:`${f.flightStatus.inBlockAt?'In block '+fmtDateTime(toMs(f.flightStatus.inBlockAt)):f.flightStatus.landedAt?'Landed '+fmtDateTime(toMs(f.flightStatus.landedAt)):'Flight status updated'}`,user:'CargoRun'});save();if(!quiet){toast(`${f.flight} arrival status updated`);render()}return true}catch(err){f.flightStatus={...(f.flightStatus||{}),lastChecked:Date.now(),lastError:err.message||'Flight status unavailable'};save();if(!quiet)toast(`${f.flight}: ${err.message||'flight status unavailable'}`);return false}}
 async function syncAllFlightArrivals(quiet=false){if(!FLIGHTAWARE_ENABLED)return false;const flights=activeFlights('imports');if(!flights.length)return false;let ok=0;for(const f of flights){if(await syncFlightArrivalById(f.id,true))ok++}if(!quiet){toast(ok?`Arrival status updated for ${ok}/${flights.length} import flights`:'No live arrival statuses updated');render()}return ok>0}
 function showSetInBlock(id){const f=state.imports.find(x=>x.id===id);if(!f)return;modal(`${modalHead('Set Aircraft In Block')}<p>Fallback for when the external flight-status feed is unavailable. This time starts CargoRun's ULD acceptance timers.</p><div class="field"><label>IN BLOCK TIME</label><input id="manualInBlock" type="datetime-local" value="${localDateTimeValue()}"></div><div class="accept-note">The record will show that the time was manually entered and who entered it.</div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveManualInBlock('${id}')">Start Timers</button></div>`)}
 async function saveManualInBlock(id){const f=state.imports.find(x=>x.id===id),v=document.getElementById('manualInBlock')?.value;if(!f||!v||!f.azureFlightId)return;const ts=new Date(v).getTime();if(!Number.isFinite(ts)){toast('Enter a valid time');return}showActionLoader('Saving In Block…',f.flight);try{const inBlockAtUtc=new Date(ts).toISOString(),res=await fetch('/api/flights',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,inBlockAtUtc})}),data=await res.json().catch(()=>({}));if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Flights API ${res.status}`);f.flightStatus={...(f.flightStatus||{}),provider:'Manual',inBlockAt:inBlockAtUtc,landedAt:f.flightStatus?.landedAt||null,lastChecked:Date.now(),source:'manual',manualBy:currentUser().name};logEvent('Flight','In block set manually',{flight:f.flight,detail:`In block ${fmtDateTime(ts)}`,user:currentUser().name,persist:false});save();closeModal();toast(`${f.flight} acceptance timers started`);render()}catch(err){console.error(err);toast(err?.message||'In Block could not be saved')}finally{hideActionLoader()}}
@@ -1623,7 +1663,7 @@ function machFowScreen(){
 }
 
 function navIsActive(screen,type=''){return (route.screen===screen&&(!type||route.type===type))||(screen==='flights'&&route.screen==='flight'&&route.type===type)||(screen==='supervisor'&&route.screen==='machfow')}
-function desktopNav(){const links=[['home','Home',''],['flightboard','Flight Board',''],['flights','Imports','imports'],['flights','Exports','exports'],['priority','Priority',''],['offloads','Offloads',''],['supervisor','Supervisor',''],['history','History',''],['admin','Admin','']];return `<nav class="desktop-nav" aria-label="Primary operations">${links.map(([screen,label,type])=>`<button class="${navIsActive(screen,type)?'active':''}" aria-current="${navIsActive(screen,type)?'page':'false'}" onclick="openScreen('${screen}'${type?`,'${type}'`:''})">${label}</button>`).join('')}<button class="request-offload-nav" onclick="showRequestOffload()">＋ Request Offload</button></nav>`}
+function desktopNav(){const links=[['home','Home',''],['flightboard','Flight Board',''],['flights','Imports','imports'],['flights','Exports','exports'],['priority','Priority',''],['offloads','Offloads',''],['supervisor','Supervisor',''],['history','History',''],...(canOpenAdmin()?[['admin','Admin','']]:[])];return `<nav class="desktop-nav" aria-label="Primary operations">${links.map(([screen,label,type])=>`<button class="${navIsActive(screen,type)?'active':''}" aria-current="${navIsActive(screen,type)?'page':'false'}" onclick="openScreen('${screen}'${type?`,'${type}'`:''})">${label}</button>`).join('')}<button class="request-offload-nav" onclick="showRequestOffload()">＋ Request Offload</button></nav>`}
 function header(){const u=currentUser(),station=currentStationCode();return `<header class="topbar"><div class="brand" onclick="openScreen('home')" style="cursor:pointer"><img src="${CARGORUN_MASCOT}" alt="CargoRun mascot"><span>CargoRun</span></div>${desktopNav()}<div class="topbar-account"><button class="user-pill" onclick="showOperator()" title="Signed in with Microsoft Entra ID">${esc(u.name)}</button><div class="station">${esc(station)} • AZURE DEV</div></div><div class="mobile-top-actions"><span class="mobile-station-chip">${esc(station)}</span><button class="mobile-user-btn" onclick="showOperator()" aria-label="Account">${esc(userInitials())}</button></div></header>`}
 function shell(content){document.getElementById('app').innerHTML=header()+`<main class="shell">${content}<div class="footer-note">CargoRun • Azure SQL central sync • Microsoft Entra authentication</div></main>${isMobileUI()?mobileBottomNav():''}`}
 function selectDesktopFlightByStableId(type,flightId){const id=stableOperationalId(flightId),f=findFlightByStableId(type,id);if(!f){toast('Flight changed; refresh and select again.');return false}openScreen('flight',type,id);return true}
@@ -3636,6 +3676,7 @@ async function confirmFinalManifest(flightId) {
 }
 function render(){
  try{
+  if(cargoRunAccess.status!=='provisioned'){const app=document.getElementById('app');if(app)app.innerHTML=accessGateScreen();return}
   let content='';
   if(route.screen==='home')content=home();
   else if(route.screen==='mobileflights')content=isMobileUI()?mobileFlightsHub():flightBoardScreen();
@@ -3662,7 +3703,9 @@ async function bootCargoRun(){
  try{
   const signedIn=await loadEntraIdentity();
   if(signedIn){
+   const provisioned=await loadCargoRunSession();
    render();
+   if(!provisioned)return;
    updateDataLoader('Loading live operations…',`Syncing ${currentStationCode()} flights, ULDs, offloads and history`);
    await syncCentralData(true,{automatic:true,full:true,screen:'home',reason:'startup'});
    await centralSyncScheduler.start();
@@ -3672,7 +3715,7 @@ async function bootCargoRun(){
 bootCargoRun();
 if('serviceWorker' in navigator){window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js').catch(()=>{}))}
 let lastMobileMode=isMobileUI();window.addEventListener('resize',()=>{const m=isMobileUI();if(m!==lastMobileMode){lastMobileMode=m;render()}});
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState!=='visible'){void centralSyncScheduler.handleVisibilityChange();return}if(route.screen==='admin'){adminConfigState={...adminConfigState,status:'loading'};render();void centralSyncScheduler.handleVisibilityChange({refresh:false});void loadAdminConfiguration();return}void centralSyncScheduler.handleVisibilityChange()});
+document.addEventListener('visibilitychange',()=>{if(cargoRunAccess.status!=='provisioned')return;if(document.visibilityState!=='visible'){void centralSyncScheduler.handleVisibilityChange();return}if(route.screen==='admin'){adminConfigState={...adminConfigState,status:'loading'};render();void centralSyncScheduler.handleVisibilityChange({refresh:false});void loadAdminConfiguration();return}void centralSyncScheduler.handleVisibilityChange()});
 if(FLIGHTAWARE_ENABLED){
  setInterval(()=>{if(document.visibilityState==='visible'&&canUseFlightStatusApi())syncAllFlightArrivals(true)},Math.max(1,Number(flightStatusSettings().pollMinutes||2))*60000);
 }

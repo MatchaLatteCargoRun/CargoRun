@@ -159,6 +159,7 @@ module.exports = async function (context, req) {
 
       if (action === 'PARSE_EXPORT_UWS') {
         const matchedFlight = await loadUwsFlight(pool.request(), parsed);
+        await requireOperationalCapability(pool, sql, actor, matchedFlight, 'CONFIRM_EXPORT_FINAL');
         await ensureUwsBuildOpen(pool.request(), matchedFlight.FlightId);
         const reconciliation = reconcileManifest(
           await loadUwsOperationalRows(pool.request(), matchedFlight.FlightId),
@@ -182,6 +183,7 @@ module.exports = async function (context, req) {
         parsed.flightNumber
       );
       const matchedFlight = await loadUwsFlight(new sql.Request(transaction), parsed, true);
+      await requireOperationalCapability(transaction, sql, actor, matchedFlight, 'CONFIRM_EXPORT_FINAL');
       if (String(initialFlight.FlightId) !== String(matchedFlight.FlightId)) {
         throw new ExportUwsError('UWS_FLIGHT_CHANGED', 'The matched flight changed while the UWS was being reviewed', 409);
       }
@@ -190,8 +192,6 @@ module.exports = async function (context, req) {
         await loadUwsOperationalRows(new sql.Request(transaction), matchedFlight.FlightId, true),
         items
       );
-      await requireOperationalCapability(transaction, sql, actor, matchedFlight, 'CONFIRM_EXPORT_FINAL');
-
       await new sql.Request(transaction)
         .input('UwsUploadFlightId', sql.BigInt, matchedFlight.FlightId)
         .input('UwsFileName', sql.NVarChar(260), sourceFileName)
@@ -570,8 +570,7 @@ module.exports = async function (context, req) {
 
     sendJson(context, 500, {
       ok: false,
-      error: 'Manifest upload failed',
-      detail: err.message
+      error: 'Manifest upload failed'
     });
 
   } finally {

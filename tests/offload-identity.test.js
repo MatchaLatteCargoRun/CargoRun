@@ -24,7 +24,7 @@ test('selector includes historical CLOSED/finalised exports and excludes imports
  assert.deepEqual(r.body.flights.map(f=>[f.flightId,f.flightStatus]),[['1','ACTIVE'],['2','ACTIVE'],['4','CLOSED'],['5','FINALISED'],['6','FINALIZED']]);
  assert.equal(r.body.flights.find(f=>f.flightId==='4').operatingDate,'2025-01-01');
  const q=h.state.queries.find(x=>Object.hasOwn(x.p,'SelectedFlightId')).q;
- assert.match(q,/Direction = 'EXPORT' AND FlightStatus IN \('ACTIVE','CLOSED','FINALISED','FINALIZED'\)/);
+ assert.match(q,/f\.Direction = 'EXPORT'\s+AND f\.FlightStatus IN \('ACTIVE','CLOSED','FINALISED','FINALIZED'\)/);
  assert.doesNotMatch(q,/DATEADD|SYSUTCDATETIME|EstimatedDeparture|ScheduledDeparture/);
 });
 

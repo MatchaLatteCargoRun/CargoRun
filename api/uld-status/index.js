@@ -420,8 +420,7 @@ module.exports = async function (context, req) {
     context.log.error('ULD status API failed', err);
     sendJson(context, 500, {
       ok: false,
-      error: 'ULD status update failed',
-      detail: err.message
+      error: 'ULD status update failed'
     });
 
   } finally {

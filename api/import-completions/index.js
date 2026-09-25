@@ -3,7 +3,14 @@ const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
 const { acquireFlightIdentityLock, flightIdentityLockResource } = require('../shared/flight');
 const { buildCompletionSnapshot, CompletionSnapshotError } = require('../shared/completion-snapshot');
-const { authenticatedActor, requireOperationalCapability, sendOperationalAuthorizationError } = require('../shared/operational-authorization');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 class ImportCompletionConflict extends Error {
   constructor(code, message, record = null) {
@@ -51,12 +58,18 @@ module.exports=async function(context,req){let pool,tx;try{
 
   if(req.method==='GET'){
     const flightIdCol=pick(columns,['FlightId']);
+    if(!flightIdCol){sendJson(context,503,{ok:false,code:'COMPLETION_AUTHORIZATION_UNAVAILABLE',error:'Import completion records cannot be authorized by station'});return}
+    const access=await requireOperationalStations(pool,sql,identity,'VIEW_FLIGHT_STATEMENT');
+    const request=pool.request();
+    const stationParameters=bindStationParameters(request,sql,access.stations,'ImportCompletionStation');
     const timeCol=pick(columns,['FinalisedAtUtc','FinalizedAtUtc','FinalisedAt','FinalizedAt']);
     const idCol=pick(columns,['ImportCompletionRecordId','CompletionRecordId','Id'])||columns[0].COLUMN_NAME;
     const order=timeCol?`i.${q(timeCol)} DESC`:`i.${q(idCol)} DESC`;
-    const join=flightIdCol?`LEFT JOIN dbo.Flights f ON f.FlightId=i.${q(flightIdCol)}`:'';
-    const selectFlight=flightIdCol?', f.FlightNumber AS __FlightNumber':'';
-    const r=await pool.request().query(`SELECT i.*${selectFlight} FROM dbo.ImportCompletionRecords i ${join} ORDER BY ${order};`);
+    const r=await request.query(`SELECT i.*, f.FlightNumber AS __FlightNumber
+      FROM dbo.ImportCompletionRecords i
+      INNER JOIN dbo.Flights f ON f.FlightId=i.${q(flightIdCol)}
+      WHERE ${flightStationPredicate('f',stationParameters)}
+      ORDER BY ${order};`);
     sendJson(context,200,{ok:true,count:r.recordset.length,records:r.recordset.map(x=>normalize(x,columns,x.__FlightNumber))});return;
   }
 
@@ -98,4 +111,4 @@ module.exports=async function(context,req){let pool,tx;try{
   await insertAuditEvent(tx,sql,{type:'Flight',action:'Import finalised',actorDisplayName:identity.displayName,actorReference:identity.reference,entityType:'Flight',entityId:flightId,flightId,flightNumber:flight.FlightNumber,fromStatus:flight.FlightStatus,toStatus:'FINALISED',detail:`Import finalised${exceptionReason?` with exception: ${exceptionReason}`:''} • Record ${auditRecord.verificationId}`,details:{completionRecordId:auditRecord.id,verificationId:auditRecord.verificationId,pendingCount}});
   await tx.commit();tx=null;
   const rec=normalize(inserted.recordset[0],columns,flight.FlightNumber);rec.recordHash=hash;sendJson(context,201,{ok:true,record:rec,pendingCount});
-}catch(err){if(tx){try{await tx.rollback()}catch{}}if(sendOperationalAuthorizationError(context,err,sendJson))return;if(err instanceof ImportCompletionConflict){sendJson(context,409,{ok:false,code:err.code,error:err.message,...(err.record?{record:err.record}:{})});return}if(err instanceof CompletionSnapshotError){sendJson(context,err.status,{ok:false,code:err.code,error:err.message});return}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed',detail:err.message})}finally{try{await pool?.close()}catch{}}};
+}catch(err){if(tx){try{await tx.rollback()}catch{}}if(sendOperationalAuthorizationError(context,err,sendJson))return;if(err instanceof ImportCompletionConflict){sendJson(context,409,{ok:false,code:err.code,error:err.message,...(err.record?{record:err.record}:{})});return}if(err instanceof CompletionSnapshotError){sendJson(context,err.status,{ok:false,code:err.code,error:err.message});return}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed'})}finally{try{await pool?.close()}catch{}}};

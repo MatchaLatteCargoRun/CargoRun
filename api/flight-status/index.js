@@ -1,4 +1,9 @@
 const sql = require('mssql');
+const {
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 function toIso(value) {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000).toISOString();
@@ -42,6 +47,7 @@ function sendJson(context, status, payload, extraHeaders = {}) {
 }
 
 module.exports = async function (context, req) {
+  let operationalPool;
   try {
     const query = req?.query || {};
     if (String(query.dbhealth || '') === '1') {
@@ -60,17 +66,12 @@ module.exports = async function (context, req) {
 
     pool = await sql.connect(connectionString);
 
-    const result = await pool.request().query(`
-      SELECT
-        DB_NAME() AS DatabaseName,
-        COUNT(*) AS FlightCount
-      FROM dbo.Flights;
-    `);
+    await pool.request().query('SELECT 1 AS DatabaseReachable;');
 
     sendJson(context, 200, {
       ok: true,
-      database: result.recordset[0].DatabaseName,
-      flightCount: result.recordset[0].FlightCount,
+      service: 'CargoRun database connectivity',
+      databaseReachable: true,
       serverTimeUtc: new Date().toISOString()
     });
 
@@ -79,10 +80,9 @@ module.exports = async function (context, req) {
   } catch (err) {
     context.log.error('Database health check failed', err);
 
-    sendJson(context, 500, {
-      ok: false,
-      error: 'Database connection failed',
-      detail: err.message
+      sendJson(context, 500, {
+        ok: false,
+        error: 'Database connection failed'
     });
 
     return;
@@ -128,15 +128,34 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const apiKey = process.env.FLIGHTAWARE_API_KEY;
-    const flight = normaliseIdent(query.flight);
-    const airport = String(query.arrivalAirport || 'MEL').toUpperCase();
-    const date = String(query.date || '').trim();
-
-    if (!flight) {
-      sendJson(context, 400, { error: 'flight is required' });
+    const actor = authenticatedActor(req);
+    const flightId = String(query.flightId || '').trim();
+    if (!/^[1-9]\d*$/.test(flightId)) {
+      sendJson(context, 400, { ok: false, code: 'INVALID_FLIGHT_ID', error: 'A valid flightId is required' });
       return;
     }
+    const connectionString = process.env.DATABASE_CONNECTION_STRING;
+    if (!connectionString) {
+      sendJson(context, 503, { ok: false, code: 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE', error: 'Operational authorization could not be resolved' });
+      return;
+    }
+    operationalPool = await new sql.ConnectionPool(connectionString).connect();
+    const flightResult = await operationalPool.request()
+      .input('FlightStatusFlightId', sql.BigInt, flightId)
+      .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDate,
+        Direction,OriginAirport,DestinationAirport
+        FROM dbo.Flights WHERE FlightId=@FlightStatusFlightId;`);
+    if (flightResult.recordset.length !== 1) {
+      sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
+      return;
+    }
+    const selectedFlight = flightResult.recordset[0];
+    await requireOperationalCapability(operationalPool, sql, actor, selectedFlight, 'VIEW_FLIGHTS');
+
+    const apiKey = process.env.FLIGHTAWARE_API_KEY;
+    const flight = normaliseIdent(selectedFlight.FlightNumber);
+    const airport = String(selectedFlight.DestinationAirport || '').toUpperCase();
+    const date = String(selectedFlight.OperatingDate || '').trim();
 
     if (!apiKey) {
       sendJson(context, 503, {
@@ -245,11 +264,13 @@ module.exports = async function (context, req) {
       error: lastError || `No matching ${flight} arrival found for ${airport}`
     });
   } catch (err) {
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('CargoRun flight-status API failed', err);
 
     sendJson(context, 500, {
-      error: 'CargoRun flight-status API failed',
-      detail: err?.message || String(err)
+      error: 'CargoRun flight-status API failed'
     });
+  } finally {
+    try { await operationalPool?.close(); } catch {}
   }
 };

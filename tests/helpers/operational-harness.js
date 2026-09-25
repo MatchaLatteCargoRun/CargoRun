@@ -231,7 +231,7 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
           .sort((a,b)=>String(a.RequestedAtUtc||'').localeCompare(String(b.RequestedAtUtc||''))||Number(a.OffloadId)-Number(b.OffloadId))
           .map(o=>{const flight=state.flights.find(f=>String(f.FlightId)===String(o.FlightId));return {...o,__OffloadIdText:String(o.OffloadId),__FlightIdText:String(o.FlightId),__UldIdText:o.UldId==null?null:String(o.UldId),__FlightOperatingDate:flight?.OperatingDate||null}}));
       }
-      if (q.startsWith('SELECT o.*') && q.includes('LEFT JOIN dbo.Flights')) {
+      if (q.startsWith('SELECT o.*') && q.includes('JOIN dbo.Flights')) {
         if (!state.offload) return result([]);
         const flight = state.flights.find(f => String(f.FlightId) === String(state.offload.FlightId));
         return result([{ ...state.offload, __FlightOperatingDate: flight?.OperatingDate || null }]);

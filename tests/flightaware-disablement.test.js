@@ -28,7 +28,7 @@ function arrivalHarness(enabled) {
         priorityWarnMinutes: 10, priorityLateMinutes: 20
       }
     },
-    imports: [{ id: 'import-1', flight: 'CX0163', flightDate: '15 Sep 2026', closed: false, flightStatus: {} }]
+    imports: [{ id: 'import-1', azureFlightId: '101', flight: 'CX0163', flightDate: '15 Sep 2026', closed: false, flightStatus: {} }]
   };
   const context = vm.createContext({
     state,
@@ -51,6 +51,7 @@ function arrivalHarness(enabled) {
       };
     },
     activeFlights: type => state[type].filter(flight => !flight.closed),
+    stableOperationalId: value => /^[1-9]\d*$/.test(String(value || '')) ? String(value) : null,
     logEvent() {},
     save() {},
     render() {},
@@ -182,7 +183,37 @@ test('flight-status handler blocks unmarked requests and retains enabled alterna
   assert.match(handlerSource, /function alternates\(ident\)/);
   assert.equal(fs.existsSync(path.join(root, 'api', 'flight-status', 'function.json')), true);
 
-  const handler = require('../api/flight-status');
+  const operationalAuthorization = require('./helpers/operational-authorization-stub');
+  const flightLookups = [];
+  class Request {
+    constructor() { this.values = {}; }
+    input(name, _type, value) { this.values[name] = value; return this; }
+    async query(query) {
+      flightLookups.push({ query: String(query), values: { ...this.values } });
+      return { recordset: [{
+        FlightId: '101', FlightNumber: 'CX0163', OperatingDate: '2026-09-15',
+        Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL'
+      }] };
+    }
+  }
+  class ConnectionPool {
+    async connect() { return this; }
+    request() { return new Request(); }
+    async close() {}
+  }
+  const sqlMock = { ConnectionPool, Request, BigInt: 'bigint' };
+  const module = { exports: {} };
+  vm.runInNewContext(handlerSource, {
+    module, exports: module.exports, Buffer, URL, Date, console,
+    fetch: (...args) => global.fetch(...args),
+    process: { version: process.version, env: { DATABASE_CONNECTION_STRING: 'test-only', FLIGHTAWARE_API_KEY: 'test-key' } },
+    require(name) {
+      if (name === 'mssql') return sqlMock;
+      if (name === '../shared/operational-authorization') return operationalAuthorization;
+      return require(name);
+    }
+  }, { filename: path.join(root, 'api', 'flight-status', 'index.js') });
+  const handler = module.exports;
   const previousFetch = global.fetch;
   const previousKey = process.env.FLIGHTAWARE_API_KEY;
   const requests = [];
@@ -210,10 +241,15 @@ test('flight-status handler blocks unmarked requests and retains enabled alterna
 
     const enabledContext = { log: { error() {} } };
     await handler(enabledContext, {
-      query: { flight: 'CX0163', arrivalAirport: 'MEL', date: '2026-09-15' },
-      headers: { 'x-cargorun-flightaware-enabled': 'true' }
+      query: { flightId: '101', flight: 'QF999', arrivalAirport: 'SYD', date: '1990-01-01' },
+      headers: {
+        'x-cargorun-flightaware-enabled': 'true',
+        'x-ms-client-principal': Buffer.from(JSON.stringify({ userId: 'flight-reader', userDetails: 'Flight Reader', userRoles: ['authenticated'] })).toString('base64')
+      }
     });
     assert.equal(enabledContext.res.status, 200);
+    assert.equal(flightLookups.length, 1);
+    assert.equal(flightLookups[0].values.FlightStatusFlightId, '101');
     assert.equal(requests.length, 2);
     assert.match(requests[0], /\/CX0163\?/);
     assert.match(requests[1], /\/CX163\?/);

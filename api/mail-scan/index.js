@@ -117,7 +117,7 @@ module.exports = async function(context, req) {
     if (transaction) { try { await transaction.rollback(); } catch {} }
     if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('Mail scan API failed', err);
-    sendJson(context,500,{ok:false,error:'Mail scan API failed',detail:err.message});
+    sendJson(context,500,{ok:false,error:'Mail scan API failed'});
   } finally {
     try { await pool?.close(); } catch {}
   }

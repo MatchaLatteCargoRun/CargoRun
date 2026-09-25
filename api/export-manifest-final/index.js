@@ -134,6 +134,7 @@ module.exports = async function exportManifestFinal(context, req) {
         sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
         return;
       }
+      await requireOperationalCapability(pool, sql, actor, flight, 'VIEW_FLIGHTS');
       const final = await getFinal(pool.request(), flightId);
       sendJson(context, 200, { ok: true, flightId, isFinal: Boolean(final), manifestFinal: finalResponse(final) });
       return;
@@ -150,6 +151,11 @@ module.exports = async function exportManifestFinal(context, req) {
 
     if (action === 'PREVIEW') {
       const flight = await loadFlight(pool.request(), flightId);
+      if (!flight) {
+        sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
+        return;
+      }
+      await requireOperationalCapability(pool, sql, actor, flight, 'CONFIRM_EXPORT_FINAL');
       validateFlight(flight);
       const currentFinal = await getFinal(pool.request(), flightId);
       if (currentFinal) {
@@ -290,7 +296,7 @@ module.exports = async function exportManifestFinal(context, req) {
       return;
     }
     context.log.error('Export manifest FINAL failed', error);
-    sendJson(context, 500, { ok: false, code: 'EXPORT_MANIFEST_FINAL_FAILED', error: 'Export manifest FINAL failed', detail: error.message });
+    sendJson(context, 500, { ok: false, code: 'EXPORT_MANIFEST_FINAL_FAILED', error: 'Export manifest FINAL failed' });
   } finally {
     try { await pool?.close(); } catch {}
   }

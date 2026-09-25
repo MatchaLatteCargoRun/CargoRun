@@ -7,6 +7,9 @@ const { operationalId, acquireOffloadFlightLock, evaluateOffloadEligibility } = 
 const {
   OperationalAuthorizationError,
   authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
@@ -64,15 +67,21 @@ function canonical(value) {
 
 // Historical export flights remain eligible without changing their lifecycle.
 const offloadFlightStatuses = ['ACTIVE', 'CLOSED', 'FINALISED', 'FINALIZED'];
-async function selectOffloadFlights(request, flightId = null, lockForUpdate = false) {
+async function selectOffloadFlights(request, flightId = null, lockForUpdate = false, authorizedStations = null) {
+  const stationParameters = !flightId && authorizedStations
+    ? bindStationParameters(request, sql, authorizedStations, 'OffloadFlightStation')
+    : null;
+  const stationFilter = stationParameters
+    ? ` AND ${flightStationPredicate('f', stationParameters)}`
+    : '';
   return request.input('SelectedFlightId', sql.BigInt, flightId).query(`
-    SELECT CONVERT(varchar(20), FlightId) AS FlightId, FlightNumber,
-      CONVERT(char(10), OperatingDate, 23) AS OperatingDate,
-      CreatedAtUtc, Direction,OriginAirport,DestinationAirport, FlightStatus
-    FROM dbo.Flights ${flightId && lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
-    WHERE ${flightId ? 'FlightId = @SelectedFlightId' : `Direction = 'EXPORT'
-      AND FlightStatus IN (${offloadFlightStatuses.map(status => `'${status}'`).join(',')})`}
-    ${flightId ? '' : 'ORDER BY OperatingDate DESC, dbo.Flights.FlightId DESC'};
+    SELECT CONVERT(varchar(20), f.FlightId) AS FlightId, f.FlightNumber,
+      CONVERT(char(10), f.OperatingDate, 23) AS OperatingDate,
+      f.CreatedAtUtc, f.Direction,f.OriginAirport,f.DestinationAirport, f.FlightStatus
+    FROM dbo.Flights f ${flightId && lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
+    WHERE ${flightId ? 'f.FlightId = @SelectedFlightId' : `f.Direction = 'EXPORT'
+      AND f.FlightStatus IN (${offloadFlightStatuses.map(status => `'${status}'`).join(',')})${stationFilter}`}
+    ${flightId ? '' : 'ORDER BY f.OperatingDate DESC, f.FlightId DESC'};
   `);
 }
 
@@ -235,8 +244,9 @@ module.exports = async function (context, req) {
     }
 
     if (req.method === 'GET') {
+      const access = await requireOperationalStations(pool, sql, identity, 'VIEW_FLIGHTS');
       if (req.query?.eligibleFlights === 'true') {
-        const result = await selectOffloadFlights(pool.request());
+        const result = await selectOffloadFlights(pool.request(), null, false, access.stations);
         const flights = result.recordset.map(f => ({
           flightId: String(f.FlightId), flightNumber: f.FlightNumber,
           operatingDate: f.OperatingDate, createdAtUtc: f.CreatedAtUtc,
@@ -262,6 +272,7 @@ module.exports = async function (context, req) {
           sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select an ACTIVE, CLOSED or FINALISED export flight' });
           return;
         }
+        await requireOperationalCapability(pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS');
         const eligibility = await loadOffloadEligibility(pool, requestedFlightId, columns, false);
         const ulds = eligibility.filter(item => item.eligible).map(item => ({
           FlightId: requestedFlightId, UldId: item.uldId,
@@ -302,6 +313,7 @@ module.exports = async function (context, req) {
           sendJson(context, 404, { ok: false, error: 'Flight not found' });
           return;
         }
+        await requireOperationalCapability(pool, sql, identity, flightResult.recordset[0], 'VIEW_FLIGHTS');
 
         const uldIdCol = pick(columns, ['UldId']);
         const requestedAtCol = pick(columns, ['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc']);
@@ -336,16 +348,17 @@ module.exports = async function (context, req) {
         });
         return;
       }
-      const result = flightIdCol
-        ? await pool.request().query(`
+      if (!flightIdCol) {
+        sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Offload FlightId is unavailable' });
+        return;
+      }
+      const listRequest = pool.request();
+      const stationParameters = bindStationParameters(listRequest, sql, access.stations, 'OffloadReadStation');
+      const result = await listRequest.query(`
             SELECT o.*, CONVERT(char(10), f.OperatingDate, 23) AS __FlightOperatingDate
             FROM dbo.Offloads AS o
-            LEFT JOIN dbo.Flights AS f ON f.FlightId = o.${q(flightIdCol)}
-            ORDER BY o.${q(idCol)} DESC;
-          `)
-        : await pool.request().query(`
-            SELECT o.*, CAST(NULL AS char(10)) AS __FlightOperatingDate
-            FROM dbo.Offloads AS o
+            INNER JOIN dbo.Flights AS f ON f.FlightId = o.${q(flightIdCol)}
+            WHERE ${flightStationPredicate('f', stationParameters)}
             ORDER BY o.${q(idCol)} DESC;
           `);
       const offloads = result.recordset.map(r => normalize(r, columns));
@@ -738,7 +751,7 @@ module.exports = async function (context, req) {
       } catch (lookupError) { context.log.error('Offload conflict lookup failed', lookupError); }
     }
     context.log.error('Offloads API failed', err);
-    sendJson(context, 500, { ok: false, error: 'Offloads API failed', detail: err.message });
+    sendJson(context, 500, { ok: false, error: 'Offloads API failed' });
   } finally {
     try { await pool?.close(); } catch {}
   }

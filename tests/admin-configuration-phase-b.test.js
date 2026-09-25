@@ -175,7 +175,7 @@ test('missing trusted SWA principal is rejected before any database connection',
   assert.match(context.res.body, /Microsoft Entra sign-in is required/);
 });
 
-test('authenticated non-admin GET remains readable but reports Admin mutations disabled', async () => {
+test('authenticated non-admin GET is denied before Admin configuration is read', async () => {
   const sql = require('../api/node_modules/mssql');
   const originalPool = sql.ConnectionPool;
   const originalRequest = sql.Request;
@@ -189,7 +189,7 @@ test('authenticated non-admin GET remains readable but reports Admin mutations d
         return { recordset: REQUIRED_CONFIGURATION_TABLES.map(name => ({ name, ColumnName: DECISION_SEQUENCE_TABLES.includes(name) ? 'DecisionSequence' : null })) };
       }
       if (String(query).includes('SELECT s.StationId')) return { recordsets: Array.from({ length: 12 }, () => []) };
-      if (String(query).includes('WITH AssignmentDecisions')) return { recordset: [] };
+      if (String(query).includes('WITH AuthorizationScopes')) return { recordset: [] };
       throw new Error(`Unexpected GET SQL: ${String(query).slice(0, 80)}`);
     } }; }
   }
@@ -208,10 +208,9 @@ test('authenticated non-admin GET remains readable but reports Admin mutations d
     const context = { log: { error(...values) { errors.push(values); } } };
     await handler(context, { method: 'GET', params: {}, headers: { 'x-ms-client-principal': principal({ userId: 'ordinary-user', userDetails: 'Ordinary User', userRoles: ['authenticated'] }) } });
     const body = JSON.parse(context.res.body);
-    assert.equal(context.res.status, 200, errors[0]?.[1]?.stack || errors[0]?.[1]?.message);
-    assert.equal(body.authorization.adminMutationsEnabled, false);
-    assert.deepEqual(body.authorization.capabilities, []);
-    assert.equal(body.authorization.enforcement, 'LEGACY_OPERATIONAL_AUTHORIZATION');
+    assert.equal(context.res.status, 403, errors[0]?.[1]?.stack || errors[0]?.[1]?.message);
+    assert.equal(body.code, 'CAPABILITY_REQUIRED');
+    assert.equal(body.ok, false);
   } finally {
     sql.ConnectionPool = originalPool;
     sql.Request = originalRequest;

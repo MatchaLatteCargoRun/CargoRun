@@ -90,17 +90,195 @@ function stationForFlight(flight) {
   return station;
 }
 
-async function requireOperationalCapability(executor, sql, actor, flight, requiredCapability) {
+function normalizeCapability(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function actorReference(actor) {
   const reference = String(actor?.reference || '').trim();
-  if (!reference) {
+  if (!reference || reference.length > 150) {
     throw new OperationalAuthorizationError(
       'STABLE_IDENTITY_REQUIRED',
       'A stable authenticated user identity is required',
       401
     );
   }
+  return reference;
+}
 
-  const capability = String(requiredCapability || '').trim().toUpperCase();
+async function resolveActorAccess(executor, sql, actor) {
+  const reference = actorReference(actor);
+  let result;
+  try {
+    result = await new sql.Request(executor)
+      .input('OperationalAccessActorReference', sql.NVarChar(150), reference)
+      .query(`
+        WITH AuthorizationScopes AS (
+          SELECT StationId,StationCode
+          FROM dbo.CargoRunStations
+          WHERE IsEnabled=1
+          UNION ALL
+          SELECT CAST(NULL AS bigint),CAST(NULL AS varchar(3))
+        ), AssignmentDecisions AS (
+          SELECT scope.StationCode,assignment.RoleId,assignment.AssignmentAction,
+            ROW_NUMBER() OVER (
+              PARTITION BY scope.StationCode,assignment.RoleId
+              ORDER BY CASE WHEN assignment.StationId IS NULL THEN 0 ELSE 1 END DESC,
+                assignment.EffectiveFrom DESC,assignment.UserRoleVersionId DESC
+            ) AS DecisionRank
+          FROM AuthorizationScopes scope
+          JOIN dbo.CargoRunUserRoleAssignments assignment
+            ON assignment.ActorReference=@OperationalAccessActorReference
+           AND ((scope.StationId IS NULL AND assignment.StationId IS NULL)
+             OR (scope.StationId IS NOT NULL AND (assignment.StationId IS NULL OR assignment.StationId=scope.StationId)))
+          WHERE assignment.EffectiveFrom<=CONVERT(date,SYSUTCDATETIME())
+            AND (assignment.EffectiveTo IS NULL OR assignment.EffectiveTo>CONVERT(date,SYSUTCDATETIME()))
+        ), EffectiveRoles AS (
+          SELECT StationCode,RoleId
+          FROM AssignmentDecisions
+          WHERE DecisionRank=1 AND AssignmentAction='GRANT'
+        ), CapabilityDecisions AS (
+          SELECT role.StationCode,decision.RoleId,decision.CapabilityId,decision.CapabilityAction,
+            ROW_NUMBER() OVER (
+              PARTITION BY role.StationCode,decision.RoleId,decision.CapabilityId
+              ORDER BY decision.EffectiveFrom DESC,decision.RoleCapabilityVersionId DESC
+            ) AS DecisionRank
+          FROM EffectiveRoles role
+          JOIN dbo.CargoRunRoleCapabilities decision ON decision.RoleId=role.RoleId
+          WHERE decision.EffectiveFrom<=CONVERT(date,SYSUTCDATETIME())
+            AND (decision.EffectiveTo IS NULL OR decision.EffectiveTo>CONVERT(date,SYSUTCDATETIME()))
+        )
+        SELECT DISTINCT decision.StationCode,capability.CapabilityCode
+        FROM CapabilityDecisions decision
+        JOIN dbo.CargoRunCapabilities capability ON capability.CapabilityId=decision.CapabilityId
+        JOIN dbo.CargoRunRoles role ON role.RoleId=decision.RoleId
+        WHERE decision.DecisionRank=1 AND decision.CapabilityAction='GRANT'
+          AND capability.IsEnabled=1 AND role.IsEnabled=1
+        ORDER BY decision.StationCode,capability.CapabilityCode;
+      `);
+  } catch {
+    throw new OperationalAuthorizationError(
+      'AUTHORIZATION_CONFIGURATION_UNAVAILABLE',
+      'Operational authorization could not be resolved',
+      503
+    );
+  }
+
+  const capabilitiesByStation = {};
+  const globalCapabilities = [];
+  const capabilities = new Set();
+  for (const row of result.recordset || []) {
+    const capability = normalizeCapability(row.CapabilityCode);
+    if (!capability) continue;
+    capabilities.add(capability);
+    const stationCode = String(row.StationCode || '').trim().toUpperCase();
+    if (!stationCode) {
+      globalCapabilities.push(capability);
+      continue;
+    }
+    if (!/^[A-Z]{3}$/.test(stationCode)) {
+      throw new OperationalAuthorizationError(
+        'AUTHORIZATION_CONFIGURATION_INVALID',
+        'Operational authorization is not configured correctly',
+        503
+      );
+    }
+    if (!capabilitiesByStation[stationCode]) capabilitiesByStation[stationCode] = [];
+    capabilitiesByStation[stationCode].push(capability);
+  }
+
+  for (const stationCode of Object.keys(capabilitiesByStation)) {
+    capabilitiesByStation[stationCode] = [...new Set(capabilitiesByStation[stationCode])].sort();
+  }
+
+  return {
+    actorReference: reference,
+    provisioned: capabilities.size > 0,
+    stations: Object.keys(capabilitiesByStation).sort(),
+    capabilities: [...capabilities].sort(),
+    globalCapabilities: [...new Set(globalCapabilities)].sort(),
+    capabilitiesByStation
+  };
+}
+
+async function requireOperationalStations(executor, sql, actor, requiredCapability) {
+  const capability = normalizeCapability(requiredCapability);
+  if (!capability) {
+    throw new OperationalAuthorizationError(
+      'AUTHORIZATION_CONFIGURATION_INVALID',
+      'Operational authorization is not configured for this action',
+      503
+    );
+  }
+  const access = await resolveActorAccess(executor, sql, actor);
+  const stations = access.stations.filter(stationCode =>
+    access.capabilitiesByStation[stationCode].includes(capability)
+  );
+  if (!stations.length) {
+    throw new OperationalAuthorizationError(
+      'CAPABILITY_REQUIRED',
+      'The authenticated user is not authorized for this operation at an enabled station',
+      403
+    );
+  }
+  return { ...access, stations, requiredCapability: capability };
+}
+
+async function requireAnyOperationalCapability(executor, sql, actor, requiredCapabilities) {
+  const required = [...new Set((requiredCapabilities || []).map(normalizeCapability).filter(Boolean))];
+  if (!required.length) {
+    throw new OperationalAuthorizationError(
+      'AUTHORIZATION_CONFIGURATION_INVALID',
+      'Operational authorization is not configured for this action',
+      503
+    );
+  }
+  const access = await resolveActorAccess(executor, sql, actor);
+  const matchedCapability = required.find(capability => access.capabilities.includes(capability));
+  if (!matchedCapability) {
+    throw new OperationalAuthorizationError(
+      'CAPABILITY_REQUIRED',
+      'The authenticated user is not authorized for this operation',
+      403
+    );
+  }
+  return { ...access, requiredCapability: matchedCapability };
+}
+
+function bindStationParameters(request, sql, stationCodes, prefix = 'AuthorizedStation') {
+  const codes = [...new Set((stationCodes || []).map(value => String(value).trim().toUpperCase()))];
+  if (!codes.length || codes.some(code => !/^[A-Z]{3}$/.test(code))) {
+    throw new OperationalAuthorizationError(
+      'AUTHORIZATION_CONFIGURATION_INVALID',
+      'Operational authorization is not configured correctly',
+      503
+    );
+  }
+  return codes.map((code, index) => {
+    const name = `${prefix}${index}`;
+    request.input(name, sql.VarChar(3), code);
+    return `@${name}`;
+  });
+}
+
+function flightStationPredicate(alias, stationParameters) {
+  const qualified = String(alias || '').trim();
+  if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(qualified) || !stationParameters?.length) {
+    throw new OperationalAuthorizationError(
+      'AUTHORIZATION_CONFIGURATION_INVALID',
+      'Operational authorization is not configured correctly',
+      503
+    );
+  }
+  const allowed = stationParameters.join(',');
+  return `((UPPER(${qualified}.Direction)='IMPORT' AND UPPER(${qualified}.DestinationAirport) IN (${allowed}))
+    OR (UPPER(${qualified}.Direction)='EXPORT' AND UPPER(${qualified}.OriginAirport) IN (${allowed})))`;
+}
+
+async function requireOperationalCapability(executor, sql, actor, flight, requiredCapability) {
+  const reference = actorReference(actor);
+
+  const capability = normalizeCapability(requiredCapability);
   if (!capability) {
     throw new OperationalAuthorizationError(
       'AUTHORIZATION_CONFIGURATION_INVALID',
@@ -167,6 +345,11 @@ module.exports = {
   OperationalAuthorizationError,
   authenticatedActor,
   stationForFlight,
+  resolveActorAccess,
+  requireOperationalStations,
+  requireAnyOperationalCapability,
+  bindStationParameters,
+  flightStationPredicate,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 };

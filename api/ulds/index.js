@@ -57,6 +57,7 @@ module.exports = async function (context, req) {
       return;
     }
 
+    const actor = authenticatedActor(req);
     pool = await new sql.ConnectionPool(connectionString).connect();
 
     /* GET /api/ulds?flightId=1 */
@@ -70,6 +71,16 @@ module.exports = async function (context, req) {
         });
         return;
       }
+
+      const flightResult = await pool.request()
+        .input('AuthorizationFlightId', sql.BigInt, flightId)
+        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE FlightId=@AuthorizationFlightId;`);
+      if (flightResult.recordset.length !== 1) {
+        sendJson(context, 404, { ok: false, error: 'Flight not found' });
+        return;
+      }
+      await requireOperationalCapability(pool, sql, actor, flightResult.recordset[0], 'VIEW_FLIGHTS');
 
       const result = await pool.request()
         .input('FlightId', sql.BigInt, flightId)
@@ -106,7 +117,6 @@ module.exports = async function (context, req) {
 
     /* POST /api/ulds */
     const body = req.body || {};
-    const actor = authenticatedActor(req);
 
     const flightId = String(body.flightId || '').trim();
     const uldNumber = normalizeUldNumber(body.uldNumber);
@@ -316,8 +326,7 @@ module.exports = async function (context, req) {
     context.log.error('ULD API failed', err);
     sendJson(context, 500, {
       ok: false,
-      error: 'ULD API failed',
-      detail: err.message
+      error: 'ULD API failed'
     });
 
   } finally {

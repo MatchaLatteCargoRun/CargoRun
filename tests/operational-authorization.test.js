@@ -21,7 +21,7 @@ function requestWithPrincipal(value) {
   return { headers: value ? { 'x-ms-client-principal': value } : {} };
 }
 
-function authorizationSql({ stationRows = [{ StationId: 1 }], capabilities = [], stationFailure = null, capabilityFailure = null } = {}) {
+function authorizationSql({ stationRows = [{ StationId: 1 }], capabilities = [], accessRows = [], stationFailure = null, capabilityFailure = null, accessFailure = null } = {}) {
   const state = { queries: [] };
   class Request {
     constructor(executor) { this.executor = executor; this.values = {}; }
@@ -29,6 +29,10 @@ function authorizationSql({ stationRows = [{ StationId: 1 }], capabilities = [],
     async query(query) {
       const text = String(query);
       state.queries.push({ text, values: { ...this.values } });
+      if (text.includes('WITH AuthorizationScopes')) {
+        if (accessFailure) throw accessFailure;
+        return { recordset: accessRows };
+      }
       if (text.includes('FROM dbo.CargoRunStations')) {
         if (stationFailure) throw stationFailure;
         return { recordset: stationRows };
@@ -126,6 +130,191 @@ test('missing capability, wrong station, and unavailable configuration fail clos
   );
 });
 
+test('session access resolution distinguishes unprovisioned, provisioned, and unavailable authorization', async () => {
+  const actor = actualAuthorization.authenticatedActor(requestWithPrincipal(authenticatedPrincipal));
+  const empty = await actualAuthorization.resolveActorAccess({}, authorizationSql().sql, actor);
+  assert.equal(empty.provisioned, false);
+  assert.deepEqual(empty.stations, []);
+  assert.deepEqual(empty.capabilities, []);
+
+  const granted = await actualAuthorization.resolveActorAccess({}, authorizationSql({ accessRows: [
+    { StationCode: 'MEL', CapabilityCode: 'VIEW_FLIGHTS' },
+    { StationCode: 'MEL', CapabilityCode: 'MOVE_ULD' },
+    { StationCode: null, CapabilityCode: 'VIEW_ADMIN_AUDIT' }
+  ] }).sql, actor);
+  assert.equal(granted.provisioned, true);
+  assert.deepEqual(granted.stations, ['MEL']);
+  assert.deepEqual(granted.capabilities, ['MOVE_ULD', 'VIEW_ADMIN_AUDIT', 'VIEW_FLIGHTS']);
+  assert.deepEqual(granted.globalCapabilities, ['VIEW_ADMIN_AUDIT']);
+
+  await assert.rejects(
+    actualAuthorization.resolveActorAccess({}, authorizationSql({ accessFailure: new Error('schema missing') }).sql, actor),
+    error => error.status === 503 && error.code === 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE'
+  );
+});
+
+test('GET session returns safe unprovisioned metadata and keeps configuration failures distinct', async () => {
+  const emptyHarness = readSqlHarness();
+  const emptyHandler = loadHandler('api/session/index.js', emptyHarness.sql, actualAuthorization);
+  const emptyResponse = await invoke(emptyHandler, 'GET');
+  assert.equal(emptyResponse.status, 200);
+  assert.deepEqual(emptyResponse.body, {
+    ok: true,
+    authenticated: true,
+    provisioned: false,
+    userId: 'stable-user-id',
+    displayName: 'Station Operator',
+    stations: [],
+    capabilities: []
+  });
+  assert.equal(JSON.stringify(emptyResponse.body).includes('connection'), false);
+  assert.equal(JSON.stringify(emptyResponse.body).includes('sql'), false);
+
+  const failedHarness = readSqlHarness({ accessFailure: new Error('schema missing') });
+  const failedResponse = await invoke(loadHandler('api/session/index.js', failedHarness.sql, actualAuthorization), 'GET');
+  assert.equal(failedResponse.status, 503);
+  assert.equal(failedResponse.body.code, 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE');
+  assert.equal(Object.hasOwn(failedResponse.body, 'provisioned'), false);
+});
+
+test('unprovisioned identities receive no flight, ULD, offload, history, completion, statement, or supervisor data', async () => {
+  const flight = {
+    FlightId: '41', FlightNumber: 'CX0178', OperatingDate: '2026-09-17',
+    Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL', FlightStatus: 'ACTIVE'
+  };
+  const cases = [
+    ['api/flights/index.js', {}],
+    ['api/ulds/index.js', { flightId: '41' }],
+    ['api/offloads/index.js', {}],
+    ['api/history/index.js', {}],
+    ['api/export-completions/index.js', {}],
+    ['api/import-completions/index.js', {}],
+    ['api/flight-statement/index.js', { flightId: '41' }],
+    ['api/mach-fow/index.js', {}]
+  ];
+  const sensitiveReads = /FROM dbo\.(?:ULDs|Offloads|AuditEvents|ExportCompletionRecords|ImportCompletionRecords|IncomingMachMessages)\b|LEFT JOIN dbo\.ExportManifestFinals|OBJECT_ID\(N'dbo\.ExportCompletionRecords'/i;
+  for (const [route, query] of cases) {
+    const harness = readSqlHarness({ flights: [flight] });
+    const handler = loadHandler(route, harness.sql, unprovisionedReadAuthorization);
+    const response = await invoke(handler, 'GET', { station: 'MEL', capability: 'VIEW_FLIGHTS' }, query);
+    assert.equal(response.status, 403, route);
+    assert.equal(response.body.code, 'CAPABILITY_REQUIRED', route);
+    assert.equal(harness.state.queries.some(entry => sensitiveReads.test(entry.text)), false, `${route} read sensitive rows before authorization`);
+    for (const property of ['flights', 'ulds', 'offloads', 'events', 'records', 'messages', 'statement']) {
+      assert.equal(Object.hasOwn(response.body, property), false, `${route} returned ${property}`);
+    }
+  }
+});
+
+test('MEL flight lists are filtered in SQL and cannot be broadened by browser station or capability fields', async () => {
+  const flights = [
+    { FlightId: '1', FlightNumber: 'CX134', Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL' },
+    { FlightId: '2', FlightNumber: 'CX178', Direction: 'EXPORT', OriginAirport: 'MEL', DestinationAirport: 'HKG' },
+    { FlightId: '3', FlightNumber: 'QF11', Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'LAX' }
+  ];
+  const harness = readSqlHarness({ flights });
+  const response = await invoke(
+    loadHandler('api/flights/index.js', harness.sql, stationAuthorization(['MEL'])),
+    'GET',
+    { station: 'SYD', role: 'ADMIN', capabilities: ['VIEW_FLIGHTS'] },
+    { station: 'SYD', capability: 'VIEW_FLIGHTS' }
+  );
+  assert.equal(response.status, 200);
+  assert.deepEqual(response.body.flights.map(row => String(row.FlightId)), ['1', '2']);
+  const select = harness.state.queries.find(entry => entry.text.includes('LEFT JOIN dbo.ExportManifestFinals'));
+  assert.ok(select);
+  assert.deepEqual(Object.values(select.values), ['MEL']);
+  assert.match(select.text, /DestinationAirport.*IN.*FlightReadStation0/);
+  assert.match(select.text, /OriginAirport.*IN.*FlightReadStation0/);
+});
+
+test('wrong-station exact FlightId is denied before ULD or Flight Statement child data is read', async () => {
+  const flight = {
+    FlightId: '52', FlightNumber: 'QF11', OperatingDate: '2026-09-17',
+    Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'LAX', FlightStatus: 'ACTIVE'
+  };
+  for (const [route, query, forbidden] of [
+    ['api/ulds/index.js', { flightId: '52' }, /FROM dbo\.ULDs u/],
+    ['api/flight-statement/index.js', { flightId: '52' }, /OBJECT_ID\(N'dbo\.ExportCompletionRecords'/]
+  ]) {
+    const harness = readSqlHarness({ flights: [flight] });
+    const response = await invoke(loadHandler(route, harness.sql, stationAuthorization(['MEL'])), 'GET', null, query);
+    assert.equal(response.status, 403, route);
+    assert.equal(response.body.code, 'STATION_ACCESS_DENIED', route);
+    assert.equal(harness.state.queries.some(entry => forbidden.test(entry.text)), false, route);
+  }
+});
+
+test('wrong-station UldId and OffloadId resolve their owning FlightId and cannot mutate', async () => {
+  const authorization = stationAuthorization(['MEL']);
+  const uldHarness = sqlHarness({
+    uld: {
+      UldId: 77, FlightId: 52, UldNumber: 'AKE12345QF', CurrentStatus: 'ARRIVED',
+      Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'LAX', FlightNumber: 'QF11'
+    }
+  });
+  const uldResponse = await call(
+    loadOperationalHandler('api/uld-status/index.js', uldHarness.sql, authorization),
+    'POST',
+    { uldId: '77', expectedCurrentStatus: 'ARRIVED', nextStatus: 'RECEIVED' }
+  );
+  assert.equal(uldResponse.status, 403);
+  assert.equal(uldResponse.body.code, 'STATION_ACCESS_DENIED');
+  assert.equal(uldHarness.state.uld.CurrentStatus, 'ARRIVED');
+  assert.equal(uldHarness.state.audits.length, 0);
+
+  const offloadHarness = sqlHarness({
+    offload: { OffloadId: 91, FlightId: 52, UldId: 77, UldNumber: 'AKE12345QF', FlightNumber: 'QF11', Status: 'REQUESTED' },
+    flights: [{ FlightId: 52, FlightNumber: 'QF11', Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'LAX', FlightStatus: 'ACTIVE' }]
+  });
+  const offloadResponse = await call(
+    loadOperationalHandler('api/offloads/index.js', offloadHarness.sql, authorization),
+    'PATCH',
+    { offloadId: '91', expectedCurrentStatus: 'REQUESTED', nextStatus: 'TRANSIT' }
+  );
+  assert.equal(offloadResponse.status, 403);
+  assert.equal(offloadResponse.body.code, 'STATION_ACCESS_DENIED');
+  assert.equal(offloadHarness.state.offload.Status, 'REQUESTED');
+  assert.equal(offloadHarness.state.audits.length, 0);
+});
+
+test('frontend session gate precedes every operational sync and blocks scheduler startup when unprovisioned', () => {
+  const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+  const boot = html.slice(html.indexOf('async function bootCargoRun()'), html.indexOf('bootCargoRun();') + 'bootCargoRun();'.length);
+  assert.ok(boot.indexOf('await loadCargoRunSession()') < boot.indexOf('syncCentralData('));
+  assert.match(boot, /if\(!provisioned\)return;/);
+  assert.ok(boot.indexOf('if(!provisioned)return;') < boot.indexOf('centralSyncScheduler.start()'));
+  assert.match(html, /canRun:\(\)=>canUseCargoRunApi\(\)&&cargoRunAccess\.status==='provisioned'/);
+  assert.match(html, /if\(cargoRunAccess\.status!=='provisioned'\).*accessGateScreen\(\).*return/);
+  assert.match(html, /status:data\.provisioned\?'provisioned':'unprovisioned'/);
+  assert.match(html, /cargoRunAccess=\{status:'error'/);
+  assert.doesNotMatch(html, /status:\s*'unprovisioned'.*catch/s);
+});
+
+test('read endpoint inventory uses server authorization and leaves only generic health and machine intake exceptions', () => {
+  const source = relative => fs.readFileSync(path.join(root, relative), 'utf8');
+  const listGates = [
+    ['api/flights/index.js', 'VIEW_FLIGHTS'], ['api/offloads/index.js', 'VIEW_FLIGHTS'],
+    ['api/history/index.js', 'VIEW_HISTORY'], ['api/export-completions/index.js', 'VIEW_FLIGHT_STATEMENT'],
+    ['api/import-completions/index.js', 'VIEW_FLIGHT_STATEMENT'], ['api/mach-fow/index.js', 'VIEW_SUPERVISOR']
+  ];
+  for (const [file, capability] of listGates) {
+    const text = source(file);
+    assert.match(text, /requireOperationalStations/);
+    assert.match(text, new RegExp(`['"]${capability}['"]`));
+    assert.match(text, /flightStationPredicate/);
+  }
+  for (const file of ['api/ulds/index.js', 'api/flight-statement/index.js', 'api/export-manifest-final/index.js', 'api/flight-status/index.js']) {
+    const text = source(file);
+    assert.match(text, /requireOperationalCapability/);
+    assert.match(text, /FlightId/);
+  }
+  assert.match(source('api/mach-fow/index.js'), /machineAuth\(req\)/);
+  assert.match(source('api/mach-fow/index.js'), /req\.method === 'GET'[\s\S]*VIEW_SUPERVISOR/);
+  assert.doesNotMatch(source('api/db-health/index.js'), /DB_NAME\(|COUNT_BIG\(/);
+  assert.match(source('api/session/index.js'), /provisioned: access\.provisioned/);
+});
+
 const deniedAuthorization = {
   ...actualAuthorization,
   requireOperationalCapability: async () => {
@@ -136,6 +325,108 @@ const deniedAuthorization = {
     );
   }
 };
+
+function authorizationDenial(code = 'CAPABILITY_REQUIRED') {
+  return async () => {
+    throw new actualAuthorization.OperationalAuthorizationError(
+      code,
+      code === 'STATION_ACCESS_DENIED'
+        ? 'The operational station could not be authorized'
+        : 'The authenticated user is not authorized for this operation at an enabled station',
+      403
+    );
+  };
+}
+
+const unprovisionedReadAuthorization = {
+  ...actualAuthorization,
+  requireOperationalStations: authorizationDenial(),
+  requireOperationalCapability: authorizationDenial(),
+  requireAnyOperationalCapability: authorizationDenial()
+};
+
+function stationAuthorization(stations = ['MEL']) {
+  const stationSet = new Set(stations);
+  return {
+    ...actualAuthorization,
+    requireOperationalStations: async (_executor, _sql, _actor, requiredCapability) => ({
+      provisioned: true,
+      stations: [...stationSet],
+      capabilities: [requiredCapability],
+      capabilitiesByStation: Object.fromEntries([...stationSet].map(station => [station, [requiredCapability]])),
+      globalCapabilities: [],
+      requiredCapability
+    }),
+    requireOperationalCapability: async (_executor, _sql, actor, flight, requiredCapability) => {
+      const stationCode = actualAuthorization.stationForFlight(flight);
+      if (!stationSet.has(stationCode)) return authorizationDenial('STATION_ACCESS_DENIED')();
+      return { actorReference: actor.reference, stationCode, requiredCapability, capabilities: [requiredCapability] };
+    },
+    requireAnyOperationalCapability: async (_executor, _sql, _actor, requiredCapabilities) => ({
+      provisioned: true,
+      stations: [...stationSet],
+      capabilities: [...requiredCapabilities],
+      capabilitiesByStation: Object.fromEntries([...stationSet].map(station => [station, [...requiredCapabilities]])),
+      globalCapabilities: [],
+      requiredCapability: requiredCapabilities[0]
+    })
+  };
+}
+
+function readSqlHarness({ flights = [], accessRows = [], accessFailure = null } = {}) {
+  const state = { queries: [], connections: 0 };
+  const schemas = {
+    Offloads: ['OffloadId', 'FlightId', 'UldId', 'Status'],
+    AuditEvents: ['AuditEventId', 'FlightId', 'OccurredAtUtc'],
+    ExportCompletionRecords: ['CompletionId', 'FlightId', 'FinalisedAtUtc'],
+    ImportCompletionRecords: ['CompletionId', 'FlightId', 'FinalisedAtUtc']
+  };
+  class Request {
+    constructor() { this.values = {}; }
+    input(name, _type, value) { this.values[name] = value; return this; }
+    async query(query) {
+      const text = String(query).replace(/\s+/g, ' ').trim();
+      state.queries.push({ text, values: { ...this.values } });
+      if (text.includes('WITH AuthorizationScopes')) {
+        if (accessFailure) throw accessFailure;
+        return { recordset: accessRows };
+      }
+      if (text.includes('INFORMATION_SCHEMA.COLUMNS')) {
+        const table = this.values.TableName || Object.entries(this.values).find(([name]) => name.startsWith('TableName_'))?.[1];
+        return { recordset: (schemas[table] || []).map(COLUMN_NAME => ({
+          COLUMN_NAME, IS_NULLABLE: 'YES', COLUMN_DEFAULT: null, DATA_TYPE: 'nvarchar',
+          IS_IDENTITY: COLUMN_NAME.endsWith('Id') ? 1 : 0
+        })) };
+      }
+      const exactId = this.values.AuthorizationFlightId || this.values.StatementFlightId || this.values.FlightStatusFlightId;
+      if (text.includes('FROM dbo.Flights') && exactId) {
+        return { recordset: flights.filter(flight => String(flight.FlightId) === String(exactId)) };
+      }
+      if (text.includes('FROM dbo.Flights f') && text.includes('LEFT JOIN dbo.ExportManifestFinals')) {
+        const allowed = Object.entries(this.values)
+          .filter(([name]) => name.startsWith('FlightReadStation'))
+          .map(([, value]) => value);
+        return { recordset: flights.filter(flight => allowed.includes(
+          String(flight.Direction).toUpperCase() === 'IMPORT' ? flight.DestinationAirport : flight.OriginAirport
+        )) };
+      }
+      throw new Error(`Unexpected read SQL: ${text.slice(0, 180)}`);
+    }
+  }
+  class ConnectionPool {
+    async connect() { state.connections++; return this; }
+    request() { return new Request(); }
+    async close() {}
+  }
+  const type = size => size;
+  return {
+    sql: {
+      ConnectionPool, Request, BigInt: 'bigint', Int: 'int', DateTime2: type,
+      VarChar: type, NVarChar: type, MAX: -1
+    },
+    state
+  };
+}
 
 test('direct ULD status, mail scan, and offload API calls are denied before state or audit writes', async () => {
   const statusHarness = sqlHarness({
@@ -239,10 +530,10 @@ function loadHandler(relativePath, sqlMock, authorization = deniedAuthorization)
   return module.exports;
 }
 
-async function invoke(handler, method, body) {
+async function invoke(handler, method, body, query = {}) {
   const context = { log: Object.assign(() => {}, { error() {}, warn() {} }) };
   await handler(context, {
-    method, body, query: {},
+    method, body, query,
     headers: { 'x-ms-client-principal': authenticatedPrincipal }
   });
   return { status: context.res.status, body: JSON.parse(context.res.body) };

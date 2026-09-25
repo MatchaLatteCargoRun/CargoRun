@@ -3,6 +3,9 @@ const { acquireFlightIdentityLock, findFlightsByIdentity } = require('../shared/
 const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
@@ -69,7 +72,10 @@ module.exports = async function (context, req) {
     pool = await new sql.ConnectionPool(connectionString).connect();
 
     if (req.method === 'GET') {
-      const result = await pool.request().query(`SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.Direction,f.AirlineCode,f.OriginAirport,f.DestinationAirport,f.FlightStatus,f.ScheduledArrivalUtc,f.EstimatedArrivalUtc,f.LandedAtUtc,f.InBlockAtUtc,f.ScheduledDepartureUtc,f.EstimatedDepartureUtc,f.SourceType,f.CreatedAtUtc,
+      const access = await requireOperationalStations(pool, sql, identity, 'VIEW_FLIGHTS');
+      const request = pool.request();
+      const stationParameters = bindStationParameters(request, sql, access.stations, 'FlightReadStation');
+      const result = await request.query(`SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.Direction,f.AirlineCode,f.OriginAirport,f.DestinationAirport,f.FlightStatus,f.ScheduledArrivalUtc,f.EstimatedArrivalUtc,f.LandedAtUtc,f.InBlockAtUtc,f.ScheduledDepartureUtc,f.EstimatedDepartureUtc,f.SourceType,f.CreatedAtUtc,
         mf.FinalManifestId AS ExportFinalManifestId,
         mf.ConfirmedAtUtc AS ExportFinalConfirmedAtUtc,
         mf.ConfirmedByDisplayName AS ExportFinalConfirmedByDisplayName,
@@ -79,6 +85,7 @@ module.exports = async function (context, req) {
         mf.ExcludedCount AS ExportFinalExcludedCount
         FROM dbo.Flights f
         LEFT JOIN dbo.ExportManifestFinals mf ON mf.FlightId=f.FlightId
+        WHERE ${flightStationPredicate('f', stationParameters)}
         ORDER BY f.OperatingDate DESC,f.FlightNumber ASC;`);
       sendJson(context, 200, { ok: true, count: result.recordset.length, flights: result.recordset });
       return;
