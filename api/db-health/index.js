@@ -20,7 +20,7 @@ module.exports = async function (context) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        status: 'unavailable'
       });
       return;
     }
@@ -31,17 +31,15 @@ module.exports = async function (context) {
 
     sendJson(context, 200, {
       ok: true,
-      service: 'CargoRun database connectivity',
-      databaseReachable: true,
-      serverTimeUtc: new Date().toISOString()
+      status: 'healthy'
     });
 
   } catch (err) {
     context.log.error('Database health check failed', err);
 
-    sendJson(context, 500, {
+    sendJson(context, 503, {
       ok: false,
-      error: 'Database connection failed'
+      status: 'unhealthy'
     });
 
   } finally {

@@ -335,6 +335,26 @@ async function requireOperationalCapability(executor, sql, actor, flight, requir
   return { actorReference: reference, stationCode, requiredCapability: capability, capabilities };
 }
 
+function operationalEntityUnavailable() {
+  return new OperationalAuthorizationError(
+    'OPERATIONAL_ENTITY_NOT_AVAILABLE',
+    'The selected operational record is unavailable',
+    404
+  );
+}
+
+async function requireOperationalEntityCapability(executor, sql, actor, flight, requiredCapability) {
+  if (!flight) throw operationalEntityUnavailable();
+  try {
+    return await requireOperationalCapability(executor, sql, actor, flight, requiredCapability);
+  } catch (error) {
+    if (error instanceof OperationalAuthorizationError && error.status === 403) {
+      throw operationalEntityUnavailable();
+    }
+    throw error;
+  }
+}
+
 function sendOperationalAuthorizationError(context, error, sendJson) {
   if (!(error instanceof OperationalAuthorizationError)) return false;
   sendJson(context, error.status, { ok: false, code: error.code, error: error.message });
@@ -351,5 +371,7 @@ module.exports = {
   bindStationParameters,
   flightStationPredicate,
   requireOperationalCapability,
+  operationalEntityUnavailable,
+  requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 };

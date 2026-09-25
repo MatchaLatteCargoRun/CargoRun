@@ -2,7 +2,9 @@ const sql = require('mssql');
 const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
-  requireOperationalCapability,
+  requireOperationalStations,
+  operationalEntityUnavailable,
+  requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 
@@ -37,7 +39,7 @@ module.exports = async function(context, req) {
   let transaction;
   try {
     const cs = process.env.DATABASE_CONNECTION_STRING;
-    if (!cs) { sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'}); return; }
+    if (!cs) { sendJson(context,503,{ok:false,error:'Service configuration is unavailable'}); return; }
     const actor = authenticatedActor(req);
     const uldId = String(req.body?.uldId || '').trim();
     if (!/^\d+$/.test(uldId)) { sendJson(context,400,{ok:false,error:'uldId is required'}); return; }
@@ -45,19 +47,21 @@ module.exports = async function(context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
 
+    await requireOperationalStations(transaction, sql, actor, 'SCAN_ULD');
+
     const selected = await new sql.Request(transaction)
       .input('AuthorizationUldId', sql.BigInt, uldId)
       .query(`SELECT u.UldId,u.FlightId,f.Direction,f.OriginAirport,f.DestinationAirport
         FROM dbo.ULDs u WITH (UPDLOCK,HOLDLOCK)
         INNER JOIN dbo.Flights f ON f.FlightId=u.FlightId
         WHERE u.UldId=@AuthorizationUldId;`);
-    if (!selected.recordset.length) {
-      await transaction.rollback();
-      transaction = null;
-      sendJson(context,404,{ok:false,error:'ULD not found'});
-      return;
-    }
-    await requireOperationalCapability(transaction, sql, actor, selected.recordset[0], 'SCAN_ULD');
+    await requireOperationalEntityCapability(
+      transaction,
+      sql,
+      actor,
+      selected.recordset[0] || null,
+      'SCAN_ULD'
+    );
 
     const update = await new sql.Request(transaction)
       .input('UldId', sql.BigInt, uldId)
@@ -111,7 +115,7 @@ module.exports = async function(context, req) {
       SELECT UldId,UldNumber,MailScannedAtUtc,MailScannedByDisplayName,MailScannedByReference
       FROM dbo.ULDs WHERE UldId=@UldId2;
     `);
-    if (!existing.recordset.length) { sendJson(context,404,{ok:false,error:'ULD not found'}); return; }
+    if (!existing.recordset.length) throw operationalEntityUnavailable();
     sendJson(context,200,{ok:true,alreadyScanned:!!existing.recordset[0].MailScannedAtUtc,uld:existing.recordset[0]});
   } catch (err) {
     if (transaction) { try { await transaction.rollback(); } catch {} }

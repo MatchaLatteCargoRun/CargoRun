@@ -33,6 +33,9 @@ function arrivalHarness(enabled) {
   const context = vm.createContext({
     state,
     seed: state,
+    cargoRunAccess: { status: 'provisioned' },
+    operationalSessionGeneration: 0,
+    operationalSessionIsCurrent: generation => generation === 0,
     location: { protocol: 'https:' },
     URLSearchParams,
     Date,
@@ -130,8 +133,12 @@ test('post-manifest-upload refresh is gated by the same feature flag', () => {
   for (const [enabled, expected] of [[false, 0], [true, 1]]) {
     let refreshes = 0;
     const context = vm.createContext({
+      cargoRunAccess: { status: 'provisioned' },
+      operationalSessionGeneration: 0,
+      operationalSessionIsCurrent: generation => generation === 0,
       canUseFlightStatusApi: () => true,
-      setTimeout(callback, delay) {
+      deferOperational(generation, callback, delay) {
+        assert.equal(generation, 0);
         assert.equal(delay, 250);
         callback();
       },
@@ -142,7 +149,7 @@ test('post-manifest-upload refresh is gated by the same feature flag', () => {
       }
     });
     vm.runInContext(
-      `const FLIGHTAWARE_ENABLED=${enabled}; const p={type:'imports'}; const flight={id:'import-1'};\n${uploadGate}`,
+      `const FLIGHTAWARE_ENABLED=${enabled}; const operationalSessionGeneration=0; const generation=operationalSessionGeneration; const p={type:'imports'}; const flight={id:'import-1'};\n${uploadGate}`,
       context
     );
     assert.equal(refreshes, expected);

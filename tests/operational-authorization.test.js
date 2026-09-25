@@ -130,6 +130,23 @@ test('missing capability, wrong station, and unavailable configuration fail clos
   );
 });
 
+test('exact operational entities mask missing and wrong-station records identically', async () => {
+  const actor = actualAuthorization.authenticatedActor(requestWithPrincipal(authenticatedPrincipal));
+  for (const flight of [
+    null,
+    { Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'HKG' }
+  ]) {
+    await assert.rejects(
+      actualAuthorization.requireOperationalEntityCapability(
+        {}, authorizationSql({ stationRows: [] }).sql, actor, flight, 'VIEW_FLIGHTS'
+      ),
+      error => error.status === 404 &&
+        error.code === 'OPERATIONAL_ENTITY_NOT_AVAILABLE' &&
+        error.message === 'The selected operational record is unavailable'
+    );
+  }
+});
+
 test('session access resolution distinguishes unprovisioned, provisioned, and unavailable authorization', async () => {
   const actor = actualAuthorization.authenticatedActor(requestWithPrincipal(authenticatedPrincipal));
   const empty = await actualAuthorization.resolveActorAccess({}, authorizationSql().sql, actor);
@@ -228,7 +245,7 @@ test('MEL flight lists are filtered in SQL and cannot be broadened by browser st
   assert.match(select.text, /OriginAirport.*IN.*FlightReadStation0/);
 });
 
-test('wrong-station exact FlightId is denied before ULD or Flight Statement child data is read', async () => {
+test('wrong-station exact FlightId is masked before ULD or Flight Statement child data is read', async () => {
   const flight = {
     FlightId: '52', FlightNumber: 'QF11', OperatingDate: '2026-09-17',
     Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'LAX', FlightStatus: 'ACTIVE'
@@ -239,9 +256,14 @@ test('wrong-station exact FlightId is denied before ULD or Flight Statement chil
   ]) {
     const harness = readSqlHarness({ flights: [flight] });
     const response = await invoke(loadHandler(route, harness.sql, stationAuthorization(['MEL'])), 'GET', null, query);
-    assert.equal(response.status, 403, route);
-    assert.equal(response.body.code, 'STATION_ACCESS_DENIED', route);
+    assert.equal(response.status, 404, route);
+    assert.equal(response.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE', route);
     assert.equal(harness.state.queries.some(entry => forbidden.test(entry.text)), false, route);
+
+    const missingHarness = readSqlHarness({ flights: [] });
+    const missing = await invoke(loadHandler(route, missingHarness.sql, stationAuthorization(['MEL'])), 'GET', null, query);
+    assert.deepEqual(missing, response, `${route} must not reveal whether a denied FlightId exists`);
+    assert.equal(missingHarness.state.queries.some(entry => forbidden.test(entry.text)), false, route);
   }
 });
 
@@ -258,8 +280,8 @@ test('wrong-station UldId and OffloadId resolve their owning FlightId and cannot
     'POST',
     { uldId: '77', expectedCurrentStatus: 'ARRIVED', nextStatus: 'RECEIVED' }
   );
-  assert.equal(uldResponse.status, 403);
-  assert.equal(uldResponse.body.code, 'STATION_ACCESS_DENIED');
+  assert.equal(uldResponse.status, 404);
+  assert.equal(uldResponse.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
   assert.equal(uldHarness.state.uld.CurrentStatus, 'ARRIVED');
   assert.equal(uldHarness.state.audits.length, 0);
 
@@ -272,8 +294,8 @@ test('wrong-station UldId and OffloadId resolve their owning FlightId and cannot
     'PATCH',
     { offloadId: '91', expectedCurrentStatus: 'REQUESTED', nextStatus: 'TRANSIT' }
   );
-  assert.equal(offloadResponse.status, 403);
-  assert.equal(offloadResponse.body.code, 'STATION_ACCESS_DENIED');
+  assert.equal(offloadResponse.status, 404);
+  assert.equal(offloadResponse.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
   assert.equal(offloadHarness.state.offload.Status, 'REQUESTED');
   assert.equal(offloadHarness.state.audits.length, 0);
 });
@@ -304,10 +326,16 @@ test('read endpoint inventory uses server authorization and leaves only generic 
     assert.match(text, new RegExp(`['"]${capability}['"]`));
     assert.match(text, /flightStationPredicate/);
   }
-  for (const file of ['api/ulds/index.js', 'api/flight-statement/index.js', 'api/export-manifest-final/index.js', 'api/flight-status/index.js']) {
+  for (const file of [
+    'api/flights/index.js', 'api/ulds/index.js', 'api/uld-status/index.js',
+    'api/mail-scan/index.js', 'api/offloads/index.js',
+    'api/import-completions/index.js', 'api/export-completions/index.js',
+    'api/export-manifest-final/index.js', 'api/flight-statement/index.js',
+    'api/flight-status/index.js'
+  ]) {
     const text = source(file);
-    assert.match(text, /requireOperationalCapability/);
-    assert.match(text, /FlightId/);
+    assert.match(text, /requireOperationalStations/, `${file} lacks a broad capability preflight`);
+    assert.match(text, /requireOperationalEntityCapability/, `${file} lacks exact-entity masking`);
   }
   assert.match(source('api/mach-fow/index.js'), /machineAuth\(req\)/);
   assert.match(source('api/mach-fow/index.js'), /req\.method === 'GET'[\s\S]*VIEW_SUPERVISOR/);
@@ -317,12 +345,23 @@ test('read endpoint inventory uses server authorization and leaves only generic 
 
 const deniedAuthorization = {
   ...actualAuthorization,
+  requireOperationalStations: async (_executor, _sql, _actor, requiredCapability) => ({
+    provisioned: true,
+    stations: ['MEL'],
+    capabilities: [requiredCapability],
+    capabilitiesByStation: { MEL: [requiredCapability] },
+    globalCapabilities: [],
+    requiredCapability
+  }),
   requireOperationalCapability: async () => {
     throw new actualAuthorization.OperationalAuthorizationError(
       'CAPABILITY_REQUIRED',
       'The authenticated user is not authorized for this operation at the selected station',
       403
     );
+  },
+  requireOperationalEntityCapability: async () => {
+    throw actualAuthorization.operationalEntityUnavailable();
   }
 };
 
@@ -347,6 +386,11 @@ const unprovisionedReadAuthorization = {
 
 function stationAuthorization(stations = ['MEL']) {
   const stationSet = new Set(stations);
+  const requireOperationalCapability = async (_executor, _sql, actor, flight, requiredCapability) => {
+    const stationCode = actualAuthorization.stationForFlight(flight);
+    if (!stationSet.has(stationCode)) return authorizationDenial('STATION_ACCESS_DENIED')();
+    return { actorReference: actor.reference, stationCode, requiredCapability, capabilities: [requiredCapability] };
+  };
   return {
     ...actualAuthorization,
     requireOperationalStations: async (_executor, _sql, _actor, requiredCapability) => ({
@@ -357,10 +401,15 @@ function stationAuthorization(stations = ['MEL']) {
       globalCapabilities: [],
       requiredCapability
     }),
-    requireOperationalCapability: async (_executor, _sql, actor, flight, requiredCapability) => {
-      const stationCode = actualAuthorization.stationForFlight(flight);
-      if (!stationSet.has(stationCode)) return authorizationDenial('STATION_ACCESS_DENIED')();
-      return { actorReference: actor.reference, stationCode, requiredCapability, capabilities: [requiredCapability] };
+    requireOperationalCapability,
+    requireOperationalEntityCapability: async (executor, sql, actor, flight, requiredCapability) => {
+      if (!flight) throw actualAuthorization.operationalEntityUnavailable();
+      try {
+        return await requireOperationalCapability(executor, sql, actor, flight, requiredCapability);
+      } catch (error) {
+        if (error?.status === 403) throw actualAuthorization.operationalEntityUnavailable();
+        throw error;
+      }
     },
     requireAnyOperationalCapability: async (_executor, _sql, _actor, requiredCapabilities) => ({
       provisioned: true,
@@ -436,8 +485,8 @@ test('direct ULD status, mail scan, and offload API calls are denied before stat
   const statusResponse = await call(statusHandler, 'POST', {
     uldId: '7', expectedCurrentStatus: 'ARRIVED', nextStatus: 'RECEIVED'
   });
-  assert.equal(statusResponse.status, 403);
-  assert.equal(statusResponse.body.code, 'CAPABILITY_REQUIRED');
+  assert.equal(statusResponse.status, 404);
+  assert.equal(statusResponse.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
   assert.equal(statusHarness.state.uld.CurrentStatus, 'ARRIVED');
   assert.equal(statusHarness.state.movements.length, 0);
   assert.equal(statusHarness.state.audits.length, 0);
@@ -447,7 +496,8 @@ test('direct ULD status, mail scan, and offload API calls are denied before stat
   });
   const mailHandler = loadOperationalHandler('api/mail-scan/index.js', mailHarness.sql, deniedAuthorization);
   const mailResponse = await call(mailHandler, 'POST', { uldId: '7' });
-  assert.equal(mailResponse.status, 403);
+  assert.equal(mailResponse.status, 404);
+  assert.equal(mailResponse.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
   assert.equal(mailHarness.state.uld.MailScannedAtUtc, undefined);
   assert.equal(mailHarness.state.audits.length, 0);
 
@@ -462,7 +512,8 @@ test('direct ULD status, mail scan, and offload API calls are denied before stat
     flightId: '1', flightNumber: 'CX178', operatingDate: '2026-09-17',
     uldId: '7', uldNumber: 'AKE12345CX', parkingBay: 'F25'
   });
-  assert.equal(offloadResponse.status, 403);
+  assert.equal(offloadResponse.status, 404);
+  assert.equal(offloadResponse.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
   assert.equal(offloadHarness.state.offload, null);
   assert.equal(offloadHarness.state.audits.length, 0);
 });
@@ -546,8 +597,8 @@ test('Add ULD and manual close direct calls require server capability before the
     'POST',
     { flightId: '41', uldNumber: 'AKE12345CX' }
   );
-  assert.equal(addResponse.status, 403);
-  assert.equal(addResponse.body.code, 'CAPABILITY_REQUIRED');
+  assert.equal(addResponse.status, 404);
+  assert.equal(addResponse.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
   assert.equal(addHarness.state.queries.some(entry => /\b(INSERT|UPDATE|DELETE)\b/i.test(entry.text)), false);
 
   const closeHarness = earlyDenialSql({ direction: 'IMPORT' });
@@ -556,8 +607,8 @@ test('Add ULD and manual close direct calls require server capability before the
     'PATCH',
     { flightId: '41', expectedStatus: 'ACTIVE', nextStatus: 'CLOSED', passcode: '1234' }
   );
-  assert.equal(closeResponse.status, 403);
-  assert.equal(closeResponse.body.code, 'CAPABILITY_REQUIRED');
+  assert.equal(closeResponse.status, 404);
+  assert.equal(closeResponse.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
   assert.equal(closeHarness.state.queries.some(entry => /\b(INSERT|UPDATE|DELETE)\b/i.test(entry.text)), false);
 });
 
@@ -572,8 +623,8 @@ test('Import finalisation, Export finalisation, and Export FINAL direct calls au
   for (const [route, direction, body] of cases) {
     const harness = earlyDenialSql({ direction });
     const response = await invoke(loadHandler(route, harness.sql), 'POST', body);
-    assert.equal(response.status, 403, route);
-    assert.equal(response.body.code, 'CAPABILITY_REQUIRED', route);
+    assert.equal(response.status, 404, route);
+    assert.equal(response.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE', route);
     assert.equal(harness.state.queries.some(entry => /\b(INSERT|UPDATE|DELETE)\b/i.test(entry.text)), false, route);
     assert.equal(harness.state.commits, 0, route);
   }

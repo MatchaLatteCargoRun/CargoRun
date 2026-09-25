@@ -26,6 +26,12 @@ function harness() {
   };
   const context = vm.createContext({
     state: { imports: [], exports: [], offloads: [], history: [] },
+    cargoRunAccess: { status: 'provisioned' },
+    operationalSessionGeneration: 0,
+    operationalSessionIsCurrent: generation => generation === 0,
+    deferOperational(generation, callback) {
+      if (generation === 0) callback();
+    },
     IMPORT_STATUSES: ['Unarrived', 'Arrived', 'Transit', 'Received'],
     EXPORT_STATUSES: ['Warehouse', 'Transit', 'At Aircraft'],
     document: { getElementById: id => elements[id] || null },
@@ -41,7 +47,7 @@ function harness() {
     currentUser: () => ({ name: 'Tester', employeeId: 'test-id' }),
     uiStatusToAzure: value => String(value).toUpperCase().replaceAll(' ', '_'),
     showActionLoader() {}, hideActionLoader() {}, logEvent() {}, save() {}, closeModal() {}, render() {},
-    syncAzureFlights: async () => {}, syncAzureOffloads: async () => {},
+    syncAzureFlights: async () => {}, syncAzureOffloads: async () => {}, syncCentralData: async () => {},
     hasMachFow: () => false, fmtDateTime: value => String(value), toMs: value => value,
     fetch: async (url, options) => {
       calls.push({ url, body: JSON.parse(options.body) });

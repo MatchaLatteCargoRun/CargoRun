@@ -92,11 +92,12 @@ module.exports = async function(context, req) {
       return;
     }
     const connectionString = process.env.DATABASE_CONNECTION_STRING;
-    if (!connectionString) { sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'}); return; }
+    if (!connectionString) { sendJson(context,503,{ok:false,error:'Service configuration is unavailable'}); return; }
     const actor = authenticatedActor(req);
     pool = await new sql.ConnectionPool(connectionString).connect();
+    const access = await requireOperationalStations(pool,sql,actor,'VIEW_HISTORY');
     const columns = await columnsFor(pool.request(),'AuditEvents');
-    if (!columns.length) { sendJson(context,500,{ok:false,error:'dbo.AuditEvents table was not found'}); return; }
+    if (!columns.length) { sendJson(context,503,{ok:false,error:'History service is unavailable'}); return; }
     const idCol = pick(columns,['AuditEventId','EventId','Id']);
     const timeCol = pick(columns,['OccurredAtUtc','OccurredAt','CreatedAtUtc']);
     const flightIdCol = pick(columns,['FlightId']);
@@ -104,8 +105,6 @@ module.exports = async function(context, req) {
       sendJson(context,503,{ok:false,code:'HISTORY_AUTHORIZATION_UNAVAILABLE',error:'History records cannot be safely attributed to an authorized station'});
       return;
     }
-    const access = await requireOperationalStations(pool,sql,actor,'VIEW_HISTORY');
-
     const order = timeCol ? `audit.${q(timeCol)} DESC` : idCol ? `audit.${q(idCol)} DESC` : '(SELECT NULL)';
     const requestedLimit = Math.max(1, Math.min(5000, Number(req.query?.limit || 3000) || 3000));
     const startUtc = clean(req.query?.startUtc, 50);

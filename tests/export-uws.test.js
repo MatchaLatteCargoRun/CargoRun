@@ -136,7 +136,8 @@ test('manual UWS Intake stays a preview until explicit FINAL confirmation', () =
   assert.match(html, /action:\s*'PARSE_EXPORT_UWS'/);
   assert.match(html, /action:\s*'REVIEW_EXPORT_UWS'/);
   assert.match(html, /btn\.textContent = 'Review FINAL'/);
-  assert.match(html, /setTimeout\(\(\) => previewFinalManifest\(reviewedFlightId\), 50\)/);
+  assert.match(html, /deferOperational\(generation,\(\)\s*=>\s*previewFinalManifest\(reviewedFlightId\),\s*50\)/);
+  assert.doesNotMatch(html, /setTimeout\(\(\)\s*=>\s*previewFinalManifest\(reviewedFlightId\)/);
   assert.match(html, /function confirmFinalManifest[\s\S]*action:\s*'CONFIRM'/);
   assert.doesNotMatch(uploadApi, /UPDATE dbo\.ULDs/i);
   assert.doesNotMatch(uploadApi, /INSERT INTO dbo\.ExportManifestFinals/i);

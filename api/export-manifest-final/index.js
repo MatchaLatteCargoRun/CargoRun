@@ -12,7 +12,8 @@ const {
 } = require('../shared/export-manifest-final');
 const {
   authenticatedActor,
-  requireOperationalCapability,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 
@@ -116,7 +117,11 @@ module.exports = async function exportManifestFinal(context, req) {
   let transaction;
   try {
     if (!process.env.DATABASE_CONNECTION_STRING) {
-      sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' });
+      sendJson(context, 503, {
+        ok: false,
+        code: 'SERVICE_CONFIGURATION_UNAVAILABLE',
+        error: 'Service configuration is unavailable'
+      });
       return;
     }
     const actor = authenticatedActor(req);
@@ -129,12 +134,9 @@ module.exports = async function exportManifestFinal(context, req) {
     pool = await new sql.ConnectionPool(process.env.DATABASE_CONNECTION_STRING).connect();
 
     if (req.method === 'GET') {
+      await requireOperationalStations(pool, sql, actor, 'VIEW_FLIGHTS');
       const flight = await loadFlight(pool.request(), flightId);
-      if (!flight) {
-        sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
-        return;
-      }
-      await requireOperationalCapability(pool, sql, actor, flight, 'VIEW_FLIGHTS');
+      await requireOperationalEntityCapability(pool, sql, actor, flight, 'VIEW_FLIGHTS');
       const final = await getFinal(pool.request(), flightId);
       sendJson(context, 200, { ok: true, flightId, isFinal: Boolean(final), manifestFinal: finalResponse(final) });
       return;
@@ -149,13 +151,17 @@ module.exports = async function exportManifestFinal(context, req) {
     const sourceFileName = req.body?.sourceFileName
       ? String(req.body.sourceFileName).trim().slice(0, 260) : null;
 
+    await requireOperationalStations(pool, sql, actor, 'CONFIRM_EXPORT_FINAL');
+
     if (action === 'PREVIEW') {
       const flight = await loadFlight(pool.request(), flightId);
-      if (!flight) {
-        sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
-        return;
-      }
-      await requireOperationalCapability(pool, sql, actor, flight, 'CONFIRM_EXPORT_FINAL');
+      await requireOperationalEntityCapability(
+        pool,
+        sql,
+        actor,
+        flight,
+        'CONFIRM_EXPORT_FINAL'
+      );
       validateFlight(flight);
       const currentFinal = await getFinal(pool.request(), flightId);
       if (currentFinal) {
@@ -169,6 +175,13 @@ module.exports = async function exportManifestFinal(context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
     const initialFlight = await loadFlight(new sql.Request(transaction), flightId);
+    await requireOperationalEntityCapability(
+      transaction,
+      sql,
+      actor,
+      initialFlight,
+      'CONFIRM_EXPORT_FINAL'
+    );
     validateFlight(initialFlight);
     await acquireFlightIdentityLock(
       transaction,
@@ -177,8 +190,14 @@ module.exports = async function exportManifestFinal(context, req) {
       initialFlight.FlightNumber
     );
     const flight = await loadFlight(new sql.Request(transaction), flightId, true);
+    await requireOperationalEntityCapability(
+      transaction,
+      sql,
+      actor,
+      flight,
+      'CONFIRM_EXPORT_FINAL'
+    );
     validateFlight(flight);
-    await requireOperationalCapability(transaction, sql, actor, flight, 'CONFIRM_EXPORT_FINAL');
     const currentFinal = await getFinal(new sql.Request(transaction), flightId, true);
     if (currentFinal) {
       await transaction.rollback();

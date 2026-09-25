@@ -470,7 +470,10 @@ async function existingMessage(
     .query(`
       SELECT TOP 1
         m.*,
-        f.FlightNumber AS MatchedFlightNumber
+        f.FlightNumber AS MatchedFlightNumber,
+        f.Direction AS MatchedFlightDirection,
+        f.OriginAirport AS MatchedFlightOriginAirport,
+        f.DestinationAirport AS MatchedFlightDestinationAirport
 
       FROM dbo.IncomingMachMessages m
 
@@ -518,6 +521,36 @@ async function existingMessage(
 }
 
 
+function duplicateAuthorizationFlight(
+  duplicate
+) {
+  const row = duplicate?.row || {};
+
+  if (
+    row.MatchedFlightId !== null &&
+    row.MatchedFlightId !== undefined
+  ) {
+    return {
+      Direction:
+        row.MatchedFlightDirection,
+      OriginAirport:
+        row.MatchedFlightOriginAirport,
+      DestinationAirport:
+        row.MatchedFlightDestinationAirport
+    };
+  }
+
+  return {
+    Direction: 'EXPORT',
+    OriginAirport:
+      row.OriginAirport ||
+      row.StationAirport,
+    DestinationAirport:
+      row.DestinationAirport
+  };
+}
+
+
 /* ============================================================
    MAIN FUNCTION
    ============================================================ */
@@ -529,6 +562,8 @@ module.exports = async function(
 
   let pool;
   let tx;
+  let actor = null;
+  let liveRequest = false;
 
   try {
 
@@ -543,7 +578,7 @@ module.exports = async function(
         {
           ok: false,
           error:
-            'DATABASE_CONNECTION_STRING is not configured'
+            'Service configuration is unavailable'
         }
       );
 
@@ -554,7 +589,6 @@ module.exports = async function(
     const machine =
       machineAuth(req);
 
-    let actor = null;
     if (req.method === 'GET' || (req.method === 'POST' && !machine.ok)) {
       try {
         actor = authenticatedActor(req);
@@ -1017,6 +1051,8 @@ module.exports = async function(
     const live =
       Boolean(machine.ok);
 
+    liveRequest = live;
+
 
     const source =
       live
@@ -1152,11 +1188,38 @@ module.exports = async function(
       );
 
     if (!live) {
+      const proposedFlight = {
+        Direction: 'EXPORT',
+        OriginAirport:
+          origin || station,
+        DestinationAirport:
+          destination
+      };
+
+      await requireOperationalCapability(
+        pool,
+        sql,
+        actor,
+        proposedFlight,
+        'UPLOAD_FLIGHT_DATA'
+      );
+
       const authorizationCandidates = await pool.request()
         .input('AuthorizationOperatingDate', sql.Date, operatingDate)
         .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
           FROM dbo.Flights WHERE OperatingDate=@AuthorizationOperatingDate;`);
       const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
+
+      for (const candidate of authorizationMatches) {
+        await requireOperationalCapability(
+          pool,
+          sql,
+          actor,
+          candidate,
+          'UPLOAD_FLIGHT_DATA'
+        );
+      }
+
       if (authorizationMatches.length > 1) {
         sendJson(context, 409, {
           ok: false,
@@ -1166,11 +1229,7 @@ module.exports = async function(
         });
         return;
       }
-      const authorizationFlight = authorizationMatches[0] || {
-        Direction: 'EXPORT',
-        OriginAirport: origin || station,
-        DestinationAirport: destination
-      };
+      const authorizationFlight = authorizationMatches[0] || proposedFlight;
       if (authorizationMatches[0] && String(authorizationFlight.Direction || '').toUpperCase() !== 'EXPORT') {
         sendJson(context, 409, {
           ok: false,
@@ -1180,7 +1239,6 @@ module.exports = async function(
         });
         return;
       }
-      await requireOperationalCapability(pool, sql, actor, authorizationFlight, 'UPLOAD_FLIGHT_DATA');
     }
 
     const duplicate =
@@ -1191,6 +1249,18 @@ module.exports = async function(
 
 
     if (duplicate) {
+
+      if (!live) {
+        await requireOperationalCapability(
+          pool,
+          sql,
+          actor,
+          duplicateAuthorizationFlight(
+            duplicate
+          ),
+          'UPLOAD_FLIGHT_DATA'
+        );
+      }
 
       sendJson(
         context,
@@ -1262,6 +1332,28 @@ module.exports = async function(
         .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
           FROM dbo.Flights WHERE OperatingDate=@LockedAuthorizationOperatingDate;`);
       const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
+
+      const flightsToAuthorize =
+        authorizationMatches.length
+          ? authorizationMatches
+          : [{
+              Direction: 'EXPORT',
+              OriginAirport:
+                origin || station,
+              DestinationAirport:
+                destination
+            }];
+
+      for (const candidate of flightsToAuthorize) {
+        await requireOperationalCapability(
+          tx,
+          sql,
+          actor,
+          candidate,
+          'UPLOAD_FLIGHT_DATA'
+        );
+      }
+
       if (authorizationMatches.length > 1) {
         await tx.rollback();
         tx = null;
@@ -1273,12 +1365,6 @@ module.exports = async function(
         });
         return;
       }
-      const authorizationFlight = authorizationMatches[0] || {
-        Direction: 'EXPORT',
-        OriginAirport: origin || station,
-        DestinationAirport: destination
-      };
-      await requireOperationalCapability(tx, sql, actor, authorizationFlight, 'UPLOAD_FLIGHT_DATA');
     }
 
 
@@ -2303,6 +2389,18 @@ module.exports = async function(
 
         if (dup) {
 
+          if (!liveRequest) {
+            await requireOperationalCapability(
+              pool,
+              sql,
+              actor,
+              duplicateAuthorizationFlight(
+                dup
+              ),
+              'UPLOAD_FLIGHT_DATA'
+            );
+          }
+
           sendJson(
             context,
             200,
@@ -2352,7 +2450,17 @@ module.exports = async function(
           return;
         }
 
-      } catch {}
+      } catch (duplicateError) {
+        if (
+          sendOperationalAuthorizationError(
+            context,
+            duplicateError,
+            sendJson
+          )
+        ) {
+          return;
+        }
+      }
     }
 
 

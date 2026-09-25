@@ -352,11 +352,15 @@ function parseExportUws(workbook, options = {}) {
   };
 }
 
-function matchExportUwsFlight(rows, parsed) {
-  const candidates = (Array.isArray(rows) ? rows : []).filter(row =>
+function findExportUwsFlightCandidates(rows, parsed) {
+  return (Array.isArray(rows) ? rows : []).filter(row =>
     normalizeFlightNumber(row?.FlightNumber) === parsed.canonicalFlightNumber &&
     String(row?.OperatingDateIso || row?.OperatingDate || '').slice(0, 10) === parsed.operatingDate
   );
+}
+
+function matchExportUwsFlight(rows, parsed) {
+  const candidates = findExportUwsFlightCandidates(rows, parsed);
   if (!candidates.length) {
     throw new ExportUwsError('UWS_FLIGHT_NOT_FOUND', 'No CargoRun flight matches the UWS flight number and operating date', 404);
   }
@@ -390,6 +394,7 @@ module.exports = {
   ExportUwsError,
   detectWorkbookType,
   parseExportUws,
+  findExportUwsFlightCandidates,
   matchExportUwsFlight,
   parseOperatingDate,
   splitShcs,

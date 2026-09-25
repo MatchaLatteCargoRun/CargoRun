@@ -83,7 +83,7 @@ module.exports = async function configurationControl(context, req) {
     if (method === 'POST' && !operation) { sendJson(context, 404, { ok: false, error: 'An explicit configuration operation is required' }); return; }
 
     const connectionString = process.env.DATABASE_CONNECTION_STRING;
-    if (!connectionString) { sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' }); return; }
+    if (!connectionString) { sendJson(context, 503, { ok: false, error: 'Service configuration is unavailable' }); return; }
     pool = await new sql.ConnectionPool(connectionString).connect();
 
     if (method === 'GET') {

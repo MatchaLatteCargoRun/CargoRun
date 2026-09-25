@@ -11,6 +11,22 @@ const access = capabilities => ({
   capabilitiesByStation: Object.fromEntries(stations.map(station => [station, capabilities]))
 });
 
+const requireOperationalCapability = async (_executor, _sql, actor, flight, requiredCapability) => ({
+  actorReference: actor.reference,
+  stationCode: String(
+    String(flight?.Direction || '').toUpperCase() === 'IMPORT'
+      ? flight?.DestinationAirport || 'MEL'
+      : flight?.OriginAirport || 'MEL'
+  ).toUpperCase(),
+  requiredCapability,
+  capabilities: [requiredCapability]
+});
+
+const requireOperationalEntityCapability = async (executor, sql, actor, flight, requiredCapability) => {
+  if (!flight) throw actual.operationalEntityUnavailable();
+  return requireOperationalCapability(executor, sql, actor, flight, requiredCapability);
+};
+
 module.exports = {
   ...actual,
   resolveActorAccess: async () => access(['VIEW_FLIGHTS', 'VIEW_HISTORY', 'VIEW_FLIGHT_STATEMENT', 'VIEW_SUPERVISOR']),
@@ -20,14 +36,6 @@ module.exports = {
   requireAnyOperationalCapability: async (_executor, _sql, _actor, requiredCapabilities) => ({
     ...access(requiredCapabilities), requiredCapability: requiredCapabilities[0]
   }),
-  requireOperationalCapability: async (_executor, _sql, actor, flight, requiredCapability) => ({
-    actorReference: actor.reference,
-    stationCode: String(
-      String(flight?.Direction || '').toUpperCase() === 'IMPORT'
-        ? flight?.DestinationAirport || 'MEL'
-        : flight?.OriginAirport || 'MEL'
-    ).toUpperCase(),
-    requiredCapability,
-    capabilities: [requiredCapability]
-  })
+  requireOperationalCapability,
+  requireOperationalEntityCapability
 };

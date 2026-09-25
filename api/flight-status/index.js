@@ -1,7 +1,8 @@
 const sql = require('mssql');
 const {
   authenticatedActor,
-  requireOperationalCapability,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 function toIso(value) {
@@ -40,7 +41,8 @@ function sendJson(context, status, payload, extraHeaders = {}) {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      ...extraHeaders
+      ...extraHeaders,
+      'Cache-Control': 'private, no-store'
     },
     body: JSON.stringify(payload)
   };
@@ -59,7 +61,7 @@ module.exports = async function (context, req) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        status: 'unavailable'
       });
       return;
     }
@@ -70,9 +72,7 @@ module.exports = async function (context, req) {
 
     sendJson(context, 200, {
       ok: true,
-      service: 'CargoRun database connectivity',
-      databaseReachable: true,
-      serverTimeUtc: new Date().toISOString()
+      status: 'healthy'
     });
 
     return;
@@ -80,9 +80,9 @@ module.exports = async function (context, req) {
   } catch (err) {
     context.log.error('Database health check failed', err);
 
-      sendJson(context, 500, {
+      sendJson(context, 503, {
         ok: false,
-        error: 'Database connection failed'
+        status: 'unhealthy'
     });
 
     return;
@@ -100,11 +100,8 @@ module.exports = async function (context, req) {
         200,
         {
           ok: true,
-          service: 'CargoRun flight-status API',
-          runtime: process.version,
-          flightAwareConfigured: Boolean(process.env.FLIGHTAWARE_API_KEY)
-        },
-        { 'Cache-Control': 'no-store' }
+          status: 'healthy'
+        }
       );
       return;
     }
@@ -122,8 +119,7 @@ module.exports = async function (context, req) {
           ok: false,
           code: 'FLIGHTAWARE_DISABLED',
           error: 'Live flight tracking is disabled.'
-        },
-        { 'Cache-Control': 'no-store' }
+        }
       );
       return;
     }
@@ -140,17 +136,14 @@ module.exports = async function (context, req) {
       return;
     }
     operationalPool = await new sql.ConnectionPool(connectionString).connect();
+    await requireOperationalStations(operationalPool, sql, actor, 'VIEW_FLIGHTS');
     const flightResult = await operationalPool.request()
       .input('FlightStatusFlightId', sql.BigInt, flightId)
       .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDate,
         Direction,OriginAirport,DestinationAirport
         FROM dbo.Flights WHERE FlightId=@FlightStatusFlightId;`);
-    if (flightResult.recordset.length !== 1) {
-      sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
-      return;
-    }
-    const selectedFlight = flightResult.recordset[0];
-    await requireOperationalCapability(operationalPool, sql, actor, selectedFlight, 'VIEW_FLIGHTS');
+    const selectedFlight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;
+    await requireOperationalEntityCapability(operationalPool, sql, actor, selectedFlight, 'VIEW_FLIGHTS');
 
     const apiKey = process.env.FLIGHTAWARE_API_KEY;
     const flight = normaliseIdent(selectedFlight.FlightNumber);
@@ -159,7 +152,9 @@ module.exports = async function (context, req) {
 
     if (!apiKey) {
       sendJson(context, 503, {
-        error: 'FLIGHTAWARE_API_KEY is not configured in Azure'
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        error: 'Live flight tracking is unavailable.'
       });
       return;
     }
@@ -251,7 +246,7 @@ module.exports = async function (context, req) {
             inBlockAt: toIso(f.actual_in),
             destination: airportCode(f.destination) || airport
           },
-          { 'Cache-Control': 'public, max-age=60' }
+          { 'Cache-Control': 'private, no-store' }
         );
 
         return;

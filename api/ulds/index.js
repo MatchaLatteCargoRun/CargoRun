@@ -4,7 +4,8 @@ const { acquireFlightIdentityLock } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
-  requireOperationalCapability,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 
@@ -52,7 +53,7 @@ module.exports = async function (context, req) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        error: 'Service configuration is unavailable'
       });
       return;
     }
@@ -72,15 +73,19 @@ module.exports = async function (context, req) {
         return;
       }
 
+      await requireOperationalStations(pool, sql, actor, 'VIEW_FLIGHTS');
+
       const flightResult = await pool.request()
         .input('AuthorizationFlightId', sql.BigInt, flightId)
         .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
           FROM dbo.Flights WHERE FlightId=@AuthorizationFlightId;`);
-      if (flightResult.recordset.length !== 1) {
-        sendJson(context, 404, { ok: false, error: 'Flight not found' });
-        return;
-      }
-      await requireOperationalCapability(pool, sql, actor, flightResult.recordset[0], 'VIEW_FLIGHTS');
+      await requireOperationalEntityCapability(
+        pool,
+        sql,
+        actor,
+        flightResult.recordset.length === 1 ? flightResult.recordset[0] : null,
+        'VIEW_FLIGHTS'
+      );
 
       const result = await pool.request()
         .input('FlightId', sql.BigInt, flightId)
@@ -139,24 +144,19 @@ module.exports = async function (context, req) {
       return;
     }
 
+    await requireOperationalStations(pool, sql, actor, 'MOVE_ULD');
+
     const flightResult = await pool.request()
       .input('FlightId', sql.BigInt, flightId)
       .query(`
         SELECT FlightId,FlightNumber,OperatingDate,
-          CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction
+          CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,OriginAirport,DestinationAirport
         FROM dbo.Flights
         WHERE FlightId = @FlightId;
       `);
 
-    if (!flightResult.recordset.length) {
-      sendJson(context, 404, {
-        ok: false,
-        error: 'Flight not found'
-      });
-      return;
-    }
-
-    const selectedFlight = flightResult.recordset[0];
+    const selectedFlight = flightResult.recordset[0] || null;
+    await requireOperationalEntityCapability(pool, sql, actor, selectedFlight, 'MOVE_ULD');
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
@@ -172,13 +172,8 @@ module.exports = async function (context, req) {
         .input('LockedFlightId', sql.BigInt, flightId)
         .query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
           FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
-      if (!lockedFlight.recordset.length) {
-        await transaction.rollback();
-        sendJson(context, 404, { ok: false, error: 'Flight not found' });
-        return;
-      }
-      const locked = lockedFlight.recordset[0];
-      await requireOperationalCapability(transaction, sql, actor, locked, 'MOVE_ULD');
+      const locked = lockedFlight.recordset[0] || null;
+      await requireOperationalEntityCapability(transaction, sql, actor, locked, 'MOVE_ULD');
       const direction = String(locked.Direction || '').toUpperCase();
       if (direction === 'EXPORT') {
         const finalResult = await new sql.Request(transaction)

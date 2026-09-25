@@ -15,7 +15,14 @@ const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
 
 // Exercise the actual inline functions without booting the app or mocking a DOM.
 function frontend() {
-  const context = vm.createContext({ state: { history: [] }, azureDateOnly: value => String(value || '').slice(0, 10) });
+  const context = vm.createContext({
+    state: { history: [] },
+    cargoRunAccess: { status: 'provisioned' },
+    operationalSessionGeneration: 0,
+    operationalSessionIsCurrent: generation => generation === 0,
+    deferOperational() {},
+    azureDateOnly: value => String(value || '').slice(0, 10)
+  });
   const start = html.indexOf('function normalizeULD(');
   const end = html.indexOf('function firstStatus(', start);
   vm.runInContext(html.slice(start, end), context);
@@ -149,7 +156,8 @@ test('upload response links canonical server number to formatted pending ULD', a
       return { ok: true, json: async () => ({ flight: { FlightId: 1 }, ulds: [{ UldId: 7, UldNumber: 'AKE00123CX' }] }) };
     },
     handlingCounts: () => ({}), currentUser: () => ({ name: 'Test' }),
-    logEvent() {}, save() {}, closeModal() {}, toast() {}, openScreen() {}
+    logEvent() {}, save() {}, closeModal() {}, toast() {}, openScreen() {},
+    FLIGHTAWARE_ENABLED: false
   });
   const start = html.indexOf('async function createUploadedFlight(');
   vm.runInContext(html.slice(start, html.indexOf('function render()', start)), browser);
@@ -194,7 +202,9 @@ function apiHarness(initialRows = []) {
         Object.assign(state.messages.find(x => x.MachMessageId === p.MachMessageId), { MatchedFlightId: p.FlightId, ProcessingStatus: 'PROCESSED' }); return result([]);
       }
       if (q.includes('FROM dbo.Flights')) {
-        if (q.startsWith('SELECT FlightId, FlightNumber FROM dbo.Flights')) return result([]); // Manifest creates a new flight.
+        if (q.startsWith('SELECT FlightId, FlightNumber, Direction, OriginAirport, DestinationAirport FROM dbo.Flights')) {
+          return result([]); // Manifest creates a new flight.
+        }
         const flightId = p.SelectedFlightId ?? p.LockedFlightId ?? p.FlightId;
         return result(flightId ? flights.filter(x => String(x.FlightId) === String(flightId)) : [flights[0]]);
       }

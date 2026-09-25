@@ -2,7 +2,8 @@ const sql = require('mssql');
 const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
-  requireOperationalCapability,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 
@@ -104,7 +105,7 @@ module.exports = async function (context, req) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        error: 'Service configuration is unavailable'
       });
       return;
     }
@@ -140,6 +141,8 @@ module.exports = async function (context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
 
+    await requireOperationalStations(transaction, sql, actor, 'MOVE_ULD');
+
     const currentResult = await new sql.Request(transaction)
       .input('UldId', sql.BigInt, uldId)
       .query(`
@@ -158,15 +161,8 @@ module.exports = async function (context, req) {
         WHERE u.UldId = @UldId;
       `);
 
-    if (!currentResult.recordset.length) {
-      await transaction.rollback();
-      transaction = null;
-      sendJson(context, 404, { ok: false, error: 'ULD not found' });
-      return;
-    }
-
-    const current = currentResult.recordset[0];
-    await requireOperationalCapability(transaction, sql, actor, current, 'MOVE_ULD');
+    const current = currentResult.recordset[0] || null;
+    await requireOperationalEntityCapability(transaction, sql, actor, current, 'MOVE_ULD');
     const direction = canonicalStatus(current.Direction);
     const currentStatus = canonicalStatus(current.CurrentStatus);
 
@@ -375,7 +371,7 @@ module.exports = async function (context, req) {
           `);
           movementLogged = true;
         } else if (requiredUnknown.length) {
-          movementWarning = `Movement trail skipped because required columns were not recognised: ${requiredUnknown.map(x => x.COLUMN_NAME).join(', ')}`;
+          movementWarning = 'Movement trail is temporarily unavailable';
         }
       }
     } catch (movementErr) {
