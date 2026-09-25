@@ -69,6 +69,16 @@ test('approved canvas mascot replaces both generic action and startup spinner ar
   assert.doesNotMatch(html, /cargoRunnerSpot|cargoSpeedSpot|cargoDot/);
 });
 
+test('session authorization reuses the shared CargoRun loader without a static access-check card', () => {
+  const accessGate = html.slice(html.indexOf('function accessGateScreen()'), html.indexOf('let actionLoaderDepth'));
+  const boot = html.slice(html.indexOf('async function bootCargoRun()'), html.indexOf('\nbootCargoRun();'));
+  assert.match(boot, /showDataLoader\('Checking CargoRun access','Confirming your CargoRun role and station access\.'\)/);
+  assert.match(boot, /updateDataLoader\('Loading live operations/);
+  assert.match(html, /purgeCargoRunOperationalState\(\{preserveIdentity:true,preserveDataLoader:true\}\)/);
+  assert.doesNotMatch(accessGate, /Checking CargoRun access|Confirming your CargoRun role and station access/);
+  assert.match(accessGate, /Access not provisioned/);
+});
+
 test('loading status keeps meaningful accessible title and detail text', () => {
   assert.match(html, /id="cargoLoader"[^>]*role="status"[^>]*aria-live="polite"/);
   assert.match(html, /id="actionLoader"[^>]*role="status"[^>]*aria-live="assertive"/);
@@ -153,6 +163,7 @@ test('multi-select offload action supplies singular and plural loading copy', ()
 });
 test('meaningful existing workflows use the shared loader while its component has no business calls', () => {
   assert.match(html, /showDataLoader\('Starting CargoRun…','Checking your Microsoft sign-in'\)/);
+  assert.match(html, /showDataLoader\('Checking CargoRun access','Confirming your CargoRun role and station access\.'\)/);
   assert.ok(html.includes("showActionLoader(uldIds.length===1?'Creating Offload\\u2026'"));
   assert.match(html, /showActionLoader\('Finalising export…'/);
   assert.match(html, /showActionLoader\('Finalising import…'/);

@@ -121,6 +121,10 @@ test('legacy History and completion evidence never enter startup memory', () => 
 test('provisioned false purges legacy cache and all in-memory operational rows', async () => {
   const { context, storage } = createStateContext();
   installSessionFunction(context);
+  const transitions = [];
+  const loaderHides = [];
+  context.render = () => transitions.push(vm.runInContext('cargoRunAccess.status', context));
+  context.hideDataLoader = force => loaderHides.push(force);
   storage.values.set('cargorun-state', JSON.stringify(cachedOperationalState));
   vm.runInContext("state.imports=[{flight:'VISIBLE-BEFORE-CHECK'}];state.history=[{action:'OLD'}]", context);
   context.fetch = async () => response(200, { ok: true, authenticated: true, provisioned: false, userId: 'user-b', displayName: 'User B', stations: [], capabilities: [] });
@@ -129,11 +133,17 @@ test('provisioned false purges legacy cache and all in-memory operational rows',
   assert.deepEqual(readJson(context, 'state.imports'), []);
   assert.deepEqual(readJson(context, 'state.history'), []);
   assert.equal(readJson(context, 'cargoRunAccess').status, 'unprovisioned');
+  assert.deepEqual(transitions, ['checking', 'unprovisioned']);
+  assert.deepEqual(loaderHides, [true]);
 });
 
 test('authorization configuration 503 purges legacy cache and operational state', async () => {
   const { context, storage } = createStateContext();
   installSessionFunction(context);
+  const transitions = [];
+  const loaderHides = [];
+  context.render = () => transitions.push(vm.runInContext('cargoRunAccess.status', context));
+  context.hideDataLoader = force => loaderHides.push(force);
   storage.values.set('cargorun-state', JSON.stringify(cachedOperationalState));
   vm.runInContext("state.offloads=[{uld:'OLD'}];state.completedExports=[{verificationId:'OLD'}]", context);
   context.fetch = async () => response(503, { ok: false, code: 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE', error: 'Operational authorization could not be resolved' });
@@ -142,6 +152,8 @@ test('authorization configuration 503 purges legacy cache and operational state'
   assert.deepEqual(readJson(context, 'state.offloads'), []);
   assert.deepEqual(readJson(context, 'state.completedExports'), []);
   assert.equal(readJson(context, 'cargoRunAccess').status, 'error');
+  assert.deepEqual(transitions, ['checking', 'error']);
+  assert.deepEqual(loaderHides, [true]);
 });
 
 test('sign-out synchronously purges legacy cache and operational memory before redirect', () => {
@@ -217,7 +229,7 @@ test('provisioned startup waits for session and then loads only fresh authorized
     cargoRunAccess: { status: 'provisioned' },
     operationalSessionIsCurrent(generation) { return generation === context.operationalSessionGeneration && context.cargoRunAccess.status === 'provisioned'; },
     render() { events.push(['render', state.imports.map(row => row.flight)]); },
-    showDataLoader() { events.push(['loader']); },
+    showDataLoader(title, detail) { events.push(['loader', title, detail]); },
     hideDataLoader() { events.push(['hide']); },
     updateDataLoader() { events.push(['update']); },
     currentStationCode: () => 'MEL',
@@ -232,9 +244,34 @@ test('provisioned startup waits for session and then loads only fresh authorized
   assert.ok(names.indexOf('session') < names.indexOf('sync'));
   assert.ok(names.indexOf('sync') < names.indexOf('start'));
   assert.equal(names.filter(name => name === 'loader').length, 2);
-  assert.ok(names.lastIndexOf('loader') > names.indexOf('session'));
+  assert.ok(names.lastIndexOf('loader') < names.indexOf('session'));
+  assert.ok(names.indexOf('session') < names.indexOf('update'));
+  assert.deepEqual(events.find(event => event[1] === 'Checking CargoRun access'), ['loader', 'Checking CargoRun access', 'Confirming your CargoRun role and station access.']);
   assert.deepEqual(state.imports, [{ flight: 'FRESH100' }]);
   assert.deepEqual(events[0], ['render', []]);
+});
+
+test('unprovisioned startup does not synchronize or start the scheduler', async () => {
+  const events = [];
+  const context = vm.createContext({
+    operationalSessionGeneration: 0,
+    cargoRunAccess: { status: 'checking' },
+    operationalSessionIsCurrent: () => false,
+    render() { events.push('render'); },
+    showDataLoader(title) { events.push(title); },
+    hideDataLoader() { events.push('hide'); },
+    updateDataLoader() { events.push('update'); },
+    currentStationCode: () => 'MEL',
+    loadEntraIdentity: async () => { events.push('identity'); return true; },
+    loadCargoRunSession: async () => { events.push('session'); return false; },
+    syncCentralData: async () => { events.push('sync'); },
+    centralSyncScheduler: { start: async () => { events.push('start'); } }
+  });
+  vm.runInContext(sourceBetween('async function bootCargoRun()', '\nbootCargoRun();'), context);
+  await context.bootCargoRun();
+  assert.ok(events.indexOf('Checking CargoRun access') < events.indexOf('session'));
+  assert.equal(events.includes('sync'), false);
+  assert.equal(events.includes('start'), false);
 });
 
 test('a stale flight summary response cannot reopen operational UI or hide the replacement loader', async () => {
@@ -430,6 +467,7 @@ test('stale startup sync cannot start scheduling or hide a replacement-session l
     operationalSessionIsCurrent(generation) { return generation === context.operationalSessionGeneration && context.cargoRunAccess.status === 'provisioned'; },
     render() { events.push('render'); },
     showDataLoader() { loaderVisible = true; events.push('show'); },
+    updateDataLoader() { events.push('update'); },
     hideDataLoader() { loaderVisible = false; events.push('hide'); },
     currentStationCode: () => 'MEL',
     loadEntraIdentity: async () => true,

@@ -749,7 +749,7 @@ function loadState(){
 }
 // Operational state and UI settings intentionally remain memory-only.
 function save(){state.stateVersion=CARGORUN_STATE_VERSION}
-function clearCargoRunOperationalMemory({preserveIdentity=true}={}){
+function clearCargoRunOperationalMemory({preserveIdentity=true,preserveDataLoader=false}={}){
  const sessionUser=preserveIdentity&&state?.sessionUser?{...state.sessionUser}:null;
  operationalSessionGeneration++;
  state=structuredClone(seed);
@@ -770,9 +770,10 @@ function clearCargoRunOperationalMemory({preserveIdentity=true}={}){
  if(modalRoot){modalRoot.classList.remove('show');modalRoot.replaceChildren()}
  const toastRoot=document.getElementById('toast');
  if(toastRoot){clearTimeout(toastRoot._timer);toastRoot._timer=null;toastRoot.classList.remove('show');toastRoot.textContent=''}
- const loaderCopy=[['cargoLoaderTitle','Starting CargoRun…'],['cargoLoaderSub','Checking access'],['actionLoaderTitle','Saving change…'],['actionLoaderSub','Updating CargoRun']];
+ const loaderCopy=[['actionLoaderTitle','Saving change…'],['actionLoaderSub','Updating CargoRun']];
+ if(!preserveDataLoader)loaderCopy.unshift(['cargoLoaderTitle','Starting CargoRun…'],['cargoLoaderSub','Checking access']);
  for(const [id,text] of loaderCopy){const element=document.getElementById(id);if(element)element.textContent=text}
- if(typeof hideDataLoader==='function')hideDataLoader(true);
+ if(!preserveDataLoader&&typeof hideDataLoader==='function')hideDataLoader(true);
  if(typeof hideActionLoader==='function')hideActionLoader(true);
 }
 function purgeCargoRunOperationalState(options={}){
@@ -1238,7 +1239,7 @@ async function loadEntraIdentity(){
 async function loadCargoRunSession(){
  centralSyncScheduler.stop();
  cargoRunAccess={status:'checking',stations:[],capabilities:[],error:'',code:''};
- purgeCargoRunOperationalState({preserveIdentity:true});
+ purgeCargoRunOperationalState({preserveIdentity:true,preserveDataLoader:true});
  render();
  const generation=operationalSessionGeneration;
  try{
@@ -1256,6 +1257,7 @@ async function loadCargoRunSession(){
   state.sessionUser={...state.sessionUser,...(data.displayName?{name:String(data.displayName)}:{}),...(data.userId?{employeeId:String(data.userId)}:{})};
   if(!data.provisioned){
    purgeCargoRunOperationalState({preserveIdentity:true});
+   render();
   }
   return data.provisioned;
  }catch(error){
@@ -1263,17 +1265,17 @@ async function loadCargoRunSession(){
   console.error('CargoRun session authorization failed',error);
   purgeCargoRunOperationalState({preserveIdentity:true});
   cargoRunAccess={status:'error',stations:[],capabilities:[],error:error?.message||'CargoRun access could not be verified',code:error?.code||''};
+  render();
   return false;
  }
 }
 function hasCargoRunCapability(capability){return cargoRunAccess.status==='provisioned'&&cargoRunAccess.capabilities.includes(capability)}
 function canOpenAdmin(){return ['PUBLISH_MESSAGES','EDIT_AIRLINE_RULES','EDIT_SHC_RULES','EDIT_SLA_RULES','MANAGE_USERS','VIEW_ADMIN_AUDIT'].some(hasCargoRunCapability)}
 function accessGateScreen(){
- const checking=cargoRunAccess.status==='checking';
  const unprovisioned=cargoRunAccess.status==='unprovisioned';
- const title=checking?'Checking CargoRun accessâ€¦':unprovisioned?'Access not provisioned':'Access could not be verified';
- const detail=checking?'Confirming your CargoRun role and station access.':unprovisioned?'Your Microsoft account has authenticated successfully, but it has not been granted access to CargoRun.':'CargoRun could not verify your application access. No operational data has been loaded.';
- const action=checking?'':unprovisioned?'<p style="margin-top:12px;color:var(--muted)">Contact a CargoRun administrator.</p>':'<button class="primary" style="margin-top:14px" onclick="location.reload()">Try again</button>';
+ const title=unprovisioned?'Access not provisioned':'Access could not be verified';
+ const detail=unprovisioned?'Your Microsoft account has authenticated successfully, but it has not been granted access to CargoRun.':'CargoRun could not verify your application access. No operational data has been loaded.';
+ const action=unprovisioned?'<p style="margin-top:12px;color:var(--muted)">Contact a CargoRun administrator.</p>':'<button class="primary" style="margin-top:14px" onclick="location.reload()">Try again</button>';
  return `<main class="shell"><section class="ops-panel" style="max-width:620px;margin:12vh auto 0;padding:28px;text-align:center"><img src="${CARGORUN_MASCOT}" alt="CargoRun" style="width:78px;height:78px;object-fit:contain"><h1 style="margin:12px 0 6px">CargoRun</h1><h2 style="margin:0 0 10px;font-size:20px">${title}</h2><p style="margin:0;color:var(--muted);line-height:1.6">${detail}</p>${action}</section></main>`
 }
 let actionLoaderDepth=0,actionLoaderTimer=null;
@@ -3831,6 +3833,7 @@ async function confirmFinalManifest(flightId) {
 }
 function render(){
  try{
+  if(cargoRunAccess.status==='checking'){const app=document.getElementById('app');if(app)app.replaceChildren();return}
   if(cargoRunAccess.status!=='provisioned'){const app=document.getElementById('app');if(app)app.innerHTML=accessGateScreen();return}
   let content='';
   if(route.screen==='home')content=home();
@@ -3860,12 +3863,13 @@ async function bootCargoRun(){
   const signedIn=await loadEntraIdentity();
   if(signedIn){
    generation=operationalSessionGeneration;
+   showDataLoader('Checking CargoRun access','Confirming your CargoRun role and station access.');
    const provisioned=await loadCargoRunSession();
    if(!provisioned)return;
    generation=operationalSessionGeneration;
    if(!operationalSessionIsCurrent(generation))return;
    render();
-   showDataLoader('Loading live operations…',`Syncing ${currentStationCode()} flights, ULDs, offloads and history`);
+   updateDataLoader('Loading live operations…',`Syncing ${currentStationCode()} flights, ULDs, offloads and history`);
    await syncCentralData(true,{automatic:true,full:true,screen:'home',reason:'startup'});
    if(!operationalSessionIsCurrent(generation))return;
    await centralSyncScheduler.start();
