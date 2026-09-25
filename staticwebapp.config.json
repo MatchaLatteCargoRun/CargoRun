@@ -2,6 +2,17 @@
   "platform": {
     "apiRuntime": "node:22"
   },
+  "auth": {
+    "identityProviders": {
+      "azureActiveDirectory": {
+        "registration": {
+          "openIdIssuer": "https://login.microsoftonline.com/331b9c12-5884-4ed7-a6b2-ea33209f08a2/v2.0",
+          "clientIdSettingName": "AZURE_CLIENT_ID",
+          "clientSecretSettingName": "AZURE_CLIENT_SECRET"
+        }
+      }
+    }
+  },
   "routes": [
     {
       "route": "/signed-out.html",
