@@ -3,6 +3,14 @@ const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
 const { acquireFlightIdentityLock, flightIdentityLockResource } = require('../shared/flight');
 const { buildCompletionSnapshot, CompletionSnapshotError } = require('../shared/completion-snapshot');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 class ImportCompletionConflict extends Error {
   constructor(code, message, record = null) {
@@ -43,32 +51,39 @@ async function columnsFor(request,tableName){const r=await request.input('TableN
 function normalize(row,columns,flightNumber){const get=names=>{const c=pick(columns,names);return c?row[c]:null};let snapshot={};const raw=get(['SnapshotJson','Snapshot','DetailsJson']);if(raw){try{snapshot=typeof raw==='string'?JSON.parse(raw):raw}catch{}}return{id:String(get(['ImportCompletionRecordId','CompletionRecordId','Id'])??get(['VerificationId'])??''),flightId:get(['FlightId']),flight:flightNumber||snapshot.flight||'',flightDate:snapshot.flightDate||'',originAirport:snapshot.originAirport||'',destinationAirport:snapshot.destinationAirport||'',finalizedBy:get(['FinalisedByDisplayName','FinalizedByDisplayName','FinalisedByName','FinalizedByName'])||snapshot.finalizedBy||'',finalizedById:get(['FinalisedByObjectId','FinalizedByObjectId','FinalisedById','FinalizedById'])||snapshot.finalizedById||'',finalizedAt:get(['FinalisedAtUtc','FinalizedAtUtc','FinalisedAt','FinalizedAt'])||snapshot.finalizedAt||null,verificationId:String(get(['VerificationId'])??snapshot.verificationId??''),recordHash:get(['RecordHash','Hash'])||'',exceptionReason:get(['ExceptionReason','CompletionReason','Reason'])||snapshot.exceptionReason||'',summary:snapshot.summary||{},ulds:Array.isArray(snapshot.ulds)?snapshot.ulds:[]}}
 
 module.exports=async function(context,req){let pool,tx;try{
-  const cs=process.env.DATABASE_CONNECTION_STRING;if(!cs){sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'});return}
-  const identity=getActor(req);if(!identity){sendJson(context,401,{ok:false,error:'Microsoft Entra sign-in is required'});return}
+  const cs=process.env.DATABASE_CONNECTION_STRING;if(!cs){sendJson(context,503,{ok:false,code:'SERVICE_CONFIGURATION_UNAVAILABLE',error:'Service configuration is unavailable'});return}
+  const identity=authenticatedActor(req);
   pool=await new sql.ConnectionPool(cs).connect();
-  const columns=await columnsFor(pool.request(),'ImportCompletionRecords');if(!columns.length){sendJson(context,500,{ok:false,error:'dbo.ImportCompletionRecords table was not found. Run add_import_completion_records.sql first.'});return}
+  const requiredCapability=req.method==='GET'?'VIEW_FLIGHT_STATEMENT':'FINALISE_FLIGHT';
+  const access=await requireOperationalStations(pool,sql,identity,requiredCapability);
+  const columns=await columnsFor(pool.request(),'ImportCompletionRecords');if(!columns.length){sendJson(context,503,{ok:false,code:'COMPLETION_SCHEMA_NOT_READY',error:'Operational data is unavailable'});return}
 
   if(req.method==='GET'){
     const flightIdCol=pick(columns,['FlightId']);
+    if(!flightIdCol){sendJson(context,503,{ok:false,code:'COMPLETION_AUTHORIZATION_UNAVAILABLE',error:'Operational data is unavailable'});return}
+    const request=pool.request();
+    const stationParameters=bindStationParameters(request,sql,access.stations,'ImportCompletionStation');
     const timeCol=pick(columns,['FinalisedAtUtc','FinalizedAtUtc','FinalisedAt','FinalizedAt']);
     const idCol=pick(columns,['ImportCompletionRecordId','CompletionRecordId','Id'])||columns[0].COLUMN_NAME;
     const order=timeCol?`i.${q(timeCol)} DESC`:`i.${q(idCol)} DESC`;
-    const join=flightIdCol?`LEFT JOIN dbo.Flights f ON f.FlightId=i.${q(flightIdCol)}`:'';
-    const selectFlight=flightIdCol?', f.FlightNumber AS __FlightNumber':'';
-    const r=await pool.request().query(`SELECT i.*${selectFlight} FROM dbo.ImportCompletionRecords i ${join} ORDER BY ${order};`);
+    const r=await request.query(`SELECT i.*, f.FlightNumber AS __FlightNumber
+      FROM dbo.ImportCompletionRecords i
+      INNER JOIN dbo.Flights f ON f.FlightId=i.${q(flightIdCol)}
+      WHERE ${flightStationPredicate('f',stationParameters)}
+      ORDER BY ${order};`);
     sendJson(context,200,{ok:true,count:r.recordset.length,records:r.recordset.map(x=>normalize(x,columns,x.__FlightNumber))});return;
   }
 
   const b=req.body||{};const flightId=String(b.flightId||'').trim();if(!/^\d+$/.test(flightId)){sendJson(context,400,{ok:false,error:'flightId is required'});return}
   const exceptionReason=clean(b.exceptionReason,500);
   tx=new sql.Transaction(pool);await tx.begin();
-  const initial=await new sql.Request(tx).input('InitialFlightId',sql.BigInt,flightId).query(`SELECT FlightId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso FROM dbo.Flights WHERE FlightId=@InitialFlightId;`);
-  if(!initial.recordset.length){await tx.rollback();tx=null;sendJson(context,404,{ok:false,error:'Flight not found'});return}
-  const initialFlight=initial.recordset[0];
+  const initial=await new sql.Request(tx).input('InitialFlightId',sql.BigInt,flightId).query(`SELECT FlightId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,OriginAirport,DestinationAirport FROM dbo.Flights WHERE FlightId=@InitialFlightId;`);
+  const initialFlight=initial.recordset[0]||null;
+  await requireOperationalEntityCapability(tx,sql,identity,initialFlight,'FINALISE_FLIGHT');
   await acquireFlightIdentityLock(tx,sql,initialFlight.OperatingDateIso||initialFlight.OperatingDate,initialFlight.FlightNumber);
   const lockedResult=await new sql.Request(tx).input('LockedFlightId',sql.BigInt,flightId).query(`SELECT FlightId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,AirlineCode,OriginAirport,DestinationAirport,FlightStatus FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
-  if(!lockedResult.recordset.length){throw new ImportCompletionConflict('IMPORT_FLIGHT_CHANGED','The selected Import flight changed before finalisation could begin')}
-  const flight=lockedResult.recordset[0];
+  const flight=lockedResult.recordset[0]||null;
+  await requireOperationalEntityCapability(tx,sql,identity,flight,'FINALISE_FLIGHT');
   if(flightIdentityLockResource(initialFlight.OperatingDateIso||initialFlight.OperatingDate,initialFlight.FlightNumber)!==flightIdentityLockResource(flight.OperatingDateIso||flight.OperatingDate,flight.FlightNumber)){throw new ImportCompletionConflict('IMPORT_FLIGHT_CHANGED','The selected Import flight identity changed before finalisation could begin')}
   if(String(flight.Direction||'').trim().toUpperCase()!=='IMPORT'){await tx.rollback();tx=null;sendJson(context,400,{ok:false,code:'IMPORT_FLIGHT_REQUIRED',error:'Only import flights can be finalised here'});return}
   const flightIdCol=pick(columns,['FlightId']);
@@ -88,7 +103,7 @@ module.exports=async function(context,req){let pool,tx;try{
   const request=new sql.Request(tx).input('FlightId',sql.BigInt,flightId).input('Actor',sql.NVarChar(150),identity.displayName).input('ActorId',sql.NVarChar(150),identity.reference).input('FinalisedAtUtc',sql.DateTime2(3),authored.completionTimeUtc).input('ExceptionReason',sql.NVarChar(500),exceptionReason).input('SnapshotJson',sql.NVarChar(sql.MAX),snapshotJson).input('RecordHash',sql.NVarChar(128),hash);
   const names=[];const values=[];const add=(cands,expr)=>{const c=pick(columns,cands);if(c&&!names.includes(c)){names.push(c);values.push(expr)}};
   add(['FlightId'],'@FlightId');add(['VerificationId'],'NEWID()');add(['FinalisedAtUtc','FinalizedAtUtc','FinalisedAt','FinalizedAt'],'@FinalisedAtUtc');add(['FinalisedByDisplayName','FinalizedByDisplayName','FinalisedByName','FinalizedByName'],'@Actor');add(['FinalisedByObjectId','FinalizedByObjectId','FinalisedById','FinalizedById'],'@ActorId');add(['ExceptionReason','CompletionReason','Reason'],'@ExceptionReason');add(['SnapshotJson','Snapshot','DetailsJson'],'@SnapshotJson');add(['RecordHash','Hash'],'@RecordHash');
-  const mapped=new Set(names.map(x=>x.toLowerCase()));const requiredUnknown=columns.filter(c=>c.IS_NULLABLE==='NO'&&!c.COLUMN_DEFAULT&&Number(c.IS_IDENTITY)!==1&&!mapped.has(String(c.COLUMN_NAME).toLowerCase()));if(requiredUnknown.length){await tx.rollback();tx=null;sendJson(context,500,{ok:false,error:`ImportCompletionRecords has unmapped required columns: ${requiredUnknown.map(c=>c.COLUMN_NAME).join(', ')}`});return}
+  const mapped=new Set(names.map(x=>x.toLowerCase()));const requiredUnknown=columns.filter(c=>c.IS_NULLABLE==='NO'&&!c.COLUMN_DEFAULT&&Number(c.IS_IDENTITY)!==1&&!mapped.has(String(c.COLUMN_NAME).toLowerCase()));if(requiredUnknown.length){await tx.rollback();tx=null;sendJson(context,503,{ok:false,code:'COMPLETION_SCHEMA_NOT_READY',error:'Operational data is unavailable'});return}
   const inserted=await request.query(`INSERT INTO dbo.ImportCompletionRecords (${names.map(q).join(',')}) OUTPUT INSERTED.* VALUES (${values.join(',')});`);
   const lifecycle=await new sql.Request(tx).input('FinaliseFlightId',sql.BigInt,flightId).query(`UPDATE dbo.Flights SET FlightStatus='FINALISED' WHERE FlightId=@FinaliseFlightId AND UPPER(LTRIM(RTRIM(FlightStatus)))='ACTIVE';`);
   if(Number(lifecycle.rowsAffected?.[0]||0)!==1){throw new ImportCompletionConflict('IMPORT_FINALISATION_CONFLICT','The Import flight lifecycle changed during finalisation')}
@@ -96,4 +111,4 @@ module.exports=async function(context,req){let pool,tx;try{
   await insertAuditEvent(tx,sql,{type:'Flight',action:'Import finalised',actorDisplayName:identity.displayName,actorReference:identity.reference,entityType:'Flight',entityId:flightId,flightId,flightNumber:flight.FlightNumber,fromStatus:flight.FlightStatus,toStatus:'FINALISED',detail:`Import finalised${exceptionReason?` with exception: ${exceptionReason}`:''} • Record ${auditRecord.verificationId}`,details:{completionRecordId:auditRecord.id,verificationId:auditRecord.verificationId,pendingCount}});
   await tx.commit();tx=null;
   const rec=normalize(inserted.recordset[0],columns,flight.FlightNumber);rec.recordHash=hash;sendJson(context,201,{ok:true,record:rec,pendingCount});
-}catch(err){if(tx){try{await tx.rollback()}catch{}}if(err instanceof ImportCompletionConflict){sendJson(context,409,{ok:false,code:err.code,error:err.message,...(err.record?{record:err.record}:{})});return}if(err instanceof CompletionSnapshotError){sendJson(context,err.status,{ok:false,code:err.code,error:err.message});return}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed',detail:err.message})}finally{try{await pool?.close()}catch{}}};
+}catch(err){if(tx){try{await tx.rollback()}catch{}}if(sendOperationalAuthorizationError(context,err,sendJson))return;if(err instanceof ImportCompletionConflict){sendJson(context,409,{ok:false,code:err.code,error:err.message,...(err.record?{record:err.record}:{})});return}if(err instanceof CompletionSnapshotError){sendJson(context,err.status,{ok:false,code:err.code,error:err.message});return}context.log.error('Import completion API failed',err);sendJson(context,500,{ok:false,error:'Import completion API failed'})}finally{try{await pool?.close()}catch{}}};

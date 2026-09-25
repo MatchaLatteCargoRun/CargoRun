@@ -10,23 +10,21 @@ const {
   executeConfigurationMutation,
   buildConfigurationPreview
 } = require('../shared/configuration-mutations');
+const {
+  authenticatedActor,
+  requireAnyOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
-function getHeader(req, name) {
-  const headers = req?.headers || {};
-  if (typeof headers.get === 'function') return headers.get(name);
-  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || null;
-}
-function authenticatedActor(req) {
-  try {
-    const raw = getHeader(req, 'x-ms-client-principal');
-    if (!raw) return null;
-    const principal = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
-    const roles = Array.isArray(principal.userRoles) ? principal.userRoles : [];
-    const reference = String(principal.userId || '').trim();
-    if (!roles.includes('authenticated') || !reference) return null;
-    return { reference, displayName: String(principal.userDetails || 'Authenticated user').trim() || 'Authenticated user' };
-  } catch { return null; }
-}
+const ADMIN_READ_CAPABILITIES = [
+  'PUBLISH_MESSAGES',
+  'EDIT_AIRLINE_RULES',
+  'EDIT_SHC_RULES',
+  'EDIT_SLA_RULES',
+  'MANAGE_USERS',
+  'VIEW_ADMIN_AUDIT'
+];
+
 function sendJson(context, status, body) {
   context.res = { status, headers: { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' }, body: JSON.stringify(body) };
 }
@@ -78,7 +76,6 @@ module.exports = async function configurationControl(context, req) {
   let pool;
   try {
     const actor = authenticatedActor(req);
-    if (!actor) { sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' }); return; }
     const method = String(req.method || 'GET').toUpperCase();
     const operation = operationFromRequest(req);
     if (!['GET', 'POST'].includes(method)) { sendJson(context, 405, { ok: false, error: 'Only GET and explicit POST operations are supported' }); return; }
@@ -86,14 +83,13 @@ module.exports = async function configurationControl(context, req) {
     if (method === 'POST' && !operation) { sendJson(context, 404, { ok: false, error: 'An explicit configuration operation is required' }); return; }
 
     const connectionString = process.env.DATABASE_CONNECTION_STRING;
-    if (!connectionString) { sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' }); return; }
+    if (!connectionString) { sendJson(context, 503, { ok: false, error: 'Service configuration is unavailable' }); return; }
     pool = await new sql.ConnectionPool(connectionString).connect();
 
     if (method === 'GET') {
-      const [snapshot, capabilities] = await Promise.all([
-        loadCachedConfiguration(pool),
-        resolveActorCapabilities(pool, sql, actor.reference, null)
-      ]);
+      const adminAccess = await requireAnyOperationalCapability(pool, sql, actor, ADMIN_READ_CAPABILITIES);
+      const capabilities = adminAccess.capabilities;
+      const snapshot = await loadCachedConfiguration(pool);
       const [access, audit] = await Promise.all([
         loadAccessMetadata(pool, sql, actor.reference, capabilities),
         loadAudit(pool, sql, actor.reference, capabilities)
@@ -116,6 +112,7 @@ module.exports = async function configurationControl(context, req) {
     }
 
     if (operation === 'preview') {
+      await requireAnyOperationalCapability(pool, sql, actor, ADMIN_READ_CAPABILITIES);
       const snapshot = await loadCachedConfiguration(pool);
       sendJson(context, 200, { ok: true, preview: buildConfigurationPreview(snapshot, req.body || {}) });
       return;
@@ -130,6 +127,7 @@ module.exports = async function configurationControl(context, req) {
       ...result
     });
   } catch (error) {
+    if (sendOperationalAuthorizationError(context, error, sendJson)) return;
     if (error instanceof ConfigurationStoreError) {
       sendJson(context, 503, { ok: false, code: error.code, error: error.message, ...error.details, mode: 'SCHEMA_PENDING' });
       return;

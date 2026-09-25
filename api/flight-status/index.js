@@ -1,4 +1,10 @@
 const sql = require('mssql');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 function toIso(value) {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000).toISOString();
@@ -35,13 +41,15 @@ function sendJson(context, status, payload, extraHeaders = {}) {
     status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      ...extraHeaders
+      ...extraHeaders,
+      'Cache-Control': 'private, no-store'
     },
     body: JSON.stringify(payload)
   };
 }
 
 module.exports = async function (context, req) {
+  let operationalPool;
   try {
     const query = req?.query || {};
     if (String(query.dbhealth || '') === '1') {
@@ -53,25 +61,18 @@ module.exports = async function (context, req) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        status: 'unavailable'
       });
       return;
     }
 
     pool = await sql.connect(connectionString);
 
-    const result = await pool.request().query(`
-      SELECT
-        DB_NAME() AS DatabaseName,
-        COUNT(*) AS FlightCount
-      FROM dbo.Flights;
-    `);
+    await pool.request().query('SELECT 1 AS DatabaseReachable;');
 
     sendJson(context, 200, {
       ok: true,
-      database: result.recordset[0].DatabaseName,
-      flightCount: result.recordset[0].FlightCount,
-      serverTimeUtc: new Date().toISOString()
+      status: 'healthy'
     });
 
     return;
@@ -79,10 +80,9 @@ module.exports = async function (context, req) {
   } catch (err) {
     context.log.error('Database health check failed', err);
 
-    sendJson(context, 500, {
-      ok: false,
-      error: 'Database connection failed',
-      detail: err.message
+      sendJson(context, 503, {
+        ok: false,
+        status: 'unhealthy'
     });
 
     return;
@@ -100,11 +100,8 @@ module.exports = async function (context, req) {
         200,
         {
           ok: true,
-          service: 'CargoRun flight-status API',
-          runtime: process.version,
-          flightAwareConfigured: Boolean(process.env.FLIGHTAWARE_API_KEY)
-        },
-        { 'Cache-Control': 'no-store' }
+          status: 'healthy'
+        }
       );
       return;
     }
@@ -122,25 +119,42 @@ module.exports = async function (context, req) {
           ok: false,
           code: 'FLIGHTAWARE_DISABLED',
           error: 'Live flight tracking is disabled.'
-        },
-        { 'Cache-Control': 'no-store' }
+        }
       );
       return;
     }
 
-    const apiKey = process.env.FLIGHTAWARE_API_KEY;
-    const flight = normaliseIdent(query.flight);
-    const airport = String(query.arrivalAirport || 'MEL').toUpperCase();
-    const date = String(query.date || '').trim();
-
-    if (!flight) {
-      sendJson(context, 400, { error: 'flight is required' });
+    const actor = authenticatedActor(req);
+    const flightId = String(query.flightId || '').trim();
+    if (!/^[1-9]\d*$/.test(flightId)) {
+      sendJson(context, 400, { ok: false, code: 'INVALID_FLIGHT_ID', error: 'A valid flightId is required' });
       return;
     }
+    const connectionString = process.env.DATABASE_CONNECTION_STRING;
+    if (!connectionString) {
+      sendJson(context, 503, { ok: false, code: 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE', error: 'Operational authorization could not be resolved' });
+      return;
+    }
+    operationalPool = await new sql.ConnectionPool(connectionString).connect();
+    await requireOperationalStations(operationalPool, sql, actor, 'VIEW_FLIGHTS');
+    const flightResult = await operationalPool.request()
+      .input('FlightStatusFlightId', sql.BigInt, flightId)
+      .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDate,
+        Direction,OriginAirport,DestinationAirport
+        FROM dbo.Flights WHERE FlightId=@FlightStatusFlightId;`);
+    const selectedFlight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;
+    await requireOperationalEntityCapability(operationalPool, sql, actor, selectedFlight, 'VIEW_FLIGHTS');
+
+    const apiKey = process.env.FLIGHTAWARE_API_KEY;
+    const flight = normaliseIdent(selectedFlight.FlightNumber);
+    const airport = String(selectedFlight.DestinationAirport || '').toUpperCase();
+    const date = String(selectedFlight.OperatingDate || '').trim();
 
     if (!apiKey) {
       sendJson(context, 503, {
-        error: 'FLIGHTAWARE_API_KEY is not configured in Azure'
+        ok: false,
+        code: 'SERVICE_UNAVAILABLE',
+        error: 'Live flight tracking is unavailable.'
       });
       return;
     }
@@ -232,7 +246,7 @@ module.exports = async function (context, req) {
             inBlockAt: toIso(f.actual_in),
             destination: airportCode(f.destination) || airport
           },
-          { 'Cache-Control': 'public, max-age=60' }
+          { 'Cache-Control': 'private, no-store' }
         );
 
         return;
@@ -245,11 +259,13 @@ module.exports = async function (context, req) {
       error: lastError || `No matching ${flight} arrival found for ${airport}`
     });
   } catch (err) {
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('CargoRun flight-status API failed', err);
 
     sendJson(context, 500, {
-      error: 'CargoRun flight-status API failed',
-      detail: err?.message || String(err)
+      error: 'CargoRun flight-status API failed'
     });
+  } finally {
+    try { await operationalPool?.close(); } catch {}
   }
 };

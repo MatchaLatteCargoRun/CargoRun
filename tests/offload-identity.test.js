@@ -24,7 +24,7 @@ test('selector includes historical CLOSED/finalised exports and excludes imports
  assert.deepEqual(r.body.flights.map(f=>[f.flightId,f.flightStatus]),[['1','ACTIVE'],['2','ACTIVE'],['4','CLOSED'],['5','FINALISED'],['6','FINALIZED']]);
  assert.equal(r.body.flights.find(f=>f.flightId==='4').operatingDate,'2025-01-01');
  const q=h.state.queries.find(x=>Object.hasOwn(x.p,'SelectedFlightId')).q;
- assert.match(q,/Direction = 'EXPORT' AND FlightStatus IN \('ACTIVE','CLOSED','FINALISED','FINALIZED'\)/);
+ assert.match(q,/f\.Direction = 'EXPORT'\s+AND f\.FlightStatus IN \('ACTIVE','CLOSED','FINALISED','FINALIZED'\)/);
  assert.doesNotMatch(q,/DATEADD|SYSUTCDATETIME|EstimatedDeparture|ScheduledDeparture/);
 });
 
@@ -224,13 +224,13 @@ test('COMPLETE history permanently blocks a matching ULD while mismatched legacy
  assert.equal(h.state.offload,null);assert.equal(h.state.audits.length,0);assert.deepEqual(h.state.extraOffloads,before);
 });
 
-test('legacy Offload 9 progresses by ID without flight/ULD inference or eligibility and rejects stale retry',async()=>{
+test('legacy Offload 9 without authoritative FlightId fails closed before transition or audit',async()=>{
  const h=setup({offload:{OffloadId:'9',FlightId:null,UldId:null,UldNumber:'QKE52521QR',OffloadStatus:'REQUESTED'}});
  const collect={offloadId:'9',expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT'};
- assert.equal((await call(h.handler,'PATCH',collect)).status,200);
- assert.equal((await call(h.handler,'PATCH',collect)).body.code,'STALE_STATUS');
- assert.equal((await call(h.handler,'PATCH',{offloadId:'9',expectedCurrentStatus:'TRANSIT',nextStatus:'COMPLETE',deliveredLocation:'Cool Room 4'})).status,200);
- assert.equal(h.state.offload.FlightId,null);assert.equal(h.state.offload.UldId,null);assert.equal(h.state.audits.length,2);
+ const response=await call(h.handler,'PATCH',collect);
+ assert.equal(response.status,404);assert.equal(response.body.code,'OPERATIONAL_ENTITY_NOT_AVAILABLE');
+ assert.equal(h.state.offload.OffloadStatus,'REQUESTED');
+ assert.equal(h.state.offload.FlightId,null);assert.equal(h.state.offload.UldId,null);assert.equal(h.state.audits.length,0);
  assert.equal(h.state.queries.some(x=>x.q.includes('FROM dbo.Flights')),false);
 });
 
@@ -239,11 +239,13 @@ test('live-schema required audit failure rolls back creation',async()=>{
  assert.equal(r.status,500);assert.equal(h.state.offload,null);assert.equal(h.state.audits.length,0);
 });
 
-test('before migration new creation fails closed while old legacy transition still works',async()=>{
+test('before migration both new creation and stationless legacy transition fail closed',async()=>{
  const h=setup({migrated:false,offload:{OffloadId:'9',FlightId:null,UldNumber:'QKE52521QR',OffloadStatus:'REQUESTED'}});
  const r=await call(h.handler,'POST',body);assert.equal(r.status,503);assert.equal(r.body.code,'OFFLOAD_SCHEMA_NOT_READY');
  assert.equal(h.state.audits.length,0);
- assert.equal((await call(h.handler,'PATCH',{offloadId:'9',expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT'})).status,200);
+ const transition=await call(h.handler,'PATCH',{offloadId:'9',expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT'});
+ assert.equal(transition.status,404);assert.equal(transition.body.code,'OPERATIONAL_ENTITY_NOT_AVAILABLE');
+ assert.equal(h.state.offload.OffloadStatus,'REQUESTED');
  assert.equal(h.state.offload.FlightId,null);assert.equal(h.state.offload.UldId,undefined);
 });
 
@@ -272,10 +274,12 @@ test('ULD GET scopes SQL by selected FlightId and preserves BIGINT IDs as string
 const html=fs.readFileSync(path.join(root,'index.html'),'utf8');
 function ui(){
  const elements={};for(const id of ['offFlightId','offFlightContext','offSelectAll','offUldCandidates','offBlockedUlds','offSubmit','offBay','offInstruction','offRequestMessage'])elements[id]={value:'',disabled:false,innerHTML:'',textContent:'',checked:false,indeterminate:false};
- elements.modal={classList:{contains:()=>true}};const requests=[],notices=[];
+ elements.modal={classList:{contains:()=>true}};const requests=[],notices=[],cargoRunAccess={status:'provisioned'},operationalSessionGeneration=1;
  const context=vm.createContext({document:{getElementById:id=>elements[id]},modal(){},modalHead:()=>'',esc:String,azureDisplayDate:String,
   stableOperationalId:x=>/^[1-9]\d*$/.test(String(x??'').trim())?String(x).trim():'',
-  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},syncAzureOffloads:async()=>true});
+  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},syncAzureOffloads:async()=>true,
+  cargoRunAccess,operationalSessionGeneration,
+  operationalSessionIsCurrent:generation=>generation===operationalSessionGeneration&&cargoRunAccess.status==='provisioned'});
  vm.runInContext(html.slice(html.indexOf('let offloadRequestSession='),html.indexOf('function handleOffload(')),context);
  const respond=(i,data,status=200)=>requests[i].resolve({ok:status<400,status,json:async()=>data});
  return {context,elements,requests,respond,notices};

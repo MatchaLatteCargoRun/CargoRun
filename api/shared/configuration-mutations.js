@@ -1,7 +1,7 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
-const { ConfigurationError, resolveScoped, resolveShcGroups, resolvePriorityRules, resolveSlaRule, resolveMailRules, FALLBACK_SLAS } = require('./configuration');
+const { ConfigurationError, resolveScoped, resolveShcGroups, resolvePriorityRules, resolveSlaRule, resolveMailRules, FALLBACK_SLAS, authorizeCapability } = require('./configuration');
 const { validateMutationInput, requiredCapabilityForOperation, insertConfigurationAudit, resolveGroupColour, groupTextColour } = require('./configuration-admin');
 
 class ConfigurationMutationError extends Error {
@@ -68,7 +68,8 @@ async function resolveActorCapabilities(executor, sql, actorReference, stationCo
 
 async function requireMutationCapability(transaction, sql, actorReference, stationCode, capability) {
   const capabilities = await resolveActorCapabilities(transaction, sql, actorReference, stationCode);
-  if (!capabilities.includes(capability)) {
+  const decision = authorizeCapability({ enforcementMode: 'ENFORCED', capabilities, requiredCapability: capability });
+  if (!decision.allowed) {
     throw new ConfigurationMutationError('ADMIN_CAPABILITY_REQUIRED', `The ${capability} capability is required`, 403, { requiredCapability: capability });
   }
   return capabilities;

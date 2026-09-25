@@ -6,6 +6,14 @@ const {
 } = require('../shared/flight');
 const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 /* ============================================================
    CargoRun MACH FOW Receiver
@@ -462,7 +470,10 @@ async function existingMessage(
     .query(`
       SELECT TOP 1
         m.*,
-        f.FlightNumber AS MatchedFlightNumber
+        f.FlightNumber AS MatchedFlightNumber,
+        f.Direction AS MatchedFlightDirection,
+        f.OriginAirport AS MatchedFlightOriginAirport,
+        f.DestinationAirport AS MatchedFlightDestinationAirport
 
       FROM dbo.IncomingMachMessages m
 
@@ -510,6 +521,36 @@ async function existingMessage(
 }
 
 
+function duplicateAuthorizationFlight(
+  duplicate
+) {
+  const row = duplicate?.row || {};
+
+  if (
+    row.MatchedFlightId !== null &&
+    row.MatchedFlightId !== undefined
+  ) {
+    return {
+      Direction:
+        row.MatchedFlightDirection,
+      OriginAirport:
+        row.MatchedFlightOriginAirport,
+      DestinationAirport:
+        row.MatchedFlightDestinationAirport
+    };
+  }
+
+  return {
+    Direction: 'EXPORT',
+    OriginAirport:
+      row.OriginAirport ||
+      row.StationAirport,
+    DestinationAirport:
+      row.DestinationAirport
+  };
+}
+
+
 /* ============================================================
    MAIN FUNCTION
    ============================================================ */
@@ -521,6 +562,8 @@ module.exports = async function(
 
   let pool;
   let tx;
+  let actor = null;
+  let liveRequest = false;
 
   try {
 
@@ -535,7 +578,7 @@ module.exports = async function(
         {
           ok: false,
           error:
-            'DATABASE_CONNECTION_STRING is not configured'
+            'Service configuration is unavailable'
         }
       );
 
@@ -543,11 +586,17 @@ module.exports = async function(
     }
 
 
-    const actor =
-      actorFromRequest(req);
-
     const machine =
       machineAuth(req);
+
+    if (req.method === 'GET' || (req.method === 'POST' && !machine.ok)) {
+      try {
+        actor = authenticatedActor(req);
+      } catch (error) {
+        if (sendOperationalAuthorizationError(context, error, sendJson)) return;
+        throw error;
+      }
+    }
 
 
     /* --------------------------------------------------------
@@ -605,9 +654,27 @@ module.exports = async function(
 
     if (req.method === 'GET') {
 
+      const access =
+        await requireOperationalStations(
+          pool,
+          sql,
+          actor,
+          'VIEW_SUPERVISOR'
+        );
+
+      const messageRequest =
+        pool.request();
+
+      const messageStations =
+        bindStationParameters(
+          messageRequest,
+          sql,
+          access.stations,
+          'MachReadStation'
+        );
+
       const r =
-        await pool
-          .request()
+        await messageRequest
           .query(`
             SELECT TOP 50
 
@@ -663,9 +730,12 @@ module.exports = async function(
 
             FROM dbo.IncomingMachMessages m
 
-            LEFT JOIN dbo.Flights f
+            INNER JOIN dbo.Flights f
               ON f.FlightId =
                  m.MatchedFlightId
+
+            WHERE
+              ${flightStationPredicate('f', messageStations)}
 
             ORDER BY
               m.ReceivedAtUtc DESC,
@@ -674,15 +744,22 @@ module.exports = async function(
 
 
       const stats =
-        await pool
-          .request()
+        await (() => {
+          const statsRequest = pool.request();
+          const statsStations = bindStationParameters(
+            statsRequest,
+            sql,
+            access.stations,
+            'MachStatsStation'
+          );
+          return statsRequest
           .query(`
             SELECT
 
               SUM(
                 CASE
                   WHEN
-                    SourceType =
+                    m.SourceType =
                     'MACH_FOW_LIVE'
                   THEN 1
                   ELSE 0
@@ -692,14 +769,17 @@ module.exports = async function(
               MAX(
                 CASE
                   WHEN
-                    SourceType =
+                    m.SourceType =
                     'MACH_FOW_LIVE'
-                  THEN ReceivedAtUtc
+                  THEN m.ReceivedAtUtc
                 END
               ) AS LastLiveReceivedAtUtc
 
-            FROM dbo.IncomingMachMessages;
+            FROM dbo.IncomingMachMessages m
+            INNER JOIN dbo.Flights f ON f.FlightId=m.MatchedFlightId
+            WHERE ${flightStationPredicate('f', statsStations)};
           `);
+        })();
 
 
       sendJson(
@@ -971,6 +1051,8 @@ module.exports = async function(
     const live =
       Boolean(machine.ok);
 
+    liveRequest = live;
+
 
     const source =
       live
@@ -1099,6 +1181,66 @@ module.exports = async function(
        Exact same MACH message = ignore.
        ======================================================== */
 
+    const requestedFlight =
+      padFlight(
+        carrier,
+        carrierNum
+      );
+
+    if (!live) {
+      const proposedFlight = {
+        Direction: 'EXPORT',
+        OriginAirport:
+          origin || station,
+        DestinationAirport:
+          destination
+      };
+
+      await requireOperationalCapability(
+        pool,
+        sql,
+        actor,
+        proposedFlight,
+        'UPLOAD_FLIGHT_DATA'
+      );
+
+      const authorizationCandidates = await pool.request()
+        .input('AuthorizationOperatingDate', sql.Date, operatingDate)
+        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE OperatingDate=@AuthorizationOperatingDate;`);
+      const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
+
+      for (const candidate of authorizationMatches) {
+        await requireOperationalCapability(
+          pool,
+          sql,
+          actor,
+          candidate,
+          'UPLOAD_FLIGHT_DATA'
+        );
+      }
+
+      if (authorizationMatches.length > 1) {
+        sendJson(context, 409, {
+          ok: false,
+          code: 'FLIGHT_IDENTITY_CONFLICT',
+          error: 'Multiple flights have the same canonical identity',
+          flightIds: authorizationMatches.map(existing => existing.FlightId)
+        });
+        return;
+      }
+      const authorizationFlight = authorizationMatches[0] || proposedFlight;
+      if (authorizationMatches[0] && String(authorizationFlight.Direction || '').toUpperCase() !== 'EXPORT') {
+        sendJson(context, 409, {
+          ok: false,
+          code: 'FLIGHT_IDENTITY_CONFLICT',
+          error: 'Flight identity already exists with incompatible direction',
+          flightIds: [authorizationFlight.FlightId]
+        });
+        return;
+      }
+    }
+
     const duplicate =
       await existingMessage(
         pool,
@@ -1107,6 +1249,18 @@ module.exports = async function(
 
 
     if (duplicate) {
+
+      if (!live) {
+        await requireOperationalCapability(
+          pool,
+          sql,
+          actor,
+          duplicateAuthorizationFlight(
+            duplicate
+          ),
+          'UPLOAD_FLIGHT_DATA'
+        );
+      }
 
       sendJson(
         context,
@@ -1162,13 +1316,6 @@ module.exports = async function(
     }
 
 
-    const requestedFlight =
-      padFlight(
-        carrier,
-        carrierNum
-      );
-
-
     /* ========================================================
        START TRANSACTION
        ======================================================== */
@@ -1177,6 +1324,48 @@ module.exports = async function(
       new sql.Transaction(pool);
 
     await tx.begin();
+
+    await acquireFlightIdentityLock(tx, sql, operatingDate, requestedFlight);
+    if (!live) {
+      const authorizationCandidates = await new sql.Request(tx)
+        .input('LockedAuthorizationOperatingDate', sql.Date, operatingDate)
+        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE OperatingDate=@LockedAuthorizationOperatingDate;`);
+      const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
+
+      const flightsToAuthorize =
+        authorizationMatches.length
+          ? authorizationMatches
+          : [{
+              Direction: 'EXPORT',
+              OriginAirport:
+                origin || station,
+              DestinationAirport:
+                destination
+            }];
+
+      for (const candidate of flightsToAuthorize) {
+        await requireOperationalCapability(
+          tx,
+          sql,
+          actor,
+          candidate,
+          'UPLOAD_FLIGHT_DATA'
+        );
+      }
+
+      if (authorizationMatches.length > 1) {
+        await tx.rollback();
+        tx = null;
+        sendJson(context, 409, {
+          ok: false,
+          code: 'FLIGHT_IDENTITY_CONFLICT',
+          error: 'Multiple flights have the same canonical identity',
+          flightIds: authorizationMatches.map(existing => existing.FlightId)
+        });
+        return;
+      }
+    }
 
 
     /* --------------------------------------------------------
@@ -1357,13 +1546,6 @@ module.exports = async function(
     /* ========================================================
        FIND FLIGHT
        ======================================================== */
-
-    await acquireFlightIdentityLock(
-      tx,
-      sql,
-      operatingDate,
-      requestedFlight
-    );
 
     const candidates =
       await new sql.Request(tx)
@@ -2162,6 +2344,8 @@ module.exports = async function(
       }
     } catch {}
 
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
+
 
     context.log.error(
       'MACH FOW intake failed',
@@ -2204,6 +2388,18 @@ module.exports = async function(
 
 
         if (dup) {
+
+          if (!liveRequest) {
+            await requireOperationalCapability(
+              pool,
+              sql,
+              actor,
+              duplicateAuthorizationFlight(
+                dup
+              ),
+              'UPLOAD_FLIGHT_DATA'
+            );
+          }
 
           sendJson(
             context,
@@ -2254,7 +2450,17 @@ module.exports = async function(
           return;
         }
 
-      } catch {}
+      } catch (duplicateError) {
+        if (
+          sendOperationalAuthorizationError(
+            context,
+            duplicateError,
+            sendJson
+          )
+        ) {
+          return;
+        }
+      }
     }
 
 
@@ -2265,10 +2471,7 @@ module.exports = async function(
         ok: false,
 
         error:
-          'MACH FOW intake failed',
-
-        detail:
-          err.message
+          'MACH FOW intake failed'
       }
     );
 

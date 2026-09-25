@@ -1,6 +1,15 @@
 const sql = require('mssql');
 const { acquireFlightIdentityLock, findFlightsByIdentity } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
+  requireOperationalCapability,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -48,6 +57,24 @@ function clean(value) {
     : String(value).trim().toUpperCase();
 }
 
+async function authorizeStoredFlightCandidates(executor, identity, candidates) {
+  try {
+    for (const candidate of candidates) {
+      await requireOperationalCapability(
+        executor,
+        sql,
+        identity,
+        candidate,
+        'UPLOAD_FLIGHT_DATA'
+      );
+    }
+    return true;
+  } catch (error) {
+    if (Number(error?.status) === 403) return false;
+    throw error;
+  }
+}
+
 module.exports = async function (context, req) {
   let pool;
   let transaction;
@@ -55,20 +82,23 @@ module.exports = async function (context, req) {
   try {
     const connectionString = process.env.DATABASE_CONNECTION_STRING;
     if (!connectionString) {
-      sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' });
+      sendJson(context, 503, {
+        ok: false,
+        code: 'SERVICE_CONFIGURATION_UNAVAILABLE',
+        error: 'Service configuration is unavailable'
+      });
       return;
     }
 
-    const identity = getActor(req);
-    if (!identity) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const identity = authenticatedActor(req);
 
     pool = await new sql.ConnectionPool(connectionString).connect();
 
     if (req.method === 'GET') {
-      const result = await pool.request().query(`SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.Direction,f.AirlineCode,f.OriginAirport,f.DestinationAirport,f.FlightStatus,f.ScheduledArrivalUtc,f.EstimatedArrivalUtc,f.LandedAtUtc,f.InBlockAtUtc,f.ScheduledDepartureUtc,f.EstimatedDepartureUtc,f.SourceType,f.CreatedAtUtc,
+      const access = await requireOperationalStations(pool, sql, identity, 'VIEW_FLIGHTS');
+      const request = pool.request();
+      const stationParameters = bindStationParameters(request, sql, access.stations, 'FlightReadStation');
+      const result = await request.query(`SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.Direction,f.AirlineCode,f.OriginAirport,f.DestinationAirport,f.FlightStatus,f.ScheduledArrivalUtc,f.EstimatedArrivalUtc,f.LandedAtUtc,f.InBlockAtUtc,f.ScheduledDepartureUtc,f.EstimatedDepartureUtc,f.SourceType,f.CreatedAtUtc,
         mf.FinalManifestId AS ExportFinalManifestId,
         mf.ConfirmedAtUtc AS ExportFinalConfirmedAtUtc,
         mf.ConfirmedByDisplayName AS ExportFinalConfirmedByDisplayName,
@@ -78,6 +108,7 @@ module.exports = async function (context, req) {
         mf.ExcludedCount AS ExportFinalExcludedCount
         FROM dbo.Flights f
         LEFT JOIN dbo.ExportManifestFinals mf ON mf.FlightId=f.FlightId
+        WHERE ${flightStationPredicate('f', stationParameters)}
         ORDER BY f.OperatingDate DESC,f.FlightNumber ASC;`);
       sendJson(context, 200, { ok: true, count: result.recordset.length, flights: result.recordset });
       return;
@@ -92,11 +123,10 @@ module.exports = async function (context, req) {
         return;
       }
 
-      if (
-        Object.prototype.hasOwnProperty.call(body, 'scheduledDepartureUtc') ||
-        Object.prototype.hasOwnProperty.call(body, 'estimatedDepartureUtc') ||
-        Object.prototype.hasOwnProperty.call(body, 'inBlockAtUtc')
-      ) {
+      const hasScheduledDeparture = Object.prototype.hasOwnProperty.call(body, 'scheduledDepartureUtc');
+      const hasEstimatedDeparture = Object.prototype.hasOwnProperty.call(body, 'estimatedDepartureUtc');
+      const hasInBlock = Object.prototype.hasOwnProperty.call(body, 'inBlockAtUtc');
+      if (hasScheduledDeparture || hasEstimatedDeparture || hasInBlock) {
         const scheduledRaw = body.scheduledDepartureUtc;
         const estimatedRaw = body.estimatedDepartureUtc;
         const inBlockRaw = body.inBlockAtUtc;
@@ -116,8 +146,38 @@ module.exports = async function (context, req) {
           return;
         }
 
+        if (hasInBlock) {
+          await requireOperationalStations(pool, sql, identity, 'SET_IN_BLOCK');
+        }
+        if (hasScheduledDeparture || hasEstimatedDeparture) {
+          await requireOperationalStations(pool, sql, identity, 'SET_ETD');
+        }
+
         transaction = new sql.Transaction(pool);
         await transaction.begin();
+        const selected = await new sql.Request(transaction)
+          .input('AuthorizationFlightId', sql.BigInt, flightId)
+          .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+            FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@AuthorizationFlightId;`);
+        const authorizationFlight = selected.recordset[0] || null;
+        if (hasInBlock) {
+          await requireOperationalEntityCapability(
+            transaction,
+            sql,
+            identity,
+            authorizationFlight,
+            'SET_IN_BLOCK'
+          );
+        }
+        if (hasScheduledDeparture || hasEstimatedDeparture) {
+          await requireOperationalEntityCapability(
+            transaction,
+            sql,
+            identity,
+            authorizationFlight,
+            'SET_ETD'
+          );
+        }
         const result = await new sql.Request(transaction)
           .input('FlightId', sql.BigInt, flightId)
           .input('ScheduledDepartureUtc', sql.DateTime2, scheduled)
@@ -165,19 +225,21 @@ module.exports = async function (context, req) {
         return;
       }
       transaction = new sql.Transaction(pool);
+      await requireOperationalStations(pool, sql, identity, 'FINALISE_FLIGHT');
       await transaction.begin();
 
       const selected = await new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
-        .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction FROM dbo.Flights WHERE FlightId=@FlightId;`);
-      if (!selected.recordset.length) {
-        await transaction.rollback();
-        transaction = null;
-        sendJson(context, 404, { ok: false, error: 'Flight not found' });
-        return;
-      }
-
-      const selectedFlight = selected.recordset[0];
+        .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
+          Direction,OriginAirport,DestinationAirport FROM dbo.Flights WHERE FlightId=@FlightId;`);
+      const selectedFlight = selected.recordset[0] || null;
+      await requireOperationalEntityCapability(
+        transaction,
+        sql,
+        identity,
+        selectedFlight,
+        'FINALISE_FLIGHT'
+      );
       await acquireFlightIdentityLock(
         transaction,
         sql,
@@ -187,14 +249,16 @@ module.exports = async function (context, req) {
 
       const current = await new sql.Request(transaction)
         .input('LockedFlightId', sql.BigInt, flightId)
-        .query(`SELECT FlightId,FlightNumber,Direction,FlightStatus FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
-      if (!current.recordset.length) {
-        await transaction.rollback();
-        transaction = null;
-        sendJson(context, 404, { ok: false, error: 'Flight not found' });
-        return;
-      }
-      const currentFlight = current.recordset[0];
+        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport,FlightStatus
+          FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
+      const currentFlight = current.recordset[0] || null;
+      await requireOperationalEntityCapability(
+        transaction,
+        sql,
+        identity,
+        currentFlight,
+        'FINALISE_FLIGHT'
+      );
       if (clean(currentFlight.Direction) !== 'IMPORT') {
         await transaction.rollback();
         transaction = null;
@@ -247,7 +311,7 @@ module.exports = async function (context, req) {
         flightNumber: flight.FlightNumber,
         fromStatus: 'ACTIVE',
         toStatus: 'CLOSED',
-        detail: 'Closed with supervisor passcode'
+        detail: 'Manual close authorized by server capability'
       });
       await transaction.commit();
       transaction = null;
@@ -277,12 +341,36 @@ module.exports = async function (context, req) {
 
     transaction = new sql.Transaction(pool);
     await transaction.begin();
+    await requireOperationalCapability(transaction, sql, identity, {
+      Direction: direction,
+      OriginAirport: originAirport,
+      DestinationAirport: destinationAirport
+    }, 'UPLOAD_FLIGHT_DATA');
     await acquireFlightIdentityLock(transaction, sql, operatingDate, flightNumber);
 
     const candidates = await new sql.Request(transaction)
       .input('OperatingDate', sql.Date, operatingDate)
-      .query(`SELECT FlightId, FlightNumber FROM dbo.Flights WHERE OperatingDate=@OperatingDate;`);
+      .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+        FROM dbo.Flights WHERE OperatingDate=@OperatingDate;`);
     const existing = findFlightsByIdentity(candidates.recordset, flightNumber);
+
+    if (existing.length) {
+      const candidatesAuthorized = await authorizeStoredFlightCandidates(
+        transaction,
+        identity,
+        existing
+      );
+      if (!candidatesAuthorized) {
+        await transaction.rollback();
+        transaction = null;
+        sendJson(context, 409, {
+          ok: false,
+          error: 'Flight identity conflicts with an existing operation',
+          code: 'FLIGHT_IDENTITY_CONFLICT'
+        });
+        return;
+      }
+    }
 
     if (existing.length > 1) {
       await transaction.rollback();
@@ -325,6 +413,7 @@ module.exports = async function (context, req) {
     if (transaction) {
       try { await transaction.rollback(); } catch {}
     }
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('Flights API failed', err);
     sendJson(context, 500, { ok: false, error: 'Flights API failed' });
   } finally {

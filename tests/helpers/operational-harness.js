@@ -13,13 +13,14 @@ const flightStatementEvidence = require('../../api/shared/flight-statement-evide
 const offloadEligibility = require('../../api/shared/offload-eligibility');
 const exportManifestFinal = require('../../api/shared/export-manifest-final');
 const exportUws = require('../../api/shared/export-uws');
+const operationalAuthorization = require('./operational-authorization-stub');
 
 const root = path.resolve(__dirname, '..', '..');
 const principal = Buffer.from(JSON.stringify({
   userDetails: 'Concurrency Tester', userId: 'test-user', userRoles: ['authenticated']
 })).toString('base64');
 
-function loadHandler(relativePath, sqlMock) {
+function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = operationalAuthorization) {
   const filename = path.join(root, relativePath);
   const source = fs.readFileSync(filename, 'utf8');
   const module = { exports: {} };
@@ -37,6 +38,7 @@ function loadHandler(relativePath, sqlMock) {
       if (name === '../shared/offload-eligibility') return offloadEligibility;
       if (name === '../shared/export-manifest-final') return exportManifestFinal;
       if (name === '../shared/export-uws') return exportUws;
+      if (name === '../shared/operational-authorization') return operationalAuthorizationOverride;
       throw new Error(`Unexpected require: ${name}`);
     }
   });
@@ -122,6 +124,15 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
         return result(selected
           ? [{ ...selected, Direction: selected.Direction || 'IMPORT', FlightNumber: selected.FlightNumber || 'CX178' }]
           : []);
+      }
+      if (q.includes('FROM dbo.ULDs u WITH') && Object.hasOwn(p, 'AuthorizationUldId')) {
+        const selected = [state.uld, ...state.otherUlds].find(candidate => candidate && String(candidate.UldId) === String(p.AuthorizationUldId));
+        return result(selected ? [{
+          ...selected,
+          Direction: selected.Direction || 'IMPORT',
+          OriginAirport: selected.OriginAirport || 'HKG',
+          DestinationAirport: selected.DestinationAirport || 'MEL'
+        }] : []);
       }
       if (q.startsWith('DECLARE @Now') && q.includes('UPDATE dbo.ULDs')) {
         assert.match(q, /WHERE UldId = @UldId AND CurrentStatus = @ExpectedStatus/);
@@ -220,7 +231,7 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
           .sort((a,b)=>String(a.RequestedAtUtc||'').localeCompare(String(b.RequestedAtUtc||''))||Number(a.OffloadId)-Number(b.OffloadId))
           .map(o=>{const flight=state.flights.find(f=>String(f.FlightId)===String(o.FlightId));return {...o,__OffloadIdText:String(o.OffloadId),__FlightIdText:String(o.FlightId),__UldIdText:o.UldId==null?null:String(o.UldId),__FlightOperatingDate:flight?.OperatingDate||null}}));
       }
-      if (q.startsWith('SELECT o.*') && q.includes('LEFT JOIN dbo.Flights')) {
+      if (q.startsWith('SELECT o.*') && q.includes('JOIN dbo.Flights')) {
         if (!state.offload) return result([]);
         const flight = state.flights.find(f => String(f.FlightId) === String(state.offload.FlightId));
         return result([{ ...state.offload, __FlightOperatingDate: flight?.OperatingDate || null }]);

@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { insertAuditEvent } = require('../api/shared/audit');
+const operationalAuthorization = require('./helpers/operational-authorization-stub');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -41,6 +42,7 @@ function loadHistoryHandler(sqlMock) {
     process: { env: { DATABASE_CONNECTION_STRING: 'test-only' } },
     require(name) {
       if (name === 'mssql') return sqlMock;
+      if (name === '../shared/operational-authorization') return operationalAuthorization;
       throw new Error(`Unexpected require: ${name}`);
     }
   }, { filename: path.join(root, 'api/history/index.js') });
@@ -51,7 +53,7 @@ function historySqlHarness() {
   const columns = [
     'AuditEventId', 'OccurredAtUtc', 'EventType', 'Action', 'ActorDisplayName',
     'ActorReference', 'EntityType', 'EntityId', 'FlightNumber', 'UldNumber',
-    'FromStatus', 'ToStatus', 'Detail', 'DetailsJson'
+    'FlightId', 'FromStatus', 'ToStatus', 'Detail', 'DetailsJson'
   ];
   const state = { connections: 0, queries: [] };
   const event = {
@@ -63,6 +65,7 @@ function historySqlHarness() {
     ActorReference: 'operator-one-id',
     EntityType: 'ULD',
     EntityId: '7001',
+    FlightId: '1001',
     FlightNumber: 'CX134',
     UldNumber: 'AKE12345CX',
     FromStatus: 'ARRIVED',
@@ -88,7 +91,7 @@ function historySqlHarness() {
           }))
         };
       }
-      if (query.includes('SELECT TOP (@Limit) * FROM dbo.AuditEvents')) {
+      if (query.includes('SELECT TOP (@Limit) audit.*') && query.includes('INNER JOIN dbo.Flights')) {
         return { recordset: [event] };
       }
       throw new Error(`Unexpected History SQL: ${query}`);
@@ -104,6 +107,7 @@ function historySqlHarness() {
   const sql = {
     ConnectionPool,
     NVarChar: length => `nvarchar(${length})`,
+    VarChar: length => `varchar(${length})`,
     Int: 'int',
     DateTime2: 'datetime2'
   };

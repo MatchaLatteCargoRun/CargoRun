@@ -10,6 +10,12 @@ const {
   manifestHash,
   publicReconciliation
 } = require('../shared/export-manifest-final');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -51,7 +57,7 @@ async function loadFlight(request, flightId, locked = false) {
   const result = await request
     .input(locked ? 'LockedFlightId' : 'SelectedFlightId', sql.BigInt, flightId)
     .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
-        OperatingDate,Direction,FlightStatus
+        OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
       FROM dbo.Flights${hint}
       WHERE FlightId=@${locked ? 'LockedFlightId' : 'SelectedFlightId'};`);
   return result.recordset?.[0] || null;
@@ -111,14 +117,14 @@ module.exports = async function exportManifestFinal(context, req) {
   let transaction;
   try {
     if (!process.env.DATABASE_CONNECTION_STRING) {
-      sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' });
+      sendJson(context, 503, {
+        ok: false,
+        code: 'SERVICE_CONFIGURATION_UNAVAILABLE',
+        error: 'Service configuration is unavailable'
+      });
       return;
     }
-    const actor = getActor(req);
-    if (!actor) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const actor = authenticatedActor(req);
 
     const flightId = operationalId(req.method === 'GET' ? req.query?.flightId : req.body?.flightId);
     if (!flightId) {
@@ -128,11 +134,9 @@ module.exports = async function exportManifestFinal(context, req) {
     pool = await new sql.ConnectionPool(process.env.DATABASE_CONNECTION_STRING).connect();
 
     if (req.method === 'GET') {
+      await requireOperationalStations(pool, sql, actor, 'VIEW_FLIGHTS');
       const flight = await loadFlight(pool.request(), flightId);
-      if (!flight) {
-        sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
-        return;
-      }
+      await requireOperationalEntityCapability(pool, sql, actor, flight, 'VIEW_FLIGHTS');
       const final = await getFinal(pool.request(), flightId);
       sendJson(context, 200, { ok: true, flightId, isFinal: Boolean(final), manifestFinal: finalResponse(final) });
       return;
@@ -147,8 +151,17 @@ module.exports = async function exportManifestFinal(context, req) {
     const sourceFileName = req.body?.sourceFileName
       ? String(req.body.sourceFileName).trim().slice(0, 260) : null;
 
+    await requireOperationalStations(pool, sql, actor, 'CONFIRM_EXPORT_FINAL');
+
     if (action === 'PREVIEW') {
       const flight = await loadFlight(pool.request(), flightId);
+      await requireOperationalEntityCapability(
+        pool,
+        sql,
+        actor,
+        flight,
+        'CONFIRM_EXPORT_FINAL'
+      );
       validateFlight(flight);
       const currentFinal = await getFinal(pool.request(), flightId);
       if (currentFinal) {
@@ -162,6 +175,13 @@ module.exports = async function exportManifestFinal(context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
     const initialFlight = await loadFlight(new sql.Request(transaction), flightId);
+    await requireOperationalEntityCapability(
+      transaction,
+      sql,
+      actor,
+      initialFlight,
+      'CONFIRM_EXPORT_FINAL'
+    );
     validateFlight(initialFlight);
     await acquireFlightIdentityLock(
       transaction,
@@ -170,6 +190,13 @@ module.exports = async function exportManifestFinal(context, req) {
       initialFlight.FlightNumber
     );
     const flight = await loadFlight(new sql.Request(transaction), flightId, true);
+    await requireOperationalEntityCapability(
+      transaction,
+      sql,
+      actor,
+      flight,
+      'CONFIRM_EXPORT_FINAL'
+    );
     validateFlight(flight);
     const currentFinal = await getFinal(new sql.Request(transaction), flightId, true);
     if (currentFinal) {
@@ -276,6 +303,7 @@ module.exports = async function exportManifestFinal(context, req) {
     if (transaction) {
       try { await transaction.rollback(); } catch {}
     }
+    if (sendOperationalAuthorizationError(context, error, sendJson)) return;
     if (error instanceof ManifestFinalError) {
       sendJson(context, error.status, {
         ok: false,
@@ -287,7 +315,7 @@ module.exports = async function exportManifestFinal(context, req) {
       return;
     }
     context.log.error('Export manifest FINAL failed', error);
-    sendJson(context, 500, { ok: false, code: 'EXPORT_MANIFEST_FINAL_FAILED', error: 'Export manifest FINAL failed', detail: error.message });
+    sendJson(context, 500, { ok: false, code: 'EXPORT_MANIFEST_FINAL_FAILED', error: 'Export manifest FINAL failed' });
   } finally {
     try { await pool?.close(); } catch {}
   }

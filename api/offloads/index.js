@@ -4,6 +4,15 @@ const { normalizeFlightNumber } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
 const { appendOffloadAmendmentIfRequired, CompletionAmendmentError } = require('../shared/completion-amendments');
 const { operationalId, acquireOffloadFlightLock, evaluateOffloadEligibility } = require('../shared/offload-eligibility');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
+  operationalEntityUnavailable,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 
 function getHeader(req, name) {
@@ -58,15 +67,21 @@ function canonical(value) {
 
 // Historical export flights remain eligible without changing their lifecycle.
 const offloadFlightStatuses = ['ACTIVE', 'CLOSED', 'FINALISED', 'FINALIZED'];
-async function selectOffloadFlights(request, flightId = null, lockForUpdate = false) {
+async function selectOffloadFlights(request, flightId = null, lockForUpdate = false, authorizedStations = null) {
+  const stationParameters = !flightId && authorizedStations
+    ? bindStationParameters(request, sql, authorizedStations, 'OffloadFlightStation')
+    : null;
+  const stationFilter = stationParameters
+    ? ` AND ${flightStationPredicate('f', stationParameters)}`
+    : '';
   return request.input('SelectedFlightId', sql.BigInt, flightId).query(`
-    SELECT CONVERT(varchar(20), FlightId) AS FlightId, FlightNumber,
-      CONVERT(char(10), OperatingDate, 23) AS OperatingDate,
-      CreatedAtUtc, Direction, FlightStatus
-    FROM dbo.Flights ${flightId && lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
-    WHERE ${flightId ? 'FlightId = @SelectedFlightId' : `Direction = 'EXPORT'
-      AND FlightStatus IN (${offloadFlightStatuses.map(status => `'${status}'`).join(',')})`}
-    ${flightId ? '' : 'ORDER BY OperatingDate DESC, dbo.Flights.FlightId DESC'};
+    SELECT CONVERT(varchar(20), f.FlightId) AS FlightId, f.FlightNumber,
+      CONVERT(char(10), f.OperatingDate, 23) AS OperatingDate,
+      f.CreatedAtUtc, f.Direction,f.OriginAirport,f.DestinationAirport, f.FlightStatus
+    FROM dbo.Flights f ${flightId && lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
+    WHERE ${flightId ? 'f.FlightId = @SelectedFlightId' : `f.Direction = 'EXPORT'
+      AND f.FlightStatus IN (${offloadFlightStatuses.map(status => `'${status}'`).join(',')})${stationFilter}`}
+    ${flightId ? '' : 'ORDER BY f.OperatingDate DESC, f.FlightId DESC'};
   `);
 }
 
@@ -207,20 +222,57 @@ module.exports = async function (context, req) {
   try {
     const connectionString = process.env.DATABASE_CONNECTION_STRING;
     if (!connectionString) {
-      sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' });
+      sendJson(context, 503, {
+        ok: false,
+        code: 'SERVICE_CONFIGURATION_UNAVAILABLE',
+        error: 'Service configuration is unavailable'
+      });
       return;
     }
 
-    const identity = getActor(req);
-    if (!identity) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const identity = authenticatedActor(req);
 
     pool = await new sql.ConnectionPool(connectionString).connect();
+    const method = String(req.method || '').toUpperCase();
+    const body = req.body || {};
+    let broadAccess = null;
+    if (method === 'GET') {
+      broadAccess = await requireOperationalStations(pool, sql, identity, 'VIEW_FLIGHTS');
+    } else if (method === 'POST') {
+      broadAccess = await requireOperationalStations(pool, sql, identity, 'REQUEST_OFFLOAD');
+    } else if (method === 'PATCH') {
+      const requestedOffloadId = String(body.offloadId || '').trim();
+      const requestedExpectedStatus = canonical(body.expectedCurrentStatus);
+      const requestedNextStatus = canonical(body.nextStatus);
+      if (!/^\d+$/.test(requestedOffloadId)) {
+        sendJson(context, 400, { ok: false, error: 'offloadId is required' });
+        return;
+      }
+      if (!requestedExpectedStatus) {
+        sendJson(context, 400, { ok: false, error: 'expectedCurrentStatus is required' });
+        return;
+      }
+      if (!['REQUESTED', 'TRANSIT', 'COMPLETE'].includes(requestedNextStatus)) {
+        sendJson(context, 400, { ok: false, error: 'nextStatus must be TRANSIT or COMPLETE' });
+        return;
+      }
+      broadAccess = await requireOperationalStations(
+        pool,
+        sql,
+        identity,
+        requestedNextStatus === 'TRANSIT' ? 'COLLECT_OFFLOAD' : 'COMPLETE_OFFLOAD'
+      );
+    } else {
+      sendJson(context, 405, { ok: false, error: 'Method not allowed' });
+      return;
+    }
     const columns = await columnsFor(pool.request(), 'Offloads');
     if (!columns.length) {
-      sendJson(context, 500, { ok: false, error: 'dbo.Offloads table was not found' });
+      sendJson(context, 503, {
+        ok: false,
+        code: 'OFFLOAD_SCHEMA_NOT_READY',
+        error: 'Operational data is unavailable'
+      });
       return;
     }
 
@@ -228,13 +280,18 @@ module.exports = async function (context, req) {
     const statusCol = pick(columns, ['Status', 'OffloadStatus']);
     const flightIdCol = pick(columns, ['FlightId']);
     if (!idCol || !statusCol) {
-      sendJson(context, 500, { ok: false, error: 'Offloads schema is missing an ID or status column' });
+      sendJson(context, 503, {
+        ok: false,
+        code: 'OFFLOAD_SCHEMA_NOT_READY',
+        error: 'Operational data is unavailable'
+      });
       return;
     }
 
-    if (req.method === 'GET') {
+    if (method === 'GET') {
+      const access = broadAccess;
       if (req.query?.eligibleFlights === 'true') {
-        const result = await selectOffloadFlights(pool.request());
+        const result = await selectOffloadFlights(pool.request(), null, false, access.stations);
         const flights = result.recordset.map(f => ({
           flightId: String(f.FlightId), flightNumber: f.FlightNumber,
           operatingDate: f.OperatingDate, createdAtUtc: f.CreatedAtUtc,
@@ -250,13 +307,14 @@ module.exports = async function (context, req) {
           return;
         }
         if (!flightIdCol || !pick(columns, ['UldId'])) {
-          sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Offload eligibility requires the Phase B identity migration' });
+          sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Operational data is unavailable' });
           return;
         }
         const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
         const selectedFlight = flightResult.recordset?.[0] || null;
+        await requireOperationalEntityCapability(pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS');
         const flightStatus = canonical(selectedFlight?.FlightStatus);
-        if (!selectedFlight || selectedFlight.Direction !== 'EXPORT' || !offloadFlightStatuses.includes(flightStatus)) {
+        if (selectedFlight.Direction !== 'EXPORT' || !offloadFlightStatuses.includes(flightStatus)) {
           sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select an ACTIVE, CLOSED or FINALISED export flight' });
           return;
         }
@@ -291,15 +349,13 @@ module.exports = async function (context, req) {
           return;
         }
         if (!flightIdCol) {
-          sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Offload FlightId is unavailable' });
+          sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Operational data is unavailable' });
           return;
         }
 
         const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
-        if (flightResult.recordset.length !== 1) {
-          sendJson(context, 404, { ok: false, error: 'Flight not found' });
-          return;
-        }
+        const selectedFlight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;
+        await requireOperationalEntityCapability(pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS');
 
         const uldIdCol = pick(columns, ['UldId']);
         const requestedAtCol = pick(columns, ['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc']);
@@ -319,7 +375,6 @@ module.exports = async function (context, req) {
             WHERE o.${q(flightIdCol)} = @SummaryFlightId
             ORDER BY ${orderBy};
           `);
-        const selectedFlight = flightResult.recordset[0];
         sendJson(context, 200, {
           ok: true,
           flight: {
@@ -334,16 +389,17 @@ module.exports = async function (context, req) {
         });
         return;
       }
-      const result = flightIdCol
-        ? await pool.request().query(`
+      if (!flightIdCol) {
+        sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Operational data is unavailable' });
+        return;
+      }
+      const listRequest = pool.request();
+      const stationParameters = bindStationParameters(listRequest, sql, access.stations, 'OffloadReadStation');
+      const result = await listRequest.query(`
             SELECT o.*, CONVERT(char(10), f.OperatingDate, 23) AS __FlightOperatingDate
             FROM dbo.Offloads AS o
-            LEFT JOIN dbo.Flights AS f ON f.FlightId = o.${q(flightIdCol)}
-            ORDER BY o.${q(idCol)} DESC;
-          `)
-        : await pool.request().query(`
-            SELECT o.*, CAST(NULL AS char(10)) AS __FlightOperatingDate
-            FROM dbo.Offloads AS o
+            INNER JOIN dbo.Flights AS f ON f.FlightId = o.${q(flightIdCol)}
+            WHERE ${flightStationPredicate('f', stationParameters)}
             ORDER BY o.${q(idCol)} DESC;
           `);
       const offloads = result.recordset.map(r => normalize(r, columns));
@@ -351,11 +407,10 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const body = req.body || {};
     const actorDisplayName = identity.displayName;
     const actorReference = identity.reference;
 
-    if (req.method === 'POST') {
+    if (method === 'POST') {
       const isBulk = String(body.action || '').toUpperCase() === 'BULK_CREATE';
       const requestedFlightId = operationalId(body.flightId);
       const requestedFlightNumber = clean(body.flightNumber, 12)?.toUpperCase() || null;
@@ -380,7 +435,7 @@ module.exports = async function (context, req) {
         return;
       }
       if (!flightIdCol || !pick(columns, ['UldId'])) {
-        sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Offload creation requires the Phase B identity migration' });
+        sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Operational data is unavailable' });
         return;
       }
       if (requestedUldNumber && requestedUldNumber.length > 20) {
@@ -389,7 +444,7 @@ module.exports = async function (context, req) {
       }
       const insertPlan = offloadInsertPlan(columns);
       if (insertPlan.requiredUnknown.length) {
-        sendJson(context, 500, { ok: false, error: `Offloads schema has unmapped required columns: ${insertPlan.requiredUnknown.map(c => c.COLUMN_NAME).join(', ')}` });
+        sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Operational data is unavailable' });
         return;
       }
 
@@ -399,11 +454,7 @@ module.exports = async function (context, req) {
 
       const flightResult = await selectOffloadFlights(new sql.Request(transaction), requestedFlightId, true);
       const selectedFlight = flightResult.recordset?.[0] || null;
-      if (!selectedFlight) {
-        await transaction.rollback(); transaction = null;
-        sendJson(context, 404, { ok: false, error: 'Selected flight was not found' });
-        return;
-      }
+      await requireOperationalEntityCapability(transaction, sql, identity, selectedFlight, 'REQUEST_OFFLOAD');
 
       const flightId = String(selectedFlight.FlightId);
       const flightNumber = clean(selectedFlight.FlightNumber, 12)?.toUpperCase();
@@ -530,6 +581,10 @@ module.exports = async function (context, req) {
       return;
     }
 
+    const requiredTransitionCapability = nextStatus === 'TRANSIT'
+      ? 'COLLECT_OFFLOAD'
+      : 'COMPLETE_OFFLOAD';
+
     transaction = new sql.Transaction(pool);
     await transaction.begin();
 
@@ -538,12 +593,35 @@ module.exports = async function (context, req) {
       .query(`SELECT * FROM dbo.Offloads WHERE ${q(idCol)} = @OffloadId;`);
 
     if (!currentResult.recordset.length) {
-      await transaction.rollback(); transaction = null;
-      sendJson(context, 404, { ok: false, error: 'Offload not found' });
-      return;
+      throw operationalEntityUnavailable();
     }
 
     const current = normalize(currentResult.recordset[0], columns);
+    // Resolve the stored parent identity and authorize it before returning any
+    // status, transition, route or ULD-derived response.
+    let amendmentFlightStatus = null;
+    const amendmentFlightId = operationalId(current.flightId);
+    if (amendmentFlightId) {
+      const amendmentFlight = await new sql.Request(transaction)
+        .input('AmendmentMutationFlightId', sql.BigInt, amendmentFlightId)
+        .query(`SELECT FlightStatus,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)
+          WHERE FlightId=@AmendmentMutationFlightId;`);
+      const authorizationFlight = amendmentFlight.recordset.length === 1
+        ? amendmentFlight.recordset[0]
+        : null;
+      await requireOperationalEntityCapability(
+        transaction,
+        sql,
+        identity,
+        authorizationFlight,
+        requiredTransitionCapability
+      );
+      amendmentFlightStatus = authorizationFlight.FlightStatus;
+    } else {
+      throw operationalEntityUnavailable();
+    }
+
     if (expectedCurrentStatus && expectedCurrentStatus !== current.status) {
       await transaction.rollback(); transaction = null;
       sendJson(context, 409, { ok: false, error: 'Offload status changed; refresh and review again', code: 'STALE_STATUS', currentStatus: current.status });
@@ -562,22 +640,6 @@ module.exports = async function (context, req) {
       await transaction.rollback(); transaction = null;
       sendJson(context, 400, { ok: false, error: 'deliveredLocation is required to complete an offload' });
       return;
-    }
-
-    // Serialize every stable-identity transition for a flight before changing
-    // the offload row. Historical amendment writers use the same flight lock,
-    // preventing two different offloads from taking locks in opposite order.
-    let amendmentFlightStatus = null;
-    const amendmentFlightId = operationalId(current.flightId);
-    if (amendmentFlightId) {
-      const amendmentFlight = await new sql.Request(transaction)
-        .input('AmendmentMutationFlightId', sql.BigInt, amendmentFlightId)
-        .query(`SELECT FlightStatus FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)
-          WHERE FlightId=@AmendmentMutationFlightId;`);
-      if (amendmentFlight.recordset.length !== 1) {
-        throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Offload flight identity is missing or ambiguous');
-      }
-      amendmentFlightStatus = amendmentFlight.recordset[0].FlightStatus;
     }
 
     const request = new sql.Request(transaction)
@@ -683,6 +745,7 @@ module.exports = async function (context, req) {
     sendJson(context, 200, { ok: true, offload: changed, amendment });
   } catch (err) {
     if (transaction) { try { await transaction.rollback(); } catch {} }
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     if (err instanceof CompletionAmendmentError) {
       sendJson(context, err.status, { ok: false, code: err.code, error: err.message });
       return;
@@ -715,7 +778,7 @@ module.exports = async function (context, req) {
       } catch (lookupError) { context.log.error('Offload conflict lookup failed', lookupError); }
     }
     context.log.error('Offloads API failed', err);
-    sendJson(context, 500, { ok: false, error: 'Offloads API failed', detail: err.message });
+    sendJson(context, 500, { ok: false, error: 'Offloads API failed' });
   } finally {
     try { await pool?.close(); } catch {}
   }

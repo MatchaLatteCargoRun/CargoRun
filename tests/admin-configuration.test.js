@@ -31,6 +31,7 @@ const bootstrapVerify = fs.readFileSync(path.join(root, 'migrations', 'admin-boo
 const foundation = fs.readFileSync(path.join(root, 'docs', 'admin-configuration-foundation.md'), 'utf8');
 const adminFunctionDirectory = path.join(root, 'api', 'configuration-admin');
 const adminApi = fs.readFileSync(path.join(adminFunctionDirectory, 'index.js'), 'utf8');
+const operationalAuthorization = fs.readFileSync(path.join(root, 'api', 'shared', 'operational-authorization.js'), 'utf8');
 const adminFunction = JSON.parse(fs.readFileSync(path.join(adminFunctionDirectory, 'function.json'), 'utf8'));
 
 const context = { airlineCode: 'CX', stationCode: 'MEL', operatingDate: '2026-09-19', direction: 'IMPORT' };
@@ -287,7 +288,8 @@ test('Admin API is authenticated and exposes GET plus explicit POST operations',
   const trigger = adminFunction.bindings.find(binding => binding.type === 'httpTrigger');
   assert.deepEqual(trigger.methods, ['get', 'post']);
   assert.equal(trigger.authLevel, 'anonymous', 'Static Web Apps authenticates the route before the handler validates x-ms-client-principal');
-  assert.match(adminApi, /roles\.includes\('authenticated'\)/);
+  assert.match(adminApi, /authenticatedActor\(req\)/);
+  assert.match(operationalAuthorization, /roles\.includes\('authenticated'\)/);
   assert.match(adminApi, /\['GET', 'POST'\]/);
   assert.match(adminApi, /executeConfigurationMutation/);
   assert.match(adminApi, /AUTHORIZED_BY_ADMIN_CAPABILITY/);

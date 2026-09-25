@@ -2,23 +2,12 @@
 
 const sql = require('mssql');
 const { CompletionAmendmentError, verifyCompletionEvidence } = require('../shared/completion-amendments');
-
-function getHeader(req, name) {
-  const headers = req?.headers || {};
-  if (typeof headers.get === 'function') return headers.get(name);
-  return headers[name] || headers[name.toLowerCase()] || headers[name.toUpperCase()] || null;
-}
-
-function authenticated(req) {
-  try {
-    const raw = getHeader(req, 'x-ms-client-principal');
-    if (!raw) return false;
-    const principal = JSON.parse(Buffer.from(raw, 'base64').toString('utf8'));
-    return Array.isArray(principal.userRoles) && principal.userRoles.includes('authenticated');
-  } catch {
-    return false;
-  }
-}
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -89,12 +78,9 @@ function versionMetadata(entry, base) {
 module.exports = async function flightStatement(context, req) {
   let pool;
   try {
-    if (!authenticated(req)) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const actor = authenticatedActor(req);
     if (!process.env.DATABASE_CONNECTION_STRING) {
-      sendJson(context, 503, { ok: false, error: 'DATABASE_CONNECTION_STRING is not configured' });
+      sendJson(context, 503, { ok: false, error: 'Service configuration is unavailable' });
       return;
     }
 
@@ -108,16 +94,15 @@ module.exports = async function flightStatement(context, req) {
     }
 
     pool = await new sql.ConnectionPool(process.env.DATABASE_CONNECTION_STRING).connect();
+    await requireOperationalStations(pool, sql, actor, 'VIEW_FLIGHT_STATEMENT');
     const flightResult = await pool.request()
       .input('StatementFlightId', sql.BigInt, flightId)
       .query(`SELECT CONVERT(varchar(20),FlightId) AS FlightId, FlightNumber,
-          CONVERT(char(10),OperatingDate,23) AS OperatingDate, Direction, FlightStatus
+          CONVERT(char(10),OperatingDate,23) AS OperatingDate, Direction,
+          OriginAirport,DestinationAirport,FlightStatus
         FROM dbo.Flights WHERE FlightId=@StatementFlightId;`);
-    if (flightResult.recordset.length !== 1) {
-      sendJson(context, 404, { ok: false, code: 'FLIGHT_NOT_FOUND', error: 'Flight not found' });
-      return;
-    }
-    const flight = flightResult.recordset[0];
+    const flight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;
+    await requireOperationalEntityCapability(pool, sql, actor, flight, 'VIEW_FLIGHT_STATEMENT');
     if (String(flight.Direction || '').toUpperCase() !== 'EXPORT') {
       sendJson(context, 409, { ok: false, code: 'STATEMENT_NOT_EXPORT', error: 'Flight Statement is available only for export flights' });
       return;
@@ -200,6 +185,7 @@ module.exports = async function flightStatement(context, req) {
       selectedVersion: { ...selectedMetadata, snapshot: selected.snapshot }
     });
   } catch (error) {
+    if (sendOperationalAuthorizationError(context, error, sendJson)) return;
     if (error instanceof CompletionAmendmentError) {
       sendJson(context, error.status || 409, { ok: false, code: error.code, error: error.message });
       return;

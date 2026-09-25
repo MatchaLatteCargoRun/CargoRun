@@ -209,13 +209,16 @@ test('index uses screen-aware service plans and refreshes History only on entry'
   const start = html.indexOf('const CENTRAL_SYNC_SERVICE_NAMES=');
   const end = html.indexOf('function centralActiveFlightCount()', start);
   assert.ok(start >= 0 && end > start);
-  const context = vm.createContext({ route: { screen: 'flights' }, Set });
+  const capabilities = new Set(['VIEW_FLIGHTS', 'VIEW_HISTORY', 'VIEW_FLIGHT_STATEMENT']);
+  const context = vm.createContext({ route: { screen: 'flights' }, Set, hasCargoRunCapability: capability => capabilities.has(capability) });
   vm.runInContext(html.slice(start, end), context);
   assert.deepEqual([...context.centralSyncServices({ screen: 'home' })], ['flights', 'offloads']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'flightboard' })], ['flights', 'offloads']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'supervisor' })], ['flights', 'offloads', 'history', 'exportCompletions', 'importCompletions']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'history' })], ['history', 'exportCompletions', 'importCompletions']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'admin' })], []);
+  capabilities.delete('VIEW_HISTORY');
+  assert.deepEqual([...context.centralSyncServices({ full: true })], ['flights', 'offloads', 'exportCompletions', 'importCompletions']);
   assert.match(html, /if\(screen==='history'\)void refreshHistoryOnEntry\(\)/);
   assert.match(html, /if\(screen==='admin'\)void loadAdminConfiguration\(\)/);
 });

@@ -2,6 +2,12 @@ const sql = require('mssql');
 const { normalizeUldNumber } = require('../shared/uld');
 const { acquireFlightIdentityLock } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -47,11 +53,12 @@ module.exports = async function (context, req) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        error: 'Service configuration is unavailable'
       });
       return;
     }
 
+    const actor = authenticatedActor(req);
     pool = await new sql.ConnectionPool(connectionString).connect();
 
     /* GET /api/ulds?flightId=1 */
@@ -65,6 +72,20 @@ module.exports = async function (context, req) {
         });
         return;
       }
+
+      await requireOperationalStations(pool, sql, actor, 'VIEW_FLIGHTS');
+
+      const flightResult = await pool.request()
+        .input('AuthorizationFlightId', sql.BigInt, flightId)
+        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE FlightId=@AuthorizationFlightId;`);
+      await requireOperationalEntityCapability(
+        pool,
+        sql,
+        actor,
+        flightResult.recordset.length === 1 ? flightResult.recordset[0] : null,
+        'VIEW_FLIGHTS'
+      );
 
       const result = await pool.request()
         .input('FlightId', sql.BigInt, flightId)
@@ -101,15 +122,6 @@ module.exports = async function (context, req) {
 
     /* POST /api/ulds */
     const body = req.body || {};
-    const actor = getActor(req);
-
-    if (!actor) {
-      sendJson(context, 401, {
-        ok: false,
-        error: 'Microsoft Entra sign-in is required'
-      });
-      return;
-    }
 
     const flightId = String(body.flightId || '').trim();
     const uldNumber = normalizeUldNumber(body.uldNumber);
@@ -132,24 +144,19 @@ module.exports = async function (context, req) {
       return;
     }
 
+    await requireOperationalStations(pool, sql, actor, 'MOVE_ULD');
+
     const flightResult = await pool.request()
       .input('FlightId', sql.BigInt, flightId)
       .query(`
         SELECT FlightId,FlightNumber,OperatingDate,
-          CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction
+          CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,OriginAirport,DestinationAirport
         FROM dbo.Flights
         WHERE FlightId = @FlightId;
       `);
 
-    if (!flightResult.recordset.length) {
-      sendJson(context, 404, {
-        ok: false,
-        error: 'Flight not found'
-      });
-      return;
-    }
-
-    const selectedFlight = flightResult.recordset[0];
+    const selectedFlight = flightResult.recordset[0] || null;
+    await requireOperationalEntityCapability(pool, sql, actor, selectedFlight, 'MOVE_ULD');
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
@@ -163,14 +170,10 @@ module.exports = async function (context, req) {
       );
       const lockedFlight = await new sql.Request(transaction)
         .input('LockedFlightId', sql.BigInt, flightId)
-        .query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,FlightStatus
+        .query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
           FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
-      if (!lockedFlight.recordset.length) {
-        await transaction.rollback();
-        sendJson(context, 404, { ok: false, error: 'Flight not found' });
-        return;
-      }
-      const locked = lockedFlight.recordset[0];
+      const locked = lockedFlight.recordset[0] || null;
+      await requireOperationalEntityCapability(transaction, sql, actor, locked, 'MOVE_ULD');
       const direction = String(locked.Direction || '').toUpperCase();
       if (direction === 'EXPORT') {
         const finalResult = await new sql.Request(transaction)
@@ -314,11 +317,11 @@ module.exports = async function (context, req) {
     }
 
   } catch (err) {
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('ULD API failed', err);
     sendJson(context, 500, {
       ok: false,
-      error: 'ULD API failed',
-      detail: err.message
+      error: 'ULD API failed'
     });
 
   } finally {

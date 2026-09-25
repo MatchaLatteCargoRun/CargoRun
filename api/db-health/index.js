@@ -20,34 +20,26 @@ module.exports = async function (context) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        status: 'unavailable'
       });
       return;
     }
 
     pool = await sql.connect(connectionString);
 
-    const result = await pool.request().query(`
-      SELECT
-        DB_NAME() AS DatabaseName,
-        COUNT(*) AS FlightCount
-      FROM dbo.Flights;
-    `);
+    await pool.request().query('SELECT 1 AS DatabaseReachable;');
 
     sendJson(context, 200, {
       ok: true,
-      database: result.recordset[0].DatabaseName,
-      flightCount: result.recordset[0].FlightCount,
-      serverTimeUtc: new Date().toISOString()
+      status: 'healthy'
     });
 
   } catch (err) {
     context.log.error('Database health check failed', err);
 
-    sendJson(context, 500, {
+    sendJson(context, 503, {
       ok: false,
-      error: 'Database connection failed',
-      detail: err.message
+      status: 'unhealthy'
     });
 
   } finally {

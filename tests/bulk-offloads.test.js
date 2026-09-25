@@ -263,6 +263,8 @@ function frontendHarness() {
   ]) elements[id] = { value: '', disabled: false, innerHTML: '', textContent: '', checked: false, indeterminate: false };
   elements.modal = { classList: { contains: () => true } };
   const requests = [], notices = [], loaders = [];
+  const cargoRunAccess = { status: 'provisioned' };
+  const operationalSessionGeneration = 1;
   let modalMarkup = '';
   const context = vm.createContext({
     document: { getElementById: id => elements[id] || null },
@@ -273,7 +275,11 @@ function frontendHarness() {
     fetch: (url, options) => new Promise(resolve => requests.push({ url, options, resolve })),
     toast: message => notices.push(message),
     showActionLoader: (title, detail) => loaders.push({ title, detail }), hideActionLoader() {},
-    closeModal() {}, openScreen() {}, syncAzureOffloads: async () => true
+    closeModal() {}, openScreen() {}, syncAzureOffloads: async () => true,
+    cargoRunAccess,
+    operationalSessionGeneration,
+    operationalSessionIsCurrent: generation =>
+      generation === operationalSessionGeneration && cargoRunAccess.status === 'provisioned'
   });
   const start = html.indexOf('let offloadRequestSession=');
   const end = html.indexOf('function handleOffload(', start);

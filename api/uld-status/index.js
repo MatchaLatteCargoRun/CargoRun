@@ -1,5 +1,11 @@
 const sql = require('mssql');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  requireOperationalEntityCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 
 function getHeader(req, name) {
@@ -99,16 +105,12 @@ module.exports = async function (context, req) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        error: 'Service configuration is unavailable'
       });
       return;
     }
 
-    const actor = getActor(req);
-    if (!actor) {
-      sendJson(context, 401, { ok: false, error: 'Microsoft Entra sign-in is required' });
-      return;
-    }
+    const actor = authenticatedActor(req);
 
     const body = req.body || {};
     const uldId = String(body.uldId || '').trim();
@@ -139,6 +141,8 @@ module.exports = async function (context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
 
+    await requireOperationalStations(transaction, sql, actor, 'MOVE_ULD');
+
     const currentResult = await new sql.Request(transaction)
       .input('UldId', sql.BigInt, uldId)
       .query(`
@@ -148,6 +152,8 @@ module.exports = async function (context, req) {
           u.UldNumber,
           u.CurrentStatus,
           f.Direction,
+          f.OriginAirport,
+          f.DestinationAirport,
           f.FlightNumber
         FROM dbo.ULDs u
         INNER JOIN dbo.Flights f
@@ -155,14 +161,8 @@ module.exports = async function (context, req) {
         WHERE u.UldId = @UldId;
       `);
 
-    if (!currentResult.recordset.length) {
-      await transaction.rollback();
-      transaction = null;
-      sendJson(context, 404, { ok: false, error: 'ULD not found' });
-      return;
-    }
-
-    const current = currentResult.recordset[0];
+    const current = currentResult.recordset[0] || null;
+    await requireOperationalEntityCapability(transaction, sql, actor, current, 'MOVE_ULD');
     const direction = canonicalStatus(current.Direction);
     const currentStatus = canonicalStatus(current.CurrentStatus);
 
@@ -371,7 +371,7 @@ module.exports = async function (context, req) {
           `);
           movementLogged = true;
         } else if (requiredUnknown.length) {
-          movementWarning = `Movement trail skipped because required columns were not recognised: ${requiredUnknown.map(x => x.COLUMN_NAME).join(', ')}`;
+          movementWarning = 'Movement trail is temporarily unavailable';
         }
       }
     } catch (movementErr) {
@@ -412,11 +412,11 @@ module.exports = async function (context, req) {
       try { await transaction.rollback(); } catch {}
     }
 
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     context.log.error('ULD status API failed', err);
     sendJson(context, 500, {
       ok: false,
-      error: 'ULD status update failed',
-      detail: err.message
+      error: 'ULD status update failed'
     });
 
   } finally {

@@ -14,8 +14,14 @@ const {
 const {
   ExportUwsError,
   parseExportUws,
+  findExportUwsFlightCandidates,
   matchExportUwsFlight
 } = require('../shared/export-uws');
+const {
+  authenticatedActor,
+  requireOperationalCapability,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -60,7 +66,7 @@ function getActor(req) {
   };
 }
 
-async function loadUwsFlight(request, parsed, locked = false) {
+async function loadUwsFlight(request, authorizationExecutor, actor, parsed, locked = false) {
   const hint = locked ? ' WITH (UPDLOCK,HOLDLOCK)' : '';
   const parameter = locked ? 'LockedUwsOperatingDate' : 'UwsOperatingDate';
   const result = await request
@@ -69,7 +75,29 @@ async function loadUwsFlight(request, parsed, locked = false) {
         Direction,FlightStatus,OriginAirport,DestinationAirport
       FROM dbo.Flights${hint}
       WHERE OperatingDate=@${parameter};`);
-  return matchExportUwsFlight(result.recordset, parsed);
+  const candidates = findExportUwsFlightCandidates(result.recordset, parsed);
+  for (const candidate of candidates) {
+    await requireOperationalCapability(
+      authorizationExecutor,
+      sql,
+      actor,
+      candidate,
+      'CONFIRM_EXPORT_FINAL'
+    );
+  }
+  return matchExportUwsFlight(candidates, parsed);
+}
+
+async function authorizeStoredFlightCandidates(executor, actor, candidates, requiredCapability) {
+  try {
+    for (const candidate of candidates) {
+      await requireOperationalCapability(executor, sql, actor, candidate, requiredCapability);
+    }
+    return true;
+  } catch (error) {
+    if (Number(error?.status) === 403) return false;
+    throw error;
+  }
 }
 
 async function ensureUwsBuildOpen(request, flightId, locked = false) {
@@ -133,19 +161,13 @@ module.exports = async function (context, req) {
     if (!connectionString) {
       sendJson(context, 503, {
         ok: false,
-        error: 'DATABASE_CONNECTION_STRING is not configured'
+        code: 'SERVICE_CONFIGURATION_UNAVAILABLE',
+        error: 'Service configuration is unavailable'
       });
       return;
     }
 
-    const actor = getActor(req);
-    if (!actor) {
-      sendJson(context, 401, {
-        ok: false,
-        error: 'Microsoft Entra sign-in is required'
-      });
-      return;
-    }
+    const actor = authenticatedActor(req);
 
     const body = req.body || {};
     const action = clean(body.action) || 'CREATE';
@@ -159,8 +181,14 @@ module.exports = async function (context, req) {
 
       pool = await new sql.ConnectionPool(connectionString).connect();
 
+      await requireOperationalCapability(pool, sql, actor, {
+        Direction: 'EXPORT',
+        OriginAirport: parsed.station,
+        DestinationAirport: parsed.destination
+      }, 'CONFIRM_EXPORT_FINAL');
+
       if (action === 'PARSE_EXPORT_UWS') {
-        const matchedFlight = await loadUwsFlight(pool.request(), parsed);
+        const matchedFlight = await loadUwsFlight(pool.request(), pool, actor, parsed);
         await ensureUwsBuildOpen(pool.request(), matchedFlight.FlightId);
         const reconciliation = reconcileManifest(
           await loadUwsOperationalRows(pool.request(), matchedFlight.FlightId),
@@ -174,7 +202,7 @@ module.exports = async function (context, req) {
         return;
       }
 
-      const initialFlight = await loadUwsFlight(pool.request(), parsed);
+      const initialFlight = await loadUwsFlight(pool.request(), pool, actor, parsed);
       transaction = new sql.Transaction(pool);
       await transaction.begin();
       await acquireFlightIdentityLock(
@@ -183,7 +211,13 @@ module.exports = async function (context, req) {
         parsed.operatingDate,
         parsed.flightNumber
       );
-      const matchedFlight = await loadUwsFlight(new sql.Request(transaction), parsed, true);
+      const matchedFlight = await loadUwsFlight(
+        new sql.Request(transaction),
+        transaction,
+        actor,
+        parsed,
+        true
+      );
       if (String(initialFlight.FlightId) !== String(matchedFlight.FlightId)) {
         throw new ExportUwsError('UWS_FLIGHT_CHANGED', 'The matched flight changed while the UWS was being reviewed', 409);
       }
@@ -192,7 +226,6 @@ module.exports = async function (context, req) {
         await loadUwsOperationalRows(new sql.Request(transaction), matchedFlight.FlightId, true),
         items
       );
-
       await new sql.Request(transaction)
         .input('UwsUploadFlightId', sql.BigInt, matchedFlight.FlightId)
         .input('UwsFileName', sql.NVarChar(260), sourceFileName)
@@ -343,6 +376,12 @@ module.exports = async function (context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
 
+    await requireOperationalCapability(transaction, sql, actor, {
+      Direction: direction,
+      OriginAirport: originAirport,
+      DestinationAirport: destinationAirport
+    }, 'UPLOAD_FLIGHT_DATA');
+
     await acquireFlightIdentityLock(
       transaction,
       sql,
@@ -353,7 +392,7 @@ module.exports = async function (context, req) {
     const flightCandidates = await new sql.Request(transaction)
       .input('OperatingDate', sql.Date, operatingDate)
       .query(`
-        SELECT FlightId, FlightNumber
+        SELECT FlightId, FlightNumber, Direction, OriginAirport, DestinationAirport
         FROM dbo.Flights
         WHERE OperatingDate = @OperatingDate;
       `);
@@ -362,6 +401,25 @@ module.exports = async function (context, req) {
       flightCandidates.recordset,
       flightNumber
     );
+
+    if (existingFlights.length) {
+      const candidatesAuthorized = await authorizeStoredFlightCandidates(
+        transaction,
+        actor,
+        existingFlights,
+        'UPLOAD_FLIGHT_DATA'
+      );
+      if (!candidatesAuthorized) {
+        await transaction.rollback();
+        transaction = null;
+        sendJson(context, 409, {
+          ok: false,
+          error: 'Flight identity conflicts with an existing operation',
+          code: 'FLIGHT_IDENTITY_CONFLICT'
+        });
+        return;
+      }
+    }
 
     if (existingFlights.length > 1) {
       await transaction.rollback();
@@ -549,6 +607,7 @@ module.exports = async function (context, req) {
       try { await transaction.rollback(); } catch {}
     }
 
+    if (sendOperationalAuthorizationError(context, err, sendJson)) return;
     if (err instanceof ExportUwsError || err instanceof ManifestFinalError) {
       sendJson(context, err.status || 400, {
         ok: false,
@@ -564,8 +623,7 @@ module.exports = async function (context, req) {
 
     sendJson(context, 500, {
       ok: false,
-      error: 'Manifest upload failed',
-      detail: err.message
+      error: 'Manifest upload failed'
     });
 
   } finally {

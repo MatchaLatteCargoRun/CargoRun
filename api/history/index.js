@@ -1,4 +1,11 @@
 const sql = require('mssql');
+const {
+  authenticatedActor,
+  requireOperationalStations,
+  bindStationParameters,
+  flightStationPredicate,
+  sendOperationalAuthorizationError
+} = require('../shared/operational-authorization');
 
 
 function getHeader(req, name) {
@@ -85,28 +92,38 @@ module.exports = async function(context, req) {
       return;
     }
     const connectionString = process.env.DATABASE_CONNECTION_STRING;
-    if (!connectionString) { sendJson(context,503,{ok:false,error:'DATABASE_CONNECTION_STRING is not configured'}); return; }
-    const actor = getActor(req);
-    if (!actor) { sendJson(context,401,{ok:false,error:'Microsoft Entra sign-in is required'}); return; }
+    if (!connectionString) { sendJson(context,503,{ok:false,error:'Service configuration is unavailable'}); return; }
+    const actor = authenticatedActor(req);
     pool = await new sql.ConnectionPool(connectionString).connect();
+    const access = await requireOperationalStations(pool,sql,actor,'VIEW_HISTORY');
     const columns = await columnsFor(pool.request(),'AuditEvents');
-    if (!columns.length) { sendJson(context,500,{ok:false,error:'dbo.AuditEvents table was not found'}); return; }
+    if (!columns.length) { sendJson(context,503,{ok:false,error:'History service is unavailable'}); return; }
     const idCol = pick(columns,['AuditEventId','EventId','Id']);
     const timeCol = pick(columns,['OccurredAtUtc','OccurredAt','CreatedAtUtc']);
-
-    const order = timeCol ? `${q(timeCol)} DESC` : idCol ? `${q(idCol)} DESC` : '(SELECT NULL)';
+    const flightIdCol = pick(columns,['FlightId']);
+    if (!flightIdCol) {
+      sendJson(context,503,{ok:false,code:'HISTORY_AUTHORIZATION_UNAVAILABLE',error:'History records cannot be safely attributed to an authorized station'});
+      return;
+    }
+    const order = timeCol ? `audit.${q(timeCol)} DESC` : idCol ? `audit.${q(idCol)} DESC` : '(SELECT NULL)';
     const requestedLimit = Math.max(1, Math.min(5000, Number(req.query?.limit || 3000) || 3000));
     const startUtc = clean(req.query?.startUtc, 50);
     const endUtc = clean(req.query?.endUtc, 50);
     const request = pool.request().input('Limit', sql.Int, requestedLimit);
-    let where = '';
+    const stationParameters = bindStationParameters(request,sql,access.stations,'HistoryStation');
+    const where = [flightStationPredicate('flight',stationParameters)];
     if (timeCol && startUtc && endUtc) {
       request.input('StartUtc', sql.DateTime2, new Date(startUtc)).input('EndUtc', sql.DateTime2, new Date(endUtc));
-      where = `WHERE ${q(timeCol)} >= @StartUtc AND ${q(timeCol)} < @EndUtc`;
+      where.push(`audit.${q(timeCol)} >= @StartUtc AND audit.${q(timeCol)} < @EndUtc`);
     }
-    const r = await request.query(`SELECT TOP (@Limit) * FROM dbo.AuditEvents ${where} ORDER BY ${order};`);
+    const r = await request.query(`SELECT TOP (@Limit) audit.*
+      FROM dbo.AuditEvents audit
+      INNER JOIN dbo.Flights flight ON flight.FlightId=audit.${q(flightIdCol)}
+      WHERE ${where.join(' AND ')}
+      ORDER BY ${order};`);
     sendJson(context,200,{ok:true,count:r.recordset.length,events:r.recordset.map(x=>normalize(x,columns))});
   } catch(err) {
-    context.log.error('History API failed',err); sendJson(context,500,{ok:false,error:'History API failed',detail:err.message});
+    if (sendOperationalAuthorizationError(context,err,sendJson)) return;
+    context.log.error('History API failed',err); sendJson(context,500,{ok:false,error:'History API failed'});
   } finally { try{await pool?.close();}catch{} }
 };
