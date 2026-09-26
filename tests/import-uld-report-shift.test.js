@@ -26,6 +26,7 @@ function reportHarness() {
     currentUser: () => ({ name: 'Shift Lead' }),
     currentStationCode: () => 'MEL',
     dateKeyLabel: key => key,
+    historyDateKeyLabel: key => key,
     Date
   });
   vm.runInContext(sourceBetween('function normaliseImportRecord(', 'function downloadCompletedImport('), context);

@@ -5,6 +5,7 @@ const {
   authorizeRequestedStation,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
+const { StationTimeError, utcBoundsForStationDate } = require('../shared/station-time');
 
 
 function getHeader(req, name) {
@@ -47,7 +48,6 @@ function sendJson(context, status, body, headers = {}) {
     body: JSON.stringify(body)
   };
 }
-function clean(value, max = 500) { if (value === null || value === undefined) return null; const s = String(value).trim(); return s ? s.slice(0, max) : null; }
 function pick(columns, candidates) { const map = new Map(columns.map(c => [String(c.COLUMN_NAME).toLowerCase(), c.COLUMN_NAME])); for (const x of candidates) { const hit = map.get(String(x).toLowerCase()); if (hit) return hit; } return null; }
 function q(name) { return `[${String(name).replace(/]/g, ']]')}]`; }
 async function columnsFor(request, tableName) {
@@ -100,6 +100,20 @@ module.exports = async function(context, req) {
       stationId: req.query?.stationId,
       requiredCapability: 'VIEW_HISTORY'
     });
+    let bounds;
+    try {
+      bounds = utcBoundsForStationDate(req.query?.operatingDate, station.timeZoneId);
+    } catch (error) {
+      if (error instanceof StationTimeError && error.code === 'LOCAL_DATE_INVALID') {
+        sendJson(context,400,{
+          ok:false,
+          code:'OPERATING_DATE_INVALID',
+          error:'operatingDate must be a valid date in YYYY-MM-DD format'
+        });
+        return;
+      }
+      throw error;
+    }
     const columns = await columnsFor(pool.request(),'AuditEvents');
     if (!columns.length) { sendJson(context,503,{ok:false,error:'History service is unavailable'}); return; }
     const idCol = pick(columns,['AuditEventId','EventId','Id']);
@@ -109,18 +123,22 @@ module.exports = async function(context, req) {
       sendJson(context,503,{ok:false,code:'HISTORY_AUTHORIZATION_UNAVAILABLE',error:'History records cannot be safely attributed to an authorized station'});
       return;
     }
-    const order = timeCol ? `audit.${q(timeCol)} DESC` : idCol ? `audit.${q(idCol)} DESC` : '(SELECT NULL)';
+    if (!timeCol) {
+      sendJson(context,503,{ok:false,code:'HISTORY_TIME_BOUNDARY_UNAVAILABLE',error:'History records cannot be safely bounded to the selected station date'});
+      return;
+    }
+    const order = `audit.${q(timeCol)} DESC${idCol ? `, audit.${q(idCol)} DESC` : ''}`;
     const requestedLimit = Math.max(1, Math.min(5000, Number(req.query?.limit || 3000) || 3000));
-    const startUtc = clean(req.query?.startUtc, 50);
-    const endUtc = clean(req.query?.endUtc, 50);
     const request = pool.request()
       .input('Limit', sql.Int, requestedLimit)
-      .input('StationId', sql.BigInt, station.stationId);
-    const where = ['flight.StationId=@StationId'];
-    if (timeCol && startUtc && endUtc) {
-      request.input('StartUtc', sql.DateTime2, new Date(startUtc)).input('EndUtc', sql.DateTime2, new Date(endUtc));
-      where.push(`audit.${q(timeCol)} >= @StartUtc AND audit.${q(timeCol)} < @EndUtc`);
-    }
+      .input('StationId', sql.BigInt, station.stationId)
+      .input('StartUtc', sql.DateTime2, new Date(bounds.startUtc))
+      .input('EndUtc', sql.DateTime2, new Date(bounds.endUtc));
+    const where = [
+      'flight.StationId=@StationId',
+      `audit.${q(timeCol)} >= @StartUtc`,
+      `audit.${q(timeCol)} < @EndUtc`
+    ];
     const r = await request.query(`SELECT TOP (@Limit) audit.*
       FROM dbo.AuditEvents audit
       INNER JOIN dbo.Flights flight ON flight.FlightId=audit.${q(flightIdCol)}

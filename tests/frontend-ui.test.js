@@ -272,7 +272,10 @@ test('History exposes completed-flight and stable actor filters', () => {
     ] },
     historySearch: '',
     historyFilter: 'All',
-    historyUserFilter: 'All'
+    historyUserFilter: 'All',
+    historyOperatingDate: '1970-01-01',
+    validHistoryDateKey: value => value === '1970-01-01',
+    historyDateKey: () => '1970-01-01'
   });
   vm.runInContext(html.slice(start, end), context);
   assert.deepEqual(Array.from(context.historyUsers(), user => user.key), ['id:actor-1', 'id:actor-2']);

@@ -197,6 +197,25 @@ test('station capability helper changes with the selected station', () => {
   assert.equal(context.selectedStationTimeZone(), 'Pacific/Auckland');
 });
 
+test('browser station date keys use the selected IANA timezone instead of the process timezone', () => {
+  const context = createStationContext();
+  setAccess(context, [MEL, AKL], '1');
+  const instant = '2026-01-01T11:30:00.000Z';
+  assert.equal(context.selectedStationDateKey(instant), '2026-01-01');
+  vm.runInContext("selectedStationId='2'", context);
+  assert.equal(context.selectedStationDateKey(instant), '2026-01-02');
+});
+
+test('station switching resets History to today in the newly selected station', async () => {
+  const { context } = createSwitchContext(async () => true);
+  vm.runInContext("Date.now=()=>Date.parse('2026-01-01T11:30:00.000Z')", context);
+  setAccess(context, [MEL, AKL], '1');
+  assert.equal(await context.switchCargoRunStation('1'), true);
+  assert.equal(vm.runInContext('historyOperatingDate', context), '2026-01-01');
+  assert.equal(await context.switchCargoRunStation('2'), true);
+  assert.equal(vm.runInContext('historyOperatingDate', context), '2026-01-02');
+});
+
 test('valid switch stops, purges, selects, synchronizes, then starts scheduling', async () => {
   const { context, events } = createSwitchContext(async ctx => {
     events.push(`sync:${vm.runInContext('selectedStationCode()', ctx)}`);
@@ -442,8 +461,8 @@ test('broad reads carry stable stationId while exact entity reads remain exact',
   vm.runInContext(urlSource, context);
   assert.equal(context.selectedStationApiUrl('/api/flights'), '/api/flights?stationId=1');
   assert.equal(
-    context.selectedStationApiUrl('/api/history', { startUtc: '2026-09-25T00:00:00.000Z', limit: 5000 }),
-    '/api/history?startUtc=2026-09-25T00%3A00%3A00.000Z&limit=5000&stationId=1'
+    context.selectedStationApiUrl('/api/history', { operatingDate: '2026-09-25', limit: 5000 }),
+    '/api/history?operatingDate=2026-09-25&limit=5000&stationId=1'
   );
   for (const endpoint of ['/api/flights', '/api/offloads', '/api/history', '/api/export-completions', '/api/import-completions', '/api/mach-fow']) {
     assert.match(html, new RegExp(`selectedStationApiUrl\\('${endpoint.replaceAll('/', '\\/')}'`));

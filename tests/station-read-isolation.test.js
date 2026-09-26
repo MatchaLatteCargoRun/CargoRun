@@ -133,7 +133,7 @@ function endpointCases() {
     { name: 'flights', file: 'api/flights/index.js', query: {}, ids: body => body.flights.map(row => String(row.FlightId)) },
     { name: 'offloads', file: 'api/offloads/index.js', query: {}, ids: body => body.offloads.map(row => String(row.flightId)) },
     { name: 'eligible flights', file: 'api/offloads/index.js', query: { eligibleFlights: 'true' }, ids: body => body.flights.map(row => String(row.flightId)) },
-    { name: 'history', file: 'api/history/index.js', query: {}, ids: body => body.events.map(row => String(row.entityId)) },
+    { name: 'history', file: 'api/history/index.js', query: { operatingDate: '2026-10-01' }, ids: body => body.events.map(row => String(row.entityId)) },
     { name: 'import completions', file: 'api/import-completions/index.js', query: {}, ids: body => body.records.map(row => String(row.flightId)) },
     { name: 'export completions', file: 'api/export-completions/index.js', query: {}, ids: body => body.records.map(row => String(row.flightId)) },
     { name: 'human MACH/FOW', file: 'api/mach-fow/index.js', query: {}, ids: body => body.messages.map(row => String(row.MatchedFlightId)) }
@@ -190,7 +190,7 @@ test('aggregate capabilities cannot authorize a station that lacks the requested
   assert.equal(deniedHarness.state.queries.length, 0);
 
   const allowedHarness = isolationSqlHarness();
-  const allowed = await call(loadHandler('api/history/index.js', allowedHarness.sql, authorizationOverride), 'GET', null, { stationId: '1' });
+  const allowed = await call(loadHandler('api/history/index.js', allowedHarness.sql, authorizationOverride), 'GET', null, { stationId: '1', operatingDate: '2026-10-01' });
   assert.equal(allowed.status, 200);
   assert.deepEqual(allowed.body.events.map(row => row.entityId), ['101']);
 });

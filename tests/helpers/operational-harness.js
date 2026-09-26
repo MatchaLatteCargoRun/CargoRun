@@ -17,6 +17,7 @@ const exportManifestFinal = require('../../api/shared/export-manifest-final');
 const exportUws = require('../../api/shared/export-uws');
 const operationalAuthorization = require('./operational-authorization-stub');
 const station = require('../../api/shared/station');
+const stationTime = require('../../api/shared/station-time');
 
 const root = path.resolve(__dirname, '..', '..');
 const principal = Buffer.from(JSON.stringify({
@@ -44,6 +45,7 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
       if (name === '../shared/export-manifest-final') return exportManifestFinal;
       if (name === '../shared/export-uws') return exportUws;
       if (name === '../shared/operational-authorization') return operationalAuthorizationOverride;
+      if (name === '../shared/station-time') return stationTime;
       if (name === '../shared/station') return {
         ...station,
         resolveAuthorizedStation: async (_executor, _sql, access, requested) => {

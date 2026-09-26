@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { insertAuditEvent } = require('../api/shared/audit');
+const stationTime = require('../api/shared/station-time');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
 
 const root = path.resolve(__dirname, '..');
@@ -43,6 +44,7 @@ function loadHistoryHandler(sqlMock) {
     require(name) {
       if (name === 'mssql') return sqlMock;
       if (name === '../shared/operational-authorization') return operationalAuthorization;
+      if (name === '../shared/station-time') return stationTime;
       throw new Error(`Unexpected require: ${name}`);
     }
   }, { filename: path.join(root, 'api/history/index.js') });
@@ -135,17 +137,20 @@ function historyFrontendHarness(events) {
     historySearch: '',
     historyFilter: 'All',
     historyUserFilter: 'All',
+    historyOperatingDate: '2026-09-24',
     CARGORUN_MASCOT: 'mascot.png',
     isMobileUI: () => false,
     mobileHistoryScreen: () => '<mobile-history />',
+    selectedStationCode: () => 'MEL',
+    selectedStationTimeZone: () => 'Australia/Melbourne',
     historyFilteredEvents: () => events,
     historyDateKeys: () => ['2026-09-24'],
     historyUsers: () => [],
     visibleCompletionsForDate: () => [],
     dayStats: () => ({ events, actions: events.length, offloads: 0, flights: 1 }),
     historyDayOpen: () => true,
-    dateKeyLabel: () => '24 Sep 2026',
-    fmtTime: () => '10:30'
+    historyDateKeyLabel: () => '24 Sep 2026',
+    historyTime: () => '10:30 AEST'
   });
   for (const name of ['esc', 'safeClassToken', 'eventDescription']) {
     vm.runInContext(functionLine(name), context);
@@ -160,8 +165,9 @@ test('GET /api/history remains authenticated, bounded, and returns normalized st
   const response = await callHistory(handler, 'GET', null, {
     stationId: '1',
     limit: '9000',
-    startUtc: '2026-09-24T00:00:00.000Z',
-    endUtc: '2026-09-25T00:00:00.000Z'
+    operatingDate: '2026-09-24',
+    startUtc: '2000-01-01T00:00:00.000Z',
+    endUtc: '2000-01-02T00:00:00.000Z'
   });
 
   assert.equal(response.status, 200);
@@ -185,8 +191,19 @@ test('GET /api/history remains authenticated, bounded, and returns normalized st
   const select = harness.state.queries.find(entry => entry.query.includes('SELECT TOP (@Limit)'));
   assert.equal(select.parameters.Limit, 5000);
   assert.equal(select.parameters.StationId, '1');
-  assert.ok(Number.isFinite(select.parameters.StartUtc.getTime()));
-  assert.ok(Number.isFinite(select.parameters.EndUtc.getTime()));
+  assert.equal(select.parameters.StartUtc.toISOString(), '2026-09-23T14:00:00.000Z');
+  assert.equal(select.parameters.EndUtc.toISOString(), '2026-09-24T14:00:00.000Z');
+});
+
+test('History rejects malformed station dates before schema or event SQL', async () => {
+  const invalid = [undefined, '', ' ', '2026-02-30', '2026-13-01', '2026-00-01', '24/09/2026', 20260924, ['2026-09-24', '2026-09-25']];
+  for (const operatingDate of invalid) {
+    const harness = historySqlHarness();
+    const response = await callHistory(loadHistoryHandler(harness.sql), 'GET', null, { stationId: '1', operatingDate });
+    assert.equal(response.status, 400, String(operatingDate));
+    assert.equal(response.body.code, 'OPERATING_DATE_INVALID');
+    assert.equal(harness.state.queries.length, 0, String(operatingDate));
+  }
 });
 
 test('POST /api/history rejects every client-authored audit shape before opening SQL', async () => {
@@ -288,14 +305,17 @@ test('mobile History renders the same untrusted fields as escaped text', () => {
     historySearch: '',
     historyFilter: 'All',
     historyUserFilter: 'All',
+    historyOperatingDate: '2026-09-24',
+    selectedStationCode: () => 'MEL',
+    selectedStationTimeZone: () => 'Australia/Melbourne',
     historyFilteredEvents: () => events,
     historyDateKeys: () => ['2026-09-24'],
     historyUsers: () => [],
     visibleCompletionsForDate: () => [],
     dayStats: () => ({ events, actions: 1, offloads: 0, flights: 1 }),
     historyDayOpen: () => true,
-    dateKeyLabel: () => '24 Sep 2026',
-    fmtTime: () => '10:30'
+    historyDateKeyLabel: () => '24 Sep 2026',
+    historyTime: () => '10:30 AEST'
   });
   for (const name of ['esc', 'eventDescription']) vm.runInContext(functionLine(name), context);
   vm.runInContext(sourceBetween('function mobileHistoryScreen(', 'function recordOperatingDateKey('), context);
