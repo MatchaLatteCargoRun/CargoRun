@@ -7,6 +7,12 @@ DECLARE @StationsObjectId int=OBJECT_ID(N'dbo.CargoRunStations',N'U');
 DECLARE @MachObjectId int=OBJECT_ID(N'dbo.IncomingMachMessages',N'U');
 DECLARE @FowObjectId int=OBJECT_ID(N'dbo.MachFowShipments',N'U');
 DECLARE @ExecutableSql nvarchar(max);
+-- Phase 2B rollout decision: the operator manually confirmed that every
+-- existing operational row is MEL test data. This permits an incomplete
+-- legacy route to be reviewed for the MEL backfill only when no positive
+-- route or MACH evidence contradicts MEL. It is not a future multi-station
+-- ownership rule and must never override positive non-MEL evidence.
+DECLARE @OperatorConfirmedExistingOperationalRowsAreMel bit=1;
 DECLARE @FlightIdReady bit=CASE WHEN OBJECT_ID(N'dbo.Flights',N'U') IS NOT NULL
   AND COL_LENGTH(N'dbo.Flights',N'FlightId') IS NOT NULL THEN 1 ELSE 0 END;
 
@@ -43,6 +49,65 @@ DECLARE @DocumentCorIdSchemaReady bit=CASE WHEN EXISTS (
     AND columnObject.is_computed=0 AND columnObject.collation_name IS NOT NULL
     AND ((columnObject.system_type_id=167 AND (columnObject.max_length=-1 OR columnObject.max_length>=100))
       OR (columnObject.system_type_id=231 AND (columnObject.max_length=-1 OR columnObject.max_length>=200)))
+) THEN 1 ELSE 0 END;
+
+-- Match api/offloads and the migration/verifier: Status is authoritative when
+-- present; OffloadStatus is the legacy fallback. Values are normalized without
+-- truncation, and a dual-column disagreement is always a STOP.
+DECLARE @HasOffloadStatus bit=CASE WHEN COL_LENGTH(N'dbo.Offloads',N'OffloadStatus') IS NOT NULL THEN 1 ELSE 0 END;
+DECLARE @HasStatus bit=CASE WHEN COL_LENGTH(N'dbo.Offloads',N'Status') IS NOT NULL THEN 1 ELSE 0 END;
+DECLARE @OffloadStatusColumn sysname=CASE
+  WHEN @HasStatus=1 THEN N'Status'
+  WHEN @HasOffloadStatus=1 THEN N'OffloadStatus'
+  ELSE NULL END;
+DECLARE @OffloadStatusSchemaReady bit=CASE WHEN @OffloadStatusColumn IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1 FROM sys.columns columnObject
+    WHERE columnObject.object_id=OBJECT_ID(N'dbo.Offloads',N'U')
+      AND columnObject.name IN (N'Status',N'OffloadStatus')
+      AND (columnObject.system_type_id NOT IN (167,175,231,239)
+        OR columnObject.is_computed=1 OR columnObject.collation_name IS NULL)
+  ) THEN 1 ELSE 0 END;
+DECLARE @NormalizedOffloadStatusExpression nvarchar(1000)=CASE WHEN @OffloadStatusSchemaReady=1
+  THEN N'UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),offload.'+QUOTENAME(@OffloadStatusColumn)
+    +N') COLLATE Latin1_General_100_BIN2)))'
+  ELSE N'CAST(NULL AS nvarchar(max))' END;
+
+DECLARE @DocumentCorIdLegacyUniqueIndexReady bit=CASE WHEN @DocumentCorIdSchemaReady=1 AND EXISTS (
+  SELECT 1 FROM sys.indexes indexObject
+  JOIN sys.index_columns firstKey ON firstKey.object_id=indexObject.object_id
+    AND firstKey.index_id=indexObject.index_id AND firstKey.key_ordinal=1
+  JOIN sys.columns firstColumn ON firstColumn.object_id=firstKey.object_id
+    AND firstColumn.column_id=firstKey.column_id
+  WHERE indexObject.object_id=@MachObjectId AND indexObject.is_unique=1
+    AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0
+    AND indexObject.has_filter=0 AND indexObject.ignore_dup_key=0
+    AND firstColumn.name=N'DocumentCorID'
+    AND firstColumn.collation_name<>N'Latin1_General_100_BIN2'
+    AND NOT EXISTS (
+      SELECT 1 FROM sys.index_columns additionalKey
+      WHERE additionalKey.object_id=indexObject.object_id
+        AND additionalKey.index_id=indexObject.index_id AND additionalKey.key_ordinal>1
+    )
+) THEN 1 ELSE 0 END;
+
+DECLARE @DocumentCorIdUnsafeLinguisticUniqueIndex bit=CASE WHEN @DocumentCorIdSchemaReady=1 AND EXISTS (
+  SELECT 1 FROM sys.indexes indexObject
+  JOIN sys.index_columns documentKey ON documentKey.object_id=indexObject.object_id
+    AND documentKey.index_id=indexObject.index_id AND documentKey.key_ordinal>0
+  JOIN sys.columns documentColumn ON documentColumn.object_id=documentKey.object_id
+    AND documentColumn.column_id=documentKey.column_id
+  WHERE indexObject.object_id=@MachObjectId AND indexObject.is_unique=1
+    AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0
+    AND documentColumn.name=N'DocumentCorID'
+    AND documentColumn.collation_name<>N'Latin1_General_100_BIN2'
+    AND (indexObject.has_filter=1 OR indexObject.ignore_dup_key=1
+      OR documentKey.key_ordinal<>1
+      OR EXISTS (
+        SELECT 1 FROM sys.index_columns additionalKey
+        WHERE additionalKey.object_id=indexObject.object_id
+          AND additionalKey.index_id=indexObject.index_id AND additionalKey.key_ordinal>1
+      ))
 ) THEN 1 ELSE 0 END;
 
 -- 1. Database identity. Confirm the operator is connected to the intended database.
@@ -331,6 +396,7 @@ DECLARE @FlightClassificationCte nvarchar(max)=N'WITH MachEvidence AS ('+@MachEv
       COALESCE(m.MachConflictCount,0) AS MachConflictCount,
       COALESCE(m.MachInvalidCount,0) AS MachInvalidCount,
       COALESCE(m.MachRouteConflictCount,0) AS MachRouteConflictCount,
+      CONVERT(bit,'+CONVERT(nvarchar(1),@OperatorConfirmedExistingOperationalRowsAreMel)+N') AS OperatorConfirmedExistingOperationalRowsAreMel,
       UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),f.Direction)))) AS DirectionKey,
       UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),f.OriginAirport)))) AS OriginKey,
       UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),f.DestinationAirport)))) AS DestinationKey
@@ -339,33 +405,49 @@ DECLARE @FlightClassificationCte nvarchar(max)=N'WITH MachEvidence AS ('+@MachEv
   ), ClassifiedFlights AS (
     SELECT evidence.*,
       CASE
-        WHEN evidence.DirectionKey NOT IN (N''IMPORT'',N''EXPORT'')
-          OR NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL
-          OR LEN(evidence.OriginKey) NOT IN (3,4) OR LEN(evidence.DestinationKey) NOT IN (3,4)
-          OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''
-          OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''
-          OR evidence.OriginKey=evidence.DestinationKey
-          OR (evidence.DirectionKey=N''IMPORT'' AND evidence.DestinationKey<>N''MEL'')
-          OR (evidence.DirectionKey=N''EXPORT'' AND evidence.OriginKey<>N''MEL'')
+        WHEN NULLIF(evidence.DirectionKey,N'''') IS NULL
+          OR evidence.DirectionKey NOT IN (N''IMPORT'',N''EXPORT'')
+          OR (NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND
+            (LEN(evidence.OriginKey) NOT IN (3,4)
+              OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          OR (NULLIF(evidence.DestinationKey,N'''') IS NOT NULL AND
+            (LEN(evidence.DestinationKey) NOT IN (3,4)
+              OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          OR (NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND evidence.OriginKey=evidence.DestinationKey)
+          OR (evidence.DirectionKey=N''IMPORT'' AND NULLIF(evidence.DestinationKey,N'''') IS NOT NULL
+            AND evidence.DestinationKey<>N''MEL'')
+          OR (evidence.DirectionKey=N''EXPORT'' AND NULLIF(evidence.OriginKey,N'''') IS NOT NULL
+            AND evidence.OriginKey<>N''MEL'')
           OR evidence.MachConflictCount>0 OR evidence.MachInvalidCount>0 OR evidence.MachRouteConflictCount>0
           THEN N''CONTRADICTORY''
         WHEN evidence.MachMelCount>0 THEN N''SAFE_MEL_CANDIDATE''
+        WHEN evidence.OperatorConfirmedExistingOperationalRowsAreMel=1
+          AND (NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL)
+          THEN N''OPERATOR_CONFIRMED_MEL_BACKFILL''
         ELSE N''AMBIGUOUS''
       END AS OwnershipClassification,
       CASE
         WHEN NULLIF(evidence.DirectionKey,N'''') IS NULL THEN N''Direction is null or blank''
         WHEN evidence.DirectionKey NOT IN (N''IMPORT'',N''EXPORT'') THEN N''Direction is unsupported''
-        WHEN NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL THEN N''Airport code is null or blank''
-        WHEN LEN(evidence.OriginKey) NOT IN (3,4) OR LEN(evidence.DestinationKey) NOT IN (3,4)
-          OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''
-          OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%'' THEN N''Airport code is malformed''
-        WHEN evidence.OriginKey=evidence.DestinationKey THEN N''Origin and destination are identical''
-        WHEN evidence.DirectionKey=N''IMPORT'' AND evidence.DestinationKey<>N''MEL'' THEN N''Import destination is not MEL''
-        WHEN evidence.DirectionKey=N''EXPORT'' AND evidence.OriginKey<>N''MEL'' THEN N''Export origin is not MEL''
+        WHEN (NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND
+            (LEN(evidence.OriginKey) NOT IN (3,4)
+              OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          OR (NULLIF(evidence.DestinationKey,N'''') IS NOT NULL AND
+            (LEN(evidence.DestinationKey) NOT IN (3,4)
+              OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          THEN N''Nonblank airport code is malformed''
+        WHEN NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND evidence.OriginKey=evidence.DestinationKey THEN N''Origin and destination are identical''
+        WHEN evidence.DirectionKey=N''IMPORT'' AND NULLIF(evidence.DestinationKey,N'''') IS NOT NULL
+          AND evidence.DestinationKey<>N''MEL'' THEN N''Import destination is not MEL''
+        WHEN evidence.DirectionKey=N''EXPORT'' AND NULLIF(evidence.OriginKey,N'''') IS NOT NULL
+          AND evidence.OriginKey<>N''MEL'' THEN N''Export origin is not MEL''
         WHEN evidence.MachConflictCount>0 THEN N''MACH station contradicts MEL ownership''
         WHEN evidence.MachInvalidCount>0 THEN N''Matched MACH station is null or malformed''
         WHEN evidence.MachRouteConflictCount>0 THEN N''Matched MACH segment contradicts the flight route''
         WHEN evidence.MachMelCount>0 THEN N''Route and matched MACH station support MEL''
+        WHEN evidence.OperatorConfirmedExistingOperationalRowsAreMel=1
+          AND (NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL)
+          THEN N''Incomplete legacy route accepted only by the operator-confirmed MEL backfill policy''
         ELSE N''Route is MEL-consistent but lacks independent database corroboration''
       END AS ClassificationReason
     FROM FlightEvidence evidence
@@ -552,12 +634,12 @@ BEGIN
     SELECT N'MACH_FLIGHT_CORROBORATION_UNAVAILABLE' AS Finding,
       N'Flights core route columns are missing; message-to-flight route comparison was skipped.' AS Detail;
   SET @ExecutableSql=@MachMessageCte+N'
-    SELECT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID,
+    SELECT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID)))) COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID,
       COUNT_BIG(*) AS MessageCount,
       COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>'')) AS DistinctMatchedFlightCount,
       COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))) COLLATE Latin1_General_100_BIN2) AS DistinctStationCount
     FROM MessageEvidence
-    GROUP BY UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2
+    GROUP BY UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID)))) COLLATE Latin1_General_100_BIN2
     HAVING COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>''))>1
         OR COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))) COLLATE Latin1_General_100_BIN2)>1
     ORDER BY CanonicalDocumentCorID;';
@@ -688,7 +770,12 @@ DECLARE @ChildDetailSql nvarchar(max)=N'
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ULDs',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ULDs',N'FlightId') IS NOT NULL
   SET @ChildDetailSql+=N' UNION ALL SELECT N''ULDs'',CONVERT(nvarchar(200),'+CASE WHEN COL_LENGTH(N'dbo.ULDs',N'UldId') IS NOT NULL THEN N'child.UldId' ELSE N'child.FlightId' END+N'),CONVERT(nvarchar(100),child.FlightId),CASE WHEN child.FlightId IS NULL THEN N''NULL_FLIGHT_OWNERSHIP'' ELSE N''ORPHAN_CHILD'' END FROM dbo.ULDs child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL';
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.Offloads',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.Offloads',N'FlightId') IS NOT NULL
-  SET @ChildDetailSql+=N' UNION ALL SELECT N''Offloads'',CONVERT(nvarchar(200),'+CASE WHEN COL_LENGTH(N'dbo.Offloads',N'OffloadId') IS NOT NULL THEN N'child.OffloadId' ELSE N'child.FlightId' END+N'),CONVERT(nvarchar(100),child.FlightId),CASE WHEN child.FlightId IS NULL THEN N''NULL_FLIGHT_OWNERSHIP'' ELSE N''ORPHAN_CHILD'' END FROM dbo.Offloads child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL';
+BEGIN
+  IF @OffloadStatusSchemaReady=1
+    SET @ChildDetailSql+=N' UNION ALL SELECT N''Offloads'',CONVERT(nvarchar(200),'+CASE WHEN COL_LENGTH(N'dbo.Offloads',N'OffloadId') IS NOT NULL THEN N'child.OffloadId' ELSE N'child.FlightId' END+N'),CONVERT(nvarchar(100),child.FlightId),CASE WHEN normalized.StatusValue=N''COMPLETE'' COLLATE Latin1_General_100_BIN2 THEN N''LEGACY_ORPHAN_OFFLOAD'' ELSE N''ACTIVE_ORPHAN_OFFLOAD'' END FROM dbo.Offloads child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId CROSS APPLY (VALUES(UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),child.'+QUOTENAME(@OffloadStatusColumn)+N') COLLATE Latin1_General_100_BIN2))))) normalized(StatusValue) WHERE child.FlightId IS NULL OR parent.FlightId IS NULL';
+  ELSE
+    SET @ChildDetailSql+=N' UNION ALL SELECT N''Offloads'',CONVERT(nvarchar(200),'+CASE WHEN COL_LENGTH(N'dbo.Offloads',N'OffloadId') IS NOT NULL THEN N'child.OffloadId' ELSE N'child.FlightId' END+N'),CONVERT(nvarchar(100),child.FlightId),N''MISSING_REQUIRED_OWNERSHIP_SCHEMA'' FROM dbo.Offloads child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL';
+END;
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ImportCompletionRecords',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ImportCompletionRecords',N'FlightId') IS NOT NULL
   SET @ChildDetailSql+=N' UNION ALL SELECT N''ImportCompletionRecords'',CONVERT(nvarchar(200),'+CASE WHEN COL_LENGTH(N'dbo.ImportCompletionRecords',N'CompletionId') IS NOT NULL THEN N'child.CompletionId' ELSE N'child.FlightId' END+N'),CONVERT(nvarchar(100),child.FlightId),CASE WHEN child.FlightId IS NULL THEN N''NULL_FLIGHT_OWNERSHIP'' ELSE N''ORPHAN_CHILD'' END FROM dbo.ImportCompletionRecords child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL';
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ExportCompletionRecords',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ExportCompletionRecords',N'FlightId') IS NOT NULL
@@ -865,8 +952,9 @@ IF @FlightCoreReady=1
 BEGIN
   SET @FindingBody+=N'
     UNION ALL SELECT N''SAFE_MEL_CANDIDATE'',COUNT_BIG(*),N''INFO'',N''Route and matched MACH evidence support MEL ownership.'' FROM ClassifiedFlights WHERE OwnershipClassification=N''SAFE_MEL_CANDIDATE'' HAVING COUNT_BIG(*)>0
+    UNION ALL SELECT N''OPERATOR_CONFIRMED_MEL_BACKFILL'',COUNT_BIG(*),N''INFO'',N''Incomplete legacy route is eligible only under the explicit Phase 2B operator confirmation; no route field was rewritten.'' FROM ClassifiedFlights WHERE OwnershipClassification=N''OPERATOR_CONFIRMED_MEL_BACKFILL'' HAVING COUNT_BIG(*)>0
     UNION ALL SELECT N''AMBIGUOUS_FLIGHT'',COUNT_BIG(*),N''STOP'',N''MEL-consistent route lacks independent database corroboration.'' FROM ClassifiedFlights WHERE OwnershipClassification=N''AMBIGUOUS'' HAVING COUNT_BIG(*)>0
-    UNION ALL SELECT N''CONTRADICTORY_ROUTE'',COUNT_BIG(*),N''STOP'',N''Route, required fields, or matched MACH evidence contradicts a safe MEL backfill.'' FROM ClassifiedFlights WHERE OwnershipClassification=N''CONTRADICTORY'' HAVING COUNT_BIG(*)>0';
+    UNION ALL SELECT N''CONTRADICTORY_ROUTE'',COUNT_BIG(*),N''STOP'',N''Positive route or MACH evidence contradicts MEL ownership, or a required nonblank value is malformed or unsupported.'' FROM ClassifiedFlights WHERE OwnershipClassification=N''CONTRADICTORY'' HAVING COUNT_BIG(*)>0';
   SET @FindingBody+=N'
     UNION ALL SELECT N''LEGACY_OPERATIONAL_ROW'',COUNT_BIG(*),N''INFO'',N''Rows without explicit StationId would become inaccessible under strict enforcement until safely backfilled.''
       FROM dbo.Flights f WHERE '+CASE WHEN COL_LENGTH(N'dbo.Flights',N'StationId') IS NOT NULL THEN N'f.StationId IS NULL' ELSE N'1=1' END+N' HAVING COUNT_BIG(*)>0';
@@ -902,18 +990,21 @@ IF @DocumentCorIdSchemaReady=1
 ELSE
   SET @FindingBody+=N' UNION ALL SELECT N''INVALID_DOCUMENTCORID_SCHEMA'',1,N''STOP'',N''IncomingMachMessages.DocumentCorID must be a native noncomputed varchar/nvarchar column with capacity for 100 ASCII characters.''';
 
-IF @DocumentCorIdSchemaReady=1 AND EXISTS (
-  SELECT 1 FROM sys.indexes indexObject
-  JOIN sys.index_columns keyColumn ON keyColumn.object_id=indexObject.object_id
-    AND keyColumn.index_id=indexObject.index_id AND keyColumn.key_ordinal>0
-  JOIN sys.columns columnObject ON columnObject.object_id=keyColumn.object_id
-    AND columnObject.column_id=keyColumn.column_id
-  WHERE indexObject.object_id=@MachObjectId AND indexObject.is_unique=1
-    AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0
-    AND columnObject.name=N'DocumentCorID'
-    AND columnObject.collation_name<>N'Latin1_General_100_BIN2'
-)
+IF @DocumentCorIdUnsafeLinguisticUniqueIndex=1
   SET @FindingBody+=N' UNION ALL SELECT N''DOCUMENTCORID_COLLATION_CONFLICT'',1,N''STOP'',N''An existing unique DocumentCorID key uses linguistic rather than BIN2 equality.''';
+
+IF @DocumentCorIdLegacyUniqueIndexReady=1
+  SET @FindingBody+=N'
+    UNION ALL SELECT N''DOCUMENTCORID_LEGACY_UNIQUE_INDEX'',1,N''INFO'',N''A safe single-column linguistic DocumentCorID unique index remains in place; Phase 2B adds the canonical BIN2 unique index without dropping legacy protection.''
+    WHERE NOT EXISTS (
+      SELECT 1 FROM ClassifiedDocumentIdentity
+      WHERE IsInvalid=1 OR RequiresCanonicalization=1
+    ) AND NOT EXISTS (
+      SELECT 1 FROM ClassifiedDocumentIdentity
+      WHERE IsInvalid=0
+      GROUP BY CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2
+      HAVING COUNT_BIG(*)>1
+    )';
 
 IF @MachCoreReady=1
 BEGIN
@@ -938,9 +1029,9 @@ IF @MachCoreReady=1 AND COL_LENGTH(N'dbo.IncomingMachMessages',N'StationAirport'
   SET @FindingBody+=N'
     UNION ALL SELECT N''DOCUMENT_CORRELATION_CONFLICT'',COUNT_BIG(*),N''STOP'',N''A DocumentCorID is associated with multiple flight or station decisions.''
     FROM (
-      SELECT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID
+      SELECT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID)))) COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID
       FROM dbo.IncomingMachMessages
-      GROUP BY UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2
+      GROUP BY UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID)))) COLLATE Latin1_General_100_BIN2
       HAVING COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>''))>1
           OR COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))) COLLATE Latin1_General_100_BIN2)>1
     ) conflict
@@ -959,7 +1050,6 @@ IF @FowObjectId IS NOT NULL AND @MachCoreReady=1
 
 DECLARE @RequiredChildFindingSql nvarchar(max)=N'';
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ULDs',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ULDs',N'FlightId') IS NOT NULL SET @RequiredChildFindingSql+=N' UNION ALL SELECT N''ORPHAN_CHILD'',COUNT_BIG(*),N''STOP'',N''ULDs contains null or invalid FlightId ownership.'' FROM dbo.ULDs child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL HAVING COUNT_BIG(*)>0';
-IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.Offloads',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.Offloads',N'FlightId') IS NOT NULL SET @RequiredChildFindingSql+=N' UNION ALL SELECT N''ORPHAN_CHILD'',COUNT_BIG(*),N''STOP'',N''Offloads contains null or invalid FlightId ownership.'' FROM dbo.Offloads child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL HAVING COUNT_BIG(*)>0';
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ImportCompletionRecords',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ImportCompletionRecords',N'FlightId') IS NOT NULL SET @RequiredChildFindingSql+=N' UNION ALL SELECT N''ORPHAN_CHILD'',COUNT_BIG(*),N''STOP'',N''Import completion evidence contains null or invalid FlightId ownership.'' FROM dbo.ImportCompletionRecords child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL HAVING COUNT_BIG(*)>0';
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ExportCompletionRecords',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ExportCompletionRecords',N'FlightId') IS NOT NULL SET @RequiredChildFindingSql+=N' UNION ALL SELECT N''ORPHAN_CHILD'',COUNT_BIG(*),N''STOP'',N''Export completion evidence contains null or invalid FlightId ownership.'' FROM dbo.ExportCompletionRecords child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL HAVING COUNT_BIG(*)>0';
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ExportCompletionAmendments',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ExportCompletionAmendments',N'FlightId') IS NOT NULL SET @RequiredChildFindingSql+=N' UNION ALL SELECT N''ORPHAN_CHILD'',COUNT_BIG(*),N''STOP'',N''Export amendments contains null or invalid FlightId ownership.'' FROM dbo.ExportCompletionAmendments child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL HAVING COUNT_BIG(*)>0';
@@ -967,6 +1057,45 @@ IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ExportManifestFinals',N'U') IS NOT NULL 
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.ExportManifestFinalUlds',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.ExportManifestFinalUlds',N'FlightId') IS NOT NULL SET @RequiredChildFindingSql+=N' UNION ALL SELECT N''ORPHAN_CHILD'',COUNT_BIG(*),N''STOP'',N''Export FINAL membership contains null or invalid FlightId ownership.'' FROM dbo.ExportManifestFinalUlds child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL HAVING COUNT_BIG(*)>0';
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.MachFowShipments',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.MachFowShipments',N'FlightId') IS NOT NULL SET @RequiredChildFindingSql+=N' UNION ALL SELECT N''ORPHAN_CHILD'',COUNT_BIG(*),N''STOP'',N''FOW shipments contains null or invalid FlightId ownership.'' FROM dbo.MachFowShipments child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL HAVING COUNT_BIG(*)>0';
 SET @FindingBody+=@RequiredChildFindingSql;
+
+-- Offload ownership follows the migration/verifier contract: COMPLETE is the
+-- sole historical status allowed to remain unassigned. All other or unknown
+-- statuses stay fail-closed, and dual status columns must agree.
+IF OBJECT_ID(N'dbo.Offloads',N'U') IS NOT NULL AND @OffloadStatusColumn IS NULL
+  SET @FindingBody+=N' UNION ALL SELECT N''MISSING_REQUIRED_OWNERSHIP_SCHEMA'',1,N''STOP'',N''dbo.Offloads requires OffloadStatus or Status.''';
+IF OBJECT_ID(N'dbo.Offloads',N'U') IS NOT NULL AND @OffloadStatusColumn IS NOT NULL AND @OffloadStatusSchemaReady=0
+  SET @FindingBody+=N' UNION ALL SELECT N''INVALID_OFFLOAD_STATUS_SCHEMA'',1,N''STOP'',N''Offloads status columns must be noncomputed character columns.''';
+
+IF @OffloadStatusSchemaReady=1 AND @HasStatus=1 AND @HasOffloadStatus=1
+  SET @FindingBody+=N'
+    UNION ALL SELECT N''OFFLOAD_STATUS_DISAGREEMENT'',COUNT_BIG(*),N''STOP'',N''Status and OffloadStatus disagree after normalization; ownership classification is unsafe.''
+    FROM dbo.Offloads offload
+    CROSS APPLY (VALUES(
+      UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),offload.[Status]) COLLATE Latin1_General_100_BIN2))),
+      UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),offload.[OffloadStatus]) COLLATE Latin1_General_100_BIN2)))
+    )) normalized(StatusValue,OffloadStatusValue)
+    WHERE (normalized.StatusValue IS NULL AND normalized.OffloadStatusValue IS NOT NULL)
+       OR (normalized.StatusValue IS NOT NULL AND normalized.OffloadStatusValue IS NULL)
+       OR normalized.StatusValue<>normalized.OffloadStatusValue
+    HAVING COUNT_BIG(*)>0';
+
+IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.Offloads',N'U') IS NOT NULL
+   AND COL_LENGTH(N'dbo.Offloads',N'FlightId') IS NOT NULL AND @OffloadStatusSchemaReady=1
+  SET @FindingBody+=N'
+    UNION ALL SELECT N''LEGACY_ORPHAN_OFFLOAD'',COUNT_BIG(*),N''INFO'',N''Completed historical Offloads remain unassigned; no ownership is inferred or rewritten.''
+    FROM dbo.Offloads offload
+    LEFT JOIN dbo.Flights parent ON parent.FlightId=offload.FlightId
+    CROSS APPLY (VALUES('+@NormalizedOffloadStatusExpression+N')) normalized(StatusValue)
+    WHERE (offload.FlightId IS NULL OR parent.FlightId IS NULL)
+      AND normalized.StatusValue=N''COMPLETE'' COLLATE Latin1_General_100_BIN2
+    HAVING COUNT_BIG(*)>0
+    UNION ALL SELECT N''ACTIVE_ORPHAN_OFFLOAD'',COUNT_BIG(*),N''STOP'',N''Active or unclassified Offloads have null or invalid FlightId ownership.''
+    FROM dbo.Offloads offload
+    LEFT JOIN dbo.Flights parent ON parent.FlightId=offload.FlightId
+    CROSS APPLY (VALUES('+@NormalizedOffloadStatusExpression+N')) normalized(StatusValue)
+    WHERE (offload.FlightId IS NULL OR parent.FlightId IS NULL)
+      AND (normalized.StatusValue IS NULL OR normalized.StatusValue<>N''COMPLETE'' COLLATE Latin1_General_100_BIN2)
+    HAVING COUNT_BIG(*)>0';
 
 DECLARE @FinalWith nvarchar(max)=N'';
 IF @FlightCoreReady=1 SET @FinalWith=@FlightClassificationCte+N','+STUFF(@CanonicalCte,1,5,N'');

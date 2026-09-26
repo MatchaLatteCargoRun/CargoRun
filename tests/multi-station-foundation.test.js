@@ -68,7 +68,8 @@ test('Phase 2B verification reports all required ownership failures and preserve
     'APPLICATION_ASSISTED_NORMALIZATION_REQUIRED', 'CANONICAL_IDENTITY_COLLISION',
     'CROSS_STATION_MESSAGE_LINK', 'ORPHAN_MACH_MATCHED_FLIGHT',
     'FOW_MESSAGE_OWNERSHIP_CONFLICT', 'LEGACY_ORPHAN_OFFLOAD', 'ACTIVE_ORPHAN_OFFLOAD',
-    'OFFLOAD_STATUS_DISAGREEMENT', 'INVALID_OFFLOAD_STATUS_SCHEMA'
+    'OFFLOAD_STATUS_DISAGREEMENT', 'INVALID_OFFLOAD_STATUS_SCHEMA',
+    'DOCUMENTCORID_LEGACY_UNIQUE_INDEX', 'DOCUMENTCORID_COLLATION_CONFLICT'
   ]) assert.match(sql, new RegExp(finding));
   assert.match(sql, /LEGACY_ORPHAN_OFFLOAD'' ELSE N''ACTIVE_ORPHAN_OFFLOAD/);
   assert.match(sql, /OffloadStatusColumn[\s\S]*COMPLETE/);
@@ -177,6 +178,9 @@ test('DocumentCorID uses one canonical identity, BIN2 lookup, and database uniqu
   assert.match(migration, /sp_addextendedproperty[\s\S]*CargoRun\.DocumentCorIDCanonicalGuardHash/);
   assert.match(migration, /CREATE UNIQUE INDEX UX_IncomingMachMessages_DocumentCorIDCanonical[\s\S]*DocumentCorIDCanonical/);
   assert.match(migration, /ignore_dup_key=0/);
+  assert.match(migration, /Retain a safe enabled, unfiltered, single-column legacy unique key/);
+  assert.match(migration, /indexObject\.has_filter=1 OR indexObject\.ignore_dup_key=1[\s\S]*additionalKey\.key_ordinal>1/);
+  assert.doesNotMatch(migration, /DROP\s+INDEX\s+UX_IncomingMachMessages_DocumentCorID/i);
   assert.doesNotMatch(migration, /UPDATE\s+dbo\.IncomingMachMessages\s+SET\s+DocumentCorID/i);
   assert.match(verify, /DocumentCorIdUniqueIndexReady[\s\S]*i\.is_unique=1[\s\S]*i\.is_hypothetical=0[\s\S]*i\.has_filter=0/);
   assert.match(verify, /firstColumn\.name=N'DocumentCorIDCanonical'/);
@@ -187,6 +191,9 @@ test('DocumentCorID uses one canonical identity, BIN2 lookup, and database uniqu
   assert.match(verify, /CONCAT\(N''Canonical DocumentCorID '',CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2\)[\s\S]*GROUP BY CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2/);
   assert.match(verify, /i\.ignore_dup_key=0/);
   assert.match(verify, /MISSING_DOCUMENTCORID_UNIQUENESS/);
+  assert.match(verify, /@DocumentCorIdLegacyUniqueIndexReady[\s\S]*DOCUMENTCORID_LEGACY_UNIQUE_INDEX/);
+  assert.match(verify, /@DocumentCorIdUnsafeLinguisticUniqueIndex[\s\S]*DOCUMENTCORID_COLLATION_CONFLICT/);
+  assert.match(verify, /@DocumentCorIdCheckReady=1[\s\S]*@DocumentCorIdUniqueIndexReady=1/);
   assert.doesNotMatch(verify, /DOCUMENT_COR_ID_RUNTIME_LOCK/);
 });
 

@@ -203,9 +203,9 @@ BEGIN TRY
   IF @DocumentCorIdCollisionCount<>0
     THROW 51552,'DOCUMENTCORID_CANONICAL_COLLISION: existing messages collapse to the same canonical identity.',1;
 
-  -- A pre-existing linguistic unique key could reject identities that the
-  -- application and BIN2 contract keep distinct. It must be reviewed rather
-  -- than silently removed by this migration.
+  -- Retain a safe enabled, unfiltered, single-column legacy unique key. Phase
+  -- 2B adds canonical BIN2 uniqueness alongside it. Any other active
+  -- linguistic unique-key shape remains a blocking ambiguity.
   IF EXISTS (
     SELECT 1 FROM sys.indexes indexObject
     JOIN sys.index_columns keyColumn ON keyColumn.object_id=indexObject.object_id
@@ -216,7 +216,14 @@ BEGIN TRY
       AND indexObject.is_unique=1 AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0
       AND columnObject.name=N'DocumentCorID'
       AND columnObject.collation_name<>N'Latin1_General_100_BIN2'
-  ) THROW 51553,'An existing unique DocumentCorID key uses linguistic equality and must be reviewed before Phase 2B.',1;
+      AND (indexObject.has_filter=1 OR indexObject.ignore_dup_key=1
+        OR keyColumn.key_ordinal<>1
+        OR EXISTS (
+          SELECT 1 FROM sys.index_columns additionalKey
+          WHERE additionalKey.object_id=indexObject.object_id
+            AND additionalKey.index_id=indexObject.index_id AND additionalKey.key_ordinal>1
+        ))
+  ) THROW 51553,'An existing unique DocumentCorID key has an unsafe linguistic index shape and must be reviewed before Phase 2B.',1;
 
   -- Preserve raw evidence and add a deterministic BIN2 identity projection for
   -- database-enforced global uniqueness.

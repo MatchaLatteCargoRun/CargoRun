@@ -356,18 +356,49 @@ DECLARE @DocumentCorIdUniqueIndexReady bit=CASE WHEN @DocumentCorIdCanonicalColu
 IF @MessagesReady=1 AND @DocumentCorIdUniqueIndexReady=0
   INSERT @Findings VALUES('STOP',N'MISSING_DOCUMENTCORID_UNIQUENESS',N'An enabled unfiltered single-column unique BIN2 DocumentCorIDCanonical index is required in addition to the global runtime lock.');
 
-IF @DocumentCorIdSchemaReady=1 AND EXISTS (
+DECLARE @DocumentCorIdLegacyUniqueIndexReady bit=CASE WHEN @DocumentCorIdSchemaReady=1 AND EXISTS (
   SELECT 1 FROM sys.indexes indexObject
-  JOIN sys.index_columns keyColumn ON keyColumn.object_id=indexObject.object_id
-    AND keyColumn.index_id=indexObject.index_id AND keyColumn.key_ordinal>0
-  JOIN sys.columns columnObject ON columnObject.object_id=keyColumn.object_id
-    AND columnObject.column_id=keyColumn.column_id
+  JOIN sys.index_columns firstKey ON firstKey.object_id=indexObject.object_id
+    AND firstKey.index_id=indexObject.index_id AND firstKey.key_ordinal=1
+  JOIN sys.columns firstColumn ON firstColumn.object_id=firstKey.object_id
+    AND firstColumn.column_id=firstKey.column_id
   WHERE indexObject.object_id=OBJECT_ID(N'dbo.IncomingMachMessages',N'U')
     AND indexObject.is_unique=1 AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0
-    AND columnObject.name=N'DocumentCorID'
-    AND columnObject.collation_name<>N'Latin1_General_100_BIN2'
-)
+    AND indexObject.has_filter=0 AND indexObject.ignore_dup_key=0
+    AND firstColumn.name=N'DocumentCorID'
+    AND firstColumn.collation_name<>N'Latin1_General_100_BIN2'
+    AND NOT EXISTS (
+      SELECT 1 FROM sys.index_columns additionalKey
+      WHERE additionalKey.object_id=indexObject.object_id
+        AND additionalKey.index_id=indexObject.index_id AND additionalKey.key_ordinal>1
+    )
+) THEN 1 ELSE 0 END;
+
+DECLARE @DocumentCorIdUnsafeLinguisticUniqueIndex bit=CASE WHEN @DocumentCorIdSchemaReady=1 AND EXISTS (
+  SELECT 1 FROM sys.indexes indexObject
+  JOIN sys.index_columns documentKey ON documentKey.object_id=indexObject.object_id
+    AND documentKey.index_id=indexObject.index_id AND documentKey.key_ordinal>0
+  JOIN sys.columns documentColumn ON documentColumn.object_id=documentKey.object_id
+    AND documentColumn.column_id=documentKey.column_id
+  WHERE indexObject.object_id=OBJECT_ID(N'dbo.IncomingMachMessages',N'U')
+    AND indexObject.is_unique=1 AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0
+    AND documentColumn.name=N'DocumentCorID'
+    AND documentColumn.collation_name<>N'Latin1_General_100_BIN2'
+    AND (indexObject.has_filter=1 OR indexObject.ignore_dup_key=1
+      OR documentKey.key_ordinal<>1
+      OR EXISTS (
+        SELECT 1 FROM sys.index_columns additionalKey
+        WHERE additionalKey.object_id=indexObject.object_id
+          AND additionalKey.index_id=indexObject.index_id AND additionalKey.key_ordinal>1
+      ))
+) THEN 1 ELSE 0 END;
+
+IF @DocumentCorIdUnsafeLinguisticUniqueIndex=1
   INSERT @Findings VALUES('STOP',N'DOCUMENTCORID_COLLATION_CONFLICT',N'An existing unique DocumentCorID key uses linguistic rather than BIN2 equality.');
+
+IF @DocumentCorIdLegacyUniqueIndexReady=1 AND @DocumentCorIdCheckReady=1
+   AND @DocumentCorIdUniqueIndexReady=1
+  INSERT @Findings VALUES('INFO',N'DOCUMENTCORID_LEGACY_UNIQUE_INDEX',N'A safe single-column linguistic DocumentCorID unique index remains alongside canonical BIN2 uniqueness.');
 
 -- This safe-subset normalizer mirrors api/shared/flight.js only where SQL can
 -- prove parity. Unsupported schema, values, Unicode, or Number semantics STOP.

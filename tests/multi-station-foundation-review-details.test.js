@@ -53,6 +53,8 @@ test('first result includes every flight-level STOP class and available MACH/FOW
     'SegmentDestination', 'MachMessageId', 'FowUldId', 'MawbNumber']) {
     assert.match(detailSql, new RegExp(`\\b${field}\\b`));
   }
+  assert.match(detailSql, /OwnershipClassification IN \(N''CONTRADICTORY'',N''AMBIGUOUS''\)/);
+  assert.doesNotMatch(detailSql, /OwnershipClassification<>N''SAFE_MEL_CANDIDATE''/);
 });
 
 test('second result uses the preflight orphan predicate and gates optional Offloads columns', () => {

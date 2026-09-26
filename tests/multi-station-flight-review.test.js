@@ -57,7 +57,9 @@ test('one exportable result includes all flight STOP classes and required review
     'CanonicalFlightNumber', 'CanonicalIdentityKey', 'SourceIndicator', 'CreatedAtUtc']) {
     assert.match(reviewSql, new RegExp(`\\b${field}\\b`));
   }
-  assert.match(reviewSql, /OwnershipClassification<>N''SAFE_MEL_CANDIDATE''/);
+  assert.match(reviewSql, /OwnershipClassification IN \(N''CONTRADICTORY'',N''AMBIGUOUS''\)/);
+  assert.doesNotMatch(reviewSql, /OwnershipClassification<>N''SAFE_MEL_CANDIDATE''/);
+  assert.match(reviewSql, /OPERATOR_CONFIRMED_MEL_BACKFILL/);
   assert.match(reviewSql, /collision\.NormalizedFlightNumber IS NOT NULL/);
   assert.match(reviewSql, /ApplicationAssistedNormalizationRequired/);
 });

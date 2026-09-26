@@ -7,6 +7,9 @@ DECLARE @MachObjectId int=OBJECT_ID(N'dbo.IncomingMachMessages',N'U');
 DECLARE @FowObjectId int=OBJECT_ID(N'dbo.MachFowShipments',N'U');
 DECLARE @ExecutableSql nvarchar(max);
 
+-- Phase 2B operator-confirmed scope for existing MEL test data only.
+DECLARE @OperatorConfirmedExistingOperationalRowsAreMel bit=1;
+
 DECLARE @FlightCoreReady bit=CASE WHEN @FlightsObjectId IS NOT NULL
   AND COL_LENGTH(N'dbo.Flights',N'FlightId') IS NOT NULL
   AND COL_LENGTH(N'dbo.Flights',N'FlightNumber') IS NOT NULL
@@ -79,6 +82,7 @@ DECLARE @FlightClassificationCte nvarchar(max)=N'WITH MachEvidence AS ('+@MachEv
       COALESCE(m.MachConflictCount,0) AS MachConflictCount,
       COALESCE(m.MachInvalidCount,0) AS MachInvalidCount,
       COALESCE(m.MachRouteConflictCount,0) AS MachRouteConflictCount,
+      CONVERT(bit,'+CONVERT(nvarchar(1),@OperatorConfirmedExistingOperationalRowsAreMel)+N') AS OperatorConfirmedExistingOperationalRowsAreMel,
       UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),f.Direction)))) AS DirectionKey,
       UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),f.OriginAirport)))) AS OriginKey,
       UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),f.DestinationAirport)))) AS DestinationKey
@@ -87,33 +91,49 @@ DECLARE @FlightClassificationCte nvarchar(max)=N'WITH MachEvidence AS ('+@MachEv
   ), ClassifiedFlights AS (
     SELECT evidence.*,
       CASE
-        WHEN evidence.DirectionKey NOT IN (N''IMPORT'',N''EXPORT'')
-          OR NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL
-          OR LEN(evidence.OriginKey) NOT IN (3,4) OR LEN(evidence.DestinationKey) NOT IN (3,4)
-          OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''
-          OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''
-          OR evidence.OriginKey=evidence.DestinationKey
-          OR (evidence.DirectionKey=N''IMPORT'' AND evidence.DestinationKey<>N''MEL'')
-          OR (evidence.DirectionKey=N''EXPORT'' AND evidence.OriginKey<>N''MEL'')
+        WHEN NULLIF(evidence.DirectionKey,N'''') IS NULL
+          OR evidence.DirectionKey NOT IN (N''IMPORT'',N''EXPORT'')
+          OR (NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND
+            (LEN(evidence.OriginKey) NOT IN (3,4)
+              OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          OR (NULLIF(evidence.DestinationKey,N'''') IS NOT NULL AND
+            (LEN(evidence.DestinationKey) NOT IN (3,4)
+              OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          OR (NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND evidence.OriginKey=evidence.DestinationKey)
+          OR (evidence.DirectionKey=N''IMPORT'' AND NULLIF(evidence.DestinationKey,N'''') IS NOT NULL
+            AND evidence.DestinationKey<>N''MEL'')
+          OR (evidence.DirectionKey=N''EXPORT'' AND NULLIF(evidence.OriginKey,N'''') IS NOT NULL
+            AND evidence.OriginKey<>N''MEL'')
           OR evidence.MachConflictCount>0 OR evidence.MachInvalidCount>0 OR evidence.MachRouteConflictCount>0
           THEN N''CONTRADICTORY''
         WHEN evidence.MachMelCount>0 THEN N''SAFE_MEL_CANDIDATE''
+        WHEN evidence.OperatorConfirmedExistingOperationalRowsAreMel=1
+          AND (NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL)
+          THEN N''OPERATOR_CONFIRMED_MEL_BACKFILL''
         ELSE N''AMBIGUOUS''
       END AS OwnershipClassification,
       CASE
         WHEN NULLIF(evidence.DirectionKey,N'''') IS NULL THEN N''Direction is null or blank''
         WHEN evidence.DirectionKey NOT IN (N''IMPORT'',N''EXPORT'') THEN N''Direction is unsupported''
-        WHEN NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL THEN N''Airport code is null or blank''
-        WHEN LEN(evidence.OriginKey) NOT IN (3,4) OR LEN(evidence.DestinationKey) NOT IN (3,4)
-          OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''
-          OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%'' THEN N''Airport code is malformed''
-        WHEN evidence.OriginKey=evidence.DestinationKey THEN N''Origin and destination are identical''
-        WHEN evidence.DirectionKey=N''IMPORT'' AND evidence.DestinationKey<>N''MEL'' THEN N''Import destination is not MEL''
-        WHEN evidence.DirectionKey=N''EXPORT'' AND evidence.OriginKey<>N''MEL'' THEN N''Export origin is not MEL''
+        WHEN (NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND
+            (LEN(evidence.OriginKey) NOT IN (3,4)
+              OR evidence.OriginKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          OR (NULLIF(evidence.DestinationKey,N'''') IS NOT NULL AND
+            (LEN(evidence.DestinationKey) NOT IN (3,4)
+              OR evidence.DestinationKey COLLATE Latin1_General_100_BIN2 LIKE N''%[^A-Z]%''))
+          THEN N''Nonblank airport code is malformed''
+        WHEN NULLIF(evidence.OriginKey,N'''') IS NOT NULL AND evidence.OriginKey=evidence.DestinationKey THEN N''Origin and destination are identical''
+        WHEN evidence.DirectionKey=N''IMPORT'' AND NULLIF(evidence.DestinationKey,N'''') IS NOT NULL
+          AND evidence.DestinationKey<>N''MEL'' THEN N''Import destination is not MEL''
+        WHEN evidence.DirectionKey=N''EXPORT'' AND NULLIF(evidence.OriginKey,N'''') IS NOT NULL
+          AND evidence.OriginKey<>N''MEL'' THEN N''Export origin is not MEL''
         WHEN evidence.MachConflictCount>0 THEN N''MACH station contradicts MEL ownership''
         WHEN evidence.MachInvalidCount>0 THEN N''Matched MACH station is null or malformed''
         WHEN evidence.MachRouteConflictCount>0 THEN N''Matched MACH segment contradicts the flight route''
         WHEN evidence.MachMelCount>0 THEN N''Route and matched MACH station support MEL''
+        WHEN evidence.OperatorConfirmedExistingOperationalRowsAreMel=1
+          AND (NULLIF(evidence.OriginKey,N'''') IS NULL OR NULLIF(evidence.DestinationKey,N'''') IS NULL)
+          THEN N''Incomplete legacy route accepted only by the operator-confirmed MEL backfill policy''
         ELSE N''Route is MEL-consistent but lacks independent database corroboration''
       END AS ClassificationReason
     FROM FlightEvidence evidence
@@ -258,7 +278,7 @@ BEGIN
     LEFT JOIN CanonicalCollisionKeys collision
       ON collision.OperatingDate=canonical.OperatingDate
      AND collision.NormalizedFlightNumber=canonical.NormalizedFlightNumber
-    WHERE classified.OwnershipClassification<>N''SAFE_MEL_CANDIDATE''
+    WHERE classified.OwnershipClassification IN (N''CONTRADICTORY'',N''AMBIGUOUS'')
        OR collision.NormalizedFlightNumber IS NOT NULL
        OR (canonical.SqlParityGuaranteed=0
          AND (canonical.HasUnmodelledWhitespaceOrCharacter=1 OR LEN(COALESCE(canonical.NumericSegment,N''''))>15))
@@ -294,7 +314,7 @@ BEGIN
       CASE WHEN review.ApplicationAssistedNormalizationRequired=1 THEN N'';APPLICATION_ASSISTED_NORMALIZATION_REQUIRED'' ELSE N'''' END
     ),1,1,N'''') AS Classification,
     CONCAT_WS(N''; '',
-      CASE WHEN review.OwnershipClassification<>N''SAFE_MEL_CANDIDATE'' THEN review.ClassificationReason END,
+      CASE WHEN review.OwnershipClassification IN (N''CONTRADICTORY'',N''AMBIGUOUS'') THEN review.ClassificationReason END,
       CASE WHEN review.CanonicalIdentityCollision=1 THEN N''Multiple FlightIds share OperatingDate plus the application-equivalent normalized FlightNumber.'' END,
       CASE WHEN review.ApplicationAssistedNormalizationRequired=1 THEN N''SQL cannot guarantee parity with JavaScript whitespace/Number semantics for this flight number.'' END
     ) AS ClassificationReason,
