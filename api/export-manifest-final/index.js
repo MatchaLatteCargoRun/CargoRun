@@ -56,7 +56,7 @@ async function loadFlight(request, flightId, locked = false) {
   const hint = locked ? ' WITH (UPDLOCK, HOLDLOCK)' : '';
   const result = await request
     .input(locked ? 'LockedFlightId' : 'SelectedFlightId', sql.BigInt, flightId)
-    .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
+    .query(`SELECT FlightId,StationId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
         OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
       FROM dbo.Flights${hint}
       WHERE FlightId=@${locked ? 'LockedFlightId' : 'SelectedFlightId'};`);
@@ -175,7 +175,7 @@ module.exports = async function exportManifestFinal(context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
     const initialFlight = await loadFlight(new sql.Request(transaction), flightId);
-    await requireOperationalEntityCapability(
+    const initialAuthorization = await requireOperationalEntityCapability(
       transaction,
       sql,
       actor,
@@ -186,6 +186,7 @@ module.exports = async function exportManifestFinal(context, req) {
     await acquireFlightIdentityLock(
       transaction,
       sql,
+      initialAuthorization.stationId,
       initialFlight.OperatingDateIso || initialFlight.OperatingDate,
       initialFlight.FlightNumber
     );

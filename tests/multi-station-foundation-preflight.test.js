@@ -62,6 +62,24 @@ test('multi-station preflight keeps route-only ownership ambiguous and corrobora
   assert.match(sql, /DocumentCorID/);
 });
 
+test('multi-station preflight fails closed on noncanonical DocumentCorID data using BIN2 identity', () => {
+  for (const finding of [
+    'INVALID_DOCUMENTCORID',
+    'DOCUMENTCORID_CANONICALIZATION_REQUIRED',
+    'DOCUMENTCORID_CANONICAL_COLLISION',
+    'INVALID_DOCUMENTCORID_SCHEMA',
+    'DOCUMENTCORID_COLLATION_CONFLICT'
+  ]) assert.match(sql, new RegExp(finding));
+  assert.match(sql, /DATALENGTH\(assessed\.RawDocumentCorID\)<>DATALENGTH\(assessed\.CanonicalDocumentCorID\)/);
+  assert.match(sql, /DATALENGTH\(raw\.TrimmedDocumentCorID\)>200/);
+  assert.match(sql, /DATALENGTH\(REPLACE\(TRANSLATE\([\s\S]*?TrimmedDocumentCorID COLLATE Latin1_General_100_BIN2,[\s\S]*?ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-[\s\S]*?REPLICATE\(N''A'',63\)[\s\S]*?\)<>0/);
+  assert.doesNotMatch(sql, /TrimmedDocumentCorID COLLATE Latin1_General_100_BIN2 (?:NOT )?LIKE N''%\[\^A-Za-z0-9-\]%''/);
+  assert.match(sql, /GROUP BY CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2/);
+  assert.match(sql, /SELECT CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID/);
+  assert.match(sql, /columnObject\.collation_name<>N'Latin1_General_100_BIN2'/);
+  assert.doesNotMatch(sql, /UPDATE\s+dbo\.IncomingMachMessages\s+SET\s+DocumentCorID/i);
+});
+
 test('multi-station preflight detects canonical collisions without claiming unsafe SQL parity', () => {
   assert.match(sql, /api\/shared\/flight\.js/);
   assert.match(sql, /OperatingDate,NormalizedFlightNumber/);

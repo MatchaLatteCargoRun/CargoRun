@@ -19,9 +19,11 @@ const {
 } = require('../shared/export-uws');
 const {
   authenticatedActor,
+  requireOperationalStations,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
+const { resolveAuthorizedStation, routeMatchesStation } = require('../shared/station');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -66,15 +68,16 @@ function getActor(req) {
   };
 }
 
-async function loadUwsFlight(request, authorizationExecutor, actor, parsed, locked = false) {
+async function loadUwsFlight(request, authorizationExecutor, actor, station, parsed, locked = false) {
   const hint = locked ? ' WITH (UPDLOCK,HOLDLOCK)' : '';
   const parameter = locked ? 'LockedUwsOperatingDate' : 'UwsOperatingDate';
   const result = await request
     .input(parameter, sql.Date, parsed.operatingDate)
-    .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
+    .input('UwsStationId', sql.BigInt, station.stationId)
+    .query(`SELECT FlightId,StationId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
         Direction,FlightStatus,OriginAirport,DestinationAirport
       FROM dbo.Flights${hint}
-      WHERE OperatingDate=@${parameter};`);
+      WHERE StationId=@UwsStationId AND OperatingDate=@${parameter};`);
   const candidates = findExportUwsFlightCandidates(result.recordset, parsed);
   for (const candidate of candidates) {
     await requireOperationalCapability(
@@ -181,14 +184,11 @@ module.exports = async function (context, req) {
 
       pool = await new sql.ConnectionPool(connectionString).connect();
 
-      await requireOperationalCapability(pool, sql, actor, {
-        Direction: 'EXPORT',
-        OriginAirport: parsed.station,
-        DestinationAirport: parsed.destination
-      }, 'CONFIRM_EXPORT_FINAL');
+      const access = await requireOperationalStations(pool, sql, actor, 'CONFIRM_EXPORT_FINAL');
+      const station = await resolveAuthorizedStation(pool, sql, access, parsed.station);
 
       if (action === 'PARSE_EXPORT_UWS') {
-        const matchedFlight = await loadUwsFlight(pool.request(), pool, actor, parsed);
+        const matchedFlight = await loadUwsFlight(pool.request(), pool, actor, station, parsed);
         await ensureUwsBuildOpen(pool.request(), matchedFlight.FlightId);
         const reconciliation = reconcileManifest(
           await loadUwsOperationalRows(pool.request(), matchedFlight.FlightId),
@@ -202,12 +202,13 @@ module.exports = async function (context, req) {
         return;
       }
 
-      const initialFlight = await loadUwsFlight(pool.request(), pool, actor, parsed);
+      const initialFlight = await loadUwsFlight(pool.request(), pool, actor, station, parsed);
       transaction = new sql.Transaction(pool);
       await transaction.begin();
       await acquireFlightIdentityLock(
         transaction,
         sql,
+        station.stationId,
         parsed.operatingDate,
         parsed.flightNumber
       );
@@ -215,6 +216,7 @@ module.exports = async function (context, req) {
         new sql.Request(transaction),
         transaction,
         actor,
+        station,
         parsed,
         true
       );
@@ -376,25 +378,35 @@ module.exports = async function (context, req) {
     transaction = new sql.Transaction(pool);
     await transaction.begin();
 
-    await requireOperationalCapability(transaction, sql, actor, {
-      Direction: direction,
-      OriginAirport: originAirport,
-      DestinationAirport: destinationAirport
-    }, 'UPLOAD_FLIGHT_DATA');
+    const access = await requireOperationalStations(transaction, sql, actor, 'UPLOAD_FLIGHT_DATA');
+    const station = await resolveAuthorizedStation(
+      transaction,
+      sql,
+      access,
+      body.stationCode
+    );
+    if (!routeMatchesStation({ Direction: direction, OriginAirport: originAirport, DestinationAirport: destinationAirport }, station.stationCode)) {
+      await transaction.rollback();
+      transaction = null;
+      sendJson(context, 400, { ok: false, code: 'FLIGHT_ROUTE_STATION_MISMATCH', error: 'The flight route does not match the selected operational station' });
+      return;
+    }
 
     await acquireFlightIdentityLock(
       transaction,
       sql,
+      station.stationId,
       operatingDate,
       flightNumber
     );
 
     const flightCandidates = await new sql.Request(transaction)
       .input('OperatingDate', sql.Date, operatingDate)
+      .input('StationId', sql.BigInt, station.stationId)
       .query(`
-        SELECT FlightId, FlightNumber, Direction, OriginAirport, DestinationAirport
+        SELECT FlightId, StationId, FlightNumber, Direction, OriginAirport, DestinationAirport
         FROM dbo.Flights
-        WHERE OperatingDate = @OperatingDate;
+        WHERE StationId = @StationId AND OperatingDate = @OperatingDate;
       `);
 
     const existingFlights = findFlightsByIdentity(
@@ -472,9 +484,11 @@ module.exports = async function (context, req) {
       .input('SourceFileName', sql.NVarChar(260), sourceFileName)
       .input('SourceType', sql.NVarChar(50), 'CARGORUN_UPLOAD')
       .input('CreatedByDisplayName', sql.NVarChar(150), actor.displayName)
+      .input('StationId', sql.BigInt, station.stationId)
       .query(`
         INSERT INTO dbo.Flights
         (
+          StationId,
           FlightNumber,
           OperatingDate,
           Direction,
@@ -493,6 +507,7 @@ module.exports = async function (context, req) {
           INSERTED.CreatedAtUtc
         VALUES
         (
+          @StationId,
           @FlightNumber,
           @OperatingDate,
           @Direction,

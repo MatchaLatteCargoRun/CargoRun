@@ -10,6 +10,7 @@ const {
   requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
+const { resolveAuthorizedStation, routeMatchesStation } = require('../shared/station');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -98,7 +99,7 @@ module.exports = async function (context, req) {
       const access = await requireOperationalStations(pool, sql, identity, 'VIEW_FLIGHTS');
       const request = pool.request();
       const stationParameters = bindStationParameters(request, sql, access.stations, 'FlightReadStation');
-      const result = await request.query(`SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.Direction,f.AirlineCode,f.OriginAirport,f.DestinationAirport,f.FlightStatus,f.ScheduledArrivalUtc,f.EstimatedArrivalUtc,f.LandedAtUtc,f.InBlockAtUtc,f.ScheduledDepartureUtc,f.EstimatedDepartureUtc,f.SourceType,f.CreatedAtUtc,
+      const result = await request.query(`SELECT f.FlightId,f.StationId,f.FlightNumber,f.OperatingDate,f.Direction,f.AirlineCode,f.OriginAirport,f.DestinationAirport,f.FlightStatus,f.ScheduledArrivalUtc,f.EstimatedArrivalUtc,f.LandedAtUtc,f.InBlockAtUtc,f.ScheduledDepartureUtc,f.EstimatedDepartureUtc,f.SourceType,f.CreatedAtUtc,
         mf.FinalManifestId AS ExportFinalManifestId,
         mf.ConfirmedAtUtc AS ExportFinalConfirmedAtUtc,
         mf.ConfirmedByDisplayName AS ExportFinalConfirmedByDisplayName,
@@ -157,7 +158,7 @@ module.exports = async function (context, req) {
         await transaction.begin();
         const selected = await new sql.Request(transaction)
           .input('AuthorizationFlightId', sql.BigInt, flightId)
-          .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport
             FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@AuthorizationFlightId;`);
         const authorizationFlight = selected.recordset[0] || null;
         if (hasInBlock) {
@@ -231,9 +232,9 @@ module.exports = async function (context, req) {
       const selected = await new sql.Request(transaction)
         .input('FlightId', sql.BigInt, flightId)
         .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,
-          Direction,OriginAirport,DestinationAirport FROM dbo.Flights WHERE FlightId=@FlightId;`);
+          StationId,Direction,OriginAirport,DestinationAirport FROM dbo.Flights WHERE FlightId=@FlightId;`);
       const selectedFlight = selected.recordset[0] || null;
-      await requireOperationalEntityCapability(
+      const selectedAuthorization = await requireOperationalEntityCapability(
         transaction,
         sql,
         identity,
@@ -243,13 +244,14 @@ module.exports = async function (context, req) {
       await acquireFlightIdentityLock(
         transaction,
         sql,
+        selectedAuthorization.stationId,
         selectedFlight.OperatingDateIso,
         selectedFlight.FlightNumber
       );
 
       const current = await new sql.Request(transaction)
         .input('LockedFlightId', sql.BigInt, flightId)
-        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport,FlightStatus
+        .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport,FlightStatus
           FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
       const currentFlight = current.recordset[0] || null;
       await requireOperationalEntityCapability(
@@ -341,17 +343,26 @@ module.exports = async function (context, req) {
 
     transaction = new sql.Transaction(pool);
     await transaction.begin();
-    await requireOperationalCapability(transaction, sql, identity, {
-      Direction: direction,
-      OriginAirport: originAirport,
-      DestinationAirport: destinationAirport
-    }, 'UPLOAD_FLIGHT_DATA');
-    await acquireFlightIdentityLock(transaction, sql, operatingDate, flightNumber);
+    const access = await requireOperationalStations(transaction, sql, identity, 'UPLOAD_FLIGHT_DATA');
+    const station = await resolveAuthorizedStation(
+      transaction,
+      sql,
+      access,
+      body.stationCode
+    );
+    if (!routeMatchesStation({ Direction: direction, OriginAirport: originAirport, DestinationAirport: destinationAirport }, station.stationCode)) {
+      await transaction.rollback();
+      transaction = null;
+      sendJson(context, 400, { ok: false, code: 'FLIGHT_ROUTE_STATION_MISMATCH', error: 'The flight route does not match the selected operational station' });
+      return;
+    }
+    await acquireFlightIdentityLock(transaction, sql, station.stationId, operatingDate, flightNumber);
 
     const candidates = await new sql.Request(transaction)
       .input('OperatingDate', sql.Date, operatingDate)
-      .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
-        FROM dbo.Flights WHERE OperatingDate=@OperatingDate;`);
+      .input('StationId', sql.BigInt, station.stationId)
+      .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport
+        FROM dbo.Flights WHERE StationId=@StationId AND OperatingDate=@OperatingDate;`);
     const existing = findFlightsByIdentity(candidates.recordset, flightNumber);
 
     if (existing.length) {
@@ -404,7 +415,8 @@ module.exports = async function (context, req) {
       .input('DestinationAirport', sql.NVarChar(4), destinationAirport)
       .input('SourceType', sql.NVarChar(50), 'CARGORUN_UI')
       .input('CreatedByDisplayName', sql.NVarChar(150), identity.displayName)
-      .query(`INSERT INTO dbo.Flights(FlightNumber,OperatingDate,Direction,AirlineCode,OriginAirport,DestinationAirport,SourceType,CreatedByDisplayName) OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.OperatingDate,INSERTED.Direction,INSERTED.CreatedAtUtc VALUES(@FlightNumber,@OperatingDate,@Direction,@AirlineCode,@OriginAirport,@DestinationAirport,@SourceType,@CreatedByDisplayName);`);
+      .input('StationId', sql.BigInt, station.stationId)
+      .query(`INSERT INTO dbo.Flights(StationId,FlightNumber,OperatingDate,Direction,AirlineCode,OriginAirport,DestinationAirport,SourceType,CreatedByDisplayName) OUTPUT INSERTED.FlightId,INSERTED.StationId,INSERTED.FlightNumber,INSERTED.OperatingDate,INSERTED.Direction,INSERTED.CreatedAtUtc VALUES(@StationId,@FlightNumber,@OperatingDate,@Direction,@AirlineCode,@OriginAirport,@DestinationAirport,@SourceType,@CreatedByDisplayName);`);
 
     await transaction.commit();
     transaction = null;

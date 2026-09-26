@@ -75,7 +75,7 @@ async function selectOffloadFlights(request, flightId = null, lockForUpdate = fa
     ? ` AND ${flightStationPredicate('f', stationParameters)}`
     : '';
   return request.input('SelectedFlightId', sql.BigInt, flightId).query(`
-    SELECT CONVERT(varchar(20), f.FlightId) AS FlightId, f.FlightNumber,
+    SELECT CONVERT(varchar(20), f.FlightId) AS FlightId, f.StationId, f.FlightNumber,
       CONVERT(char(10), f.OperatingDate, 23) AS OperatingDate,
       f.CreatedAtUtc, f.Direction,f.OriginAirport,f.DestinationAirport, f.FlightStatus
     FROM dbo.Flights f ${flightId && lockForUpdate ? 'WITH (UPDLOCK, HOLDLOCK)' : ''}
@@ -604,7 +604,7 @@ module.exports = async function (context, req) {
     if (amendmentFlightId) {
       const amendmentFlight = await new sql.Request(transaction)
         .input('AmendmentMutationFlightId', sql.BigInt, amendmentFlightId)
-        .query(`SELECT FlightStatus,Direction,OriginAirport,DestinationAirport
+        .query(`SELECT StationId,FlightStatus,Direction,OriginAirport,DestinationAirport
           FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)
           WHERE FlightId=@AmendmentMutationFlightId;`);
       const authorizationFlight = amendmentFlight.recordset.length === 1

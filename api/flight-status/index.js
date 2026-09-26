@@ -5,6 +5,10 @@ const {
   requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
+
+const FLIGHTAWARE_ENABLED =
+  String(process.env.FLIGHTAWARE_ENABLED || '').trim().toLowerCase() === 'true';
+
 function toIso(value) {
   if (value === null || value === undefined || value === '') return null;
   if (typeof value === 'number') return new Date(value > 1e12 ? value : value * 1000).toISOString();
@@ -106,12 +110,7 @@ module.exports = async function (context, req) {
       return;
     }
 
-    const enabledHeader = String(
-      req?.headers?.['x-cargorun-flightaware-enabled'] ||
-      req?.headers?.['X-CargoRun-FlightAware-Enabled'] ||
-      ''
-    ).toLowerCase();
-    if (enabledHeader !== 'true') {
+    if (!FLIGHTAWARE_ENABLED) {
       sendJson(
         context,
         503,
@@ -139,7 +138,7 @@ module.exports = async function (context, req) {
     await requireOperationalStations(operationalPool, sql, actor, 'VIEW_FLIGHTS');
     const flightResult = await operationalPool.request()
       .input('FlightStatusFlightId', sql.BigInt, flightId)
-      .query(`SELECT FlightId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDate,
+      .query(`SELECT FlightId,StationId,FlightNumber,CONVERT(char(10),OperatingDate,23) AS OperatingDate,
         Direction,OriginAirport,DestinationAirport
         FROM dbo.Flights WHERE FlightId=@FlightStatusFlightId;`);
     const selectedFlight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;

@@ -77,14 +77,14 @@ module.exports=async function(context,req){let pool,tx;try{
   const b=req.body||{};const flightId=String(b.flightId||'').trim();if(!/^\d+$/.test(flightId)){sendJson(context,400,{ok:false,error:'flightId is required'});return}
   const exceptionReason=clean(b.exceptionReason,500);
   tx=new sql.Transaction(pool);await tx.begin();
-  const initial=await new sql.Request(tx).input('InitialFlightId',sql.BigInt,flightId).query(`SELECT FlightId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,OriginAirport,DestinationAirport FROM dbo.Flights WHERE FlightId=@InitialFlightId;`);
+  const initial=await new sql.Request(tx).input('InitialFlightId',sql.BigInt,flightId).query(`SELECT FlightId,StationId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,OriginAirport,DestinationAirport FROM dbo.Flights WHERE FlightId=@InitialFlightId;`);
   const initialFlight=initial.recordset[0]||null;
-  await requireOperationalEntityCapability(tx,sql,identity,initialFlight,'FINALISE_FLIGHT');
-  await acquireFlightIdentityLock(tx,sql,initialFlight.OperatingDateIso||initialFlight.OperatingDate,initialFlight.FlightNumber);
-  const lockedResult=await new sql.Request(tx).input('LockedFlightId',sql.BigInt,flightId).query(`SELECT FlightId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,AirlineCode,OriginAirport,DestinationAirport,FlightStatus FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
+  const initialAuthorization=await requireOperationalEntityCapability(tx,sql,identity,initialFlight,'FINALISE_FLIGHT');
+  await acquireFlightIdentityLock(tx,sql,initialAuthorization.stationId,initialFlight.OperatingDateIso||initialFlight.OperatingDate,initialFlight.FlightNumber);
+  const lockedResult=await new sql.Request(tx).input('LockedFlightId',sql.BigInt,flightId).query(`SELECT FlightId,StationId,FlightNumber,OperatingDate,CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,AirlineCode,OriginAirport,DestinationAirport,FlightStatus FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
   const flight=lockedResult.recordset[0]||null;
-  await requireOperationalEntityCapability(tx,sql,identity,flight,'FINALISE_FLIGHT');
-  if(flightIdentityLockResource(initialFlight.OperatingDateIso||initialFlight.OperatingDate,initialFlight.FlightNumber)!==flightIdentityLockResource(flight.OperatingDateIso||flight.OperatingDate,flight.FlightNumber)){throw new ImportCompletionConflict('IMPORT_FLIGHT_CHANGED','The selected Import flight identity changed before finalisation could begin')}
+  const lockedAuthorization=await requireOperationalEntityCapability(tx,sql,identity,flight,'FINALISE_FLIGHT');
+  if(flightIdentityLockResource(initialAuthorization.stationId,initialFlight.OperatingDateIso||initialFlight.OperatingDate,initialFlight.FlightNumber)!==flightIdentityLockResource(lockedAuthorization.stationId,flight.OperatingDateIso||flight.OperatingDate,flight.FlightNumber)){throw new ImportCompletionConflict('IMPORT_FLIGHT_CHANGED','The selected Import flight identity changed before finalisation could begin')}
   if(String(flight.Direction||'').trim().toUpperCase()!=='IMPORT'){await tx.rollback();tx=null;sendJson(context,400,{ok:false,code:'IMPORT_FLIGHT_REQUIRED',error:'Only import flights can be finalised here'});return}
   const flightIdCol=pick(columns,['FlightId']);
   if(flightIdCol){const existing=await new sql.Request(tx).input('CompletionFlightId',sql.BigInt,flightId).query(`SELECT TOP (2) * FROM dbo.ImportCompletionRecords WITH (UPDLOCK,HOLDLOCK) WHERE ${q(flightIdCol)}=@CompletionFlightId;`);if(existing.recordset.length){throw new ImportCompletionConflict('IMPORT_ALREADY_FINALISED','Import completion record already exists',normalize(existing.recordset[0],columns,flight.FlightNumber))}}

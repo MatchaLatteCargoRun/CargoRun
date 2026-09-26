@@ -41,6 +41,7 @@ module.exports = async function session(context, req) {
       userId: actor.reference,
       displayName: actor.displayName,
       stations: access.stations,
+      stationMetadata: access.stationMetadata,
       capabilities: access.capabilities
     });
   } catch (error) {

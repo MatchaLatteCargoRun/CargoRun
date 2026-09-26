@@ -4,6 +4,10 @@ const {
   acquireFlightIdentityLock,
   findFlightsByIdentity
 } = require('../shared/flight');
+const {
+  canonicalizeDocumentCorId,
+  DocumentCorIdValidationError
+} = require('../shared/document-cor-id');
 const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
 const {
@@ -14,6 +18,11 @@ const {
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
+const {
+  MACHINE_STATION_CODE,
+  resolveAuthorizedStation,
+  resolveStationByCode
+} = require('../shared/station');
 
 /* ============================================================
    CargoRun MACH FOW Receiver
@@ -33,8 +42,9 @@ const {
    DO NOT create another operational ULD if the same ULD
    already exists on the same flight.
 
-   DocumentCorID is still used to stop the exact same MACH
-   message being processed twice.
+   DocumentCorID is canonical uppercase ASCII (letters, digits
+   and hyphens, at most 100 characters) and globally identifies
+   a MACH message. Raw XML retains the original evidence.
    ============================================================ */
 
 
@@ -207,7 +217,7 @@ function clean(v, max = 200) {
    => AKE12345CX
    ============================================================ */
 
-function xmlText(xml, tag) {
+function xmlRawText(xml, tag) {
   const re = new RegExp(
     `<(?:(?:\\w+):)?${tag}\\b[^>]*>` +
     `([\\s\\S]*?)` +
@@ -224,8 +234,12 @@ function xmlText(xml, tag) {
           '$1'
         )
         .replace(/<[^>]+>/g, '')
-        .trim()
     : '';
+}
+
+
+function xmlText(xml, tag) {
+  return xmlRawText(xml, tag).trim();
 }
 
 
@@ -337,22 +351,32 @@ function parseEventLocal(
   operatingDate,
   time
 ) {
+  const t = String(time || '');
+
   if (
     !operatingDate ||
-    !/^\d{4}$/.test(
-      String(time || '')
-    )
+    !/^(?:[01]\d|2[0-3])[0-5]\d$/.test(t)
   ) {
     return null;
   }
-
-  const t = String(time);
 
   return (
     `${operatingDate}T` +
     `${t.slice(0, 2)}:` +
     `${t.slice(2, 4)}:00`
   );
+}
+
+// SQL datetime2 carries no offset. Preserve the MACH wall-clock digits without
+// claiming that StsTime is UTC; station-zone conversion requires a future schema
+// that can retain both the raw local value and the derived UTC instant.
+function preserveLocalWallClock(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})$/.exec(String(value || ''));
+  if (!match) return null;
+  return new Date(Date.UTC(
+    Number(match[1]), Number(match[2]) - 1, Number(match[3]),
+    Number(match[4]), Number(match[5]), Number(match[6])
+  ));
 }
 
 
@@ -450,27 +474,34 @@ function extractRawXml(req) {
 /* ============================================================
    EXACT MESSAGE DUPLICATE CHECK
 
-   This protects against MACH sending the exact same
+   This protects against MACH sending the same canonical
    DocumentCorID again.
 
    This is DIFFERENT from ULD deduplication.
    ============================================================ */
 
+function requestFor(executor) {
+  return typeof executor.request === 'function'
+    ? executor.request()
+    : new sql.Request(executor);
+}
+
 async function existingMessage(
-  pool,
+  executor,
   documentCorId
 ) {
-  const r = await pool
-    .request()
+  const canonicalDocumentCorId = canonicalizeDocumentCorId(documentCorId);
+  const r = await requestFor(executor)
     .input(
       'DocumentCorID',
       sql.NVarChar(100),
-      documentCorId
+      canonicalDocumentCorId
     )
     .query(`
       SELECT TOP 1
         m.*,
         f.FlightNumber AS MatchedFlightNumber,
+        f.StationId AS MatchedFlightStationId,
         f.Direction AS MatchedFlightDirection,
         f.OriginAirport AS MatchedFlightOriginAirport,
         f.DestinationAirport AS MatchedFlightDestinationAirport
@@ -482,8 +513,8 @@ async function existingMessage(
            m.MatchedFlightId
 
       WHERE
-        m.DocumentCorID =
-        @DocumentCorID;
+        m.DocumentCorID COLLATE Latin1_General_100_BIN2 =
+        @DocumentCorID COLLATE Latin1_General_100_BIN2;
     `);
 
   if (!r.recordset.length) {
@@ -492,8 +523,7 @@ async function existingMessage(
 
   const row = r.recordset[0];
 
-  const links = await pool
-    .request()
+  const links = await requestFor(executor)
     .input(
       'MachMessageId',
       sql.BigInt,
@@ -520,34 +550,46 @@ async function existingMessage(
   };
 }
 
+async function existingMessageIdentity(executor, documentCorId) {
+  const canonicalDocumentCorId = canonicalizeDocumentCorId(documentCorId);
+  const result = await requestFor(executor)
+    .input('DocumentCorID', sql.NVarChar(100), canonicalDocumentCorId)
+    .query(`SELECT TOP (1) m.MachMessageId,m.StationId,m.MatchedFlightId,
+        f.StationId AS MatchedFlightStationId
+      FROM dbo.IncomingMachMessages m
+      LEFT JOIN dbo.Flights f ON f.FlightId=m.MatchedFlightId
+      WHERE m.DocumentCorID COLLATE Latin1_General_100_BIN2
+        = @DocumentCorID COLLATE Latin1_General_100_BIN2;`);
+  return result.recordset[0] || null;
+}
 
-function duplicateAuthorizationFlight(
-  duplicate
-) {
-  const row = duplicate?.row || {};
+function documentIdentityLockResource(documentCorId) {
+  return `CargoRun:DocumentCorID:v2:${canonicalizeDocumentCorId(documentCorId)}`;
+}
 
+async function acquireDocumentIdentityLock(transaction, documentCorId) {
+  const resource = documentIdentityLockResource(documentCorId);
+  const result = await new sql.Request(transaction)
+    .input('DocumentIdentityLockResource', sql.NVarChar(255), resource)
+    .query(`
+      DECLARE @LockResult int;
+      EXEC @LockResult = sys.sp_getapplock
+        @Resource = @DocumentIdentityLockResource,
+        @LockMode = 'Exclusive',
+        @LockOwner = 'Transaction',
+        @LockTimeout = 15000;
+      SELECT @LockResult AS LockResult;
+    `);
+  const lockResult = result.recordset?.[0]?.LockResult;
   if (
-    row.MatchedFlightId !== null &&
-    row.MatchedFlightId !== undefined
+    typeof lockResult !== 'number' ||
+    !Number.isFinite(lockResult) ||
+    !Number.isInteger(lockResult) ||
+    (lockResult !== 0 && lockResult !== 1)
   ) {
-    return {
-      Direction:
-        row.MatchedFlightDirection,
-      OriginAirport:
-        row.MatchedFlightOriginAirport,
-      DestinationAirport:
-        row.MatchedFlightDestinationAirport
-    };
+    throw new Error(`Could not lock MACH document identity (${String(lockResult)})`);
   }
-
-  return {
-    Direction: 'EXPORT',
-    OriginAirport:
-      row.OriginAirport ||
-      row.StationAirport,
-    DestinationAirport:
-      row.DestinationAirport
-  };
+  return resource;
 }
 
 
@@ -564,6 +606,8 @@ module.exports = async function(
   let tx;
   let actor = null;
   let liveRequest = false;
+  let operationalStation = null;
+  let documentCorId = null;
 
   try {
 
@@ -696,7 +740,11 @@ module.exports = async function(
               m.DestinationAirport,
               m.MawbNumber,
               m.Pieces,
-              m.EventLocalDateTime,
+              CONVERT(
+                varchar(33),
+                m.EventLocalDateTime,
+                126
+              ) AS EventLocalDateTime,
               m.ReceivedAtUtc,
               m.ProcessedAtUtc,
               m.ProcessingStatus,
@@ -878,14 +926,19 @@ module.exports = async function(
        PARSE FOW
        -------------------------------------------------------- */
 
-    const documentCorId =
-      clean(
-        xmlText(
-          xml,
-          'DocumentCorID'
-        ),
-        100
+    try {
+      documentCorId = canonicalizeDocumentCorId(
+        xmlRawText(xml, 'DocumentCorID')
       );
+    } catch (error) {
+      if (!(error instanceof DocumentCorIdValidationError)) throw error;
+      sendJson(context, error.status, {
+        ok: false,
+        code: error.code,
+        error: error.message
+      });
+      return;
+    }
 
 
     const messageType =
@@ -942,12 +995,19 @@ module.exports = async function(
       parseOperatingDate(xml);
 
 
-    const origin =
+    const segmentDeparture =
       clean(
         xmlText(
           xml,
           'StsSegDep'
-        ) ||
+        ),
+        4
+      )?.toUpperCase();
+
+
+    const origin =
+      segmentDeparture ||
+      clean(
         xmlText(
           xml,
           'OrigApt'
@@ -970,15 +1030,19 @@ module.exports = async function(
       )?.toUpperCase();
 
 
-    const station =
+    const eventStation =
       clean(
         xmlText(
           xml,
           'StsApt'
-        ) ||
-        origin,
+        ),
         4
       )?.toUpperCase();
+
+
+    const station =
+      eventStation ||
+      origin;
 
 
     const eventTime =
@@ -1079,21 +1143,6 @@ module.exports = async function(
        VALIDATION
        -------------------------------------------------------- */
 
-    if (!documentCorId) {
-      sendJson(
-        context,
-        422,
-        {
-          ok: false,
-          error:
-            'DocumentCorID is required'
-        }
-      );
-
-      return;
-    }
-
-
     if (
       messageType !== 'FSU' ||
       statusCode !== 'FOW'
@@ -1136,9 +1185,17 @@ module.exports = async function(
     }
 
 
+    const access = live
+      ? null
+      : await requireOperationalStations(pool, sql, actor, 'UPLOAD_FLIGHT_DATA');
+    operationalStation = live
+      ? await resolveStationByCode(pool, sql, MACHINE_STATION_CODE)
+      : await resolveAuthorizedStation(pool, sql, access, station || origin);
+
     if (
-      (station || origin) !==
-      'MEL'
+      (eventStation && eventStation !== operationalStation.stationCode) ||
+      (segmentDeparture && segmentDeparture !== operationalStation.stationCode) ||
+      (!eventStation && origin && origin !== operationalStation.stationCode)
     ) {
       sendJson(
         context,
@@ -1146,7 +1203,7 @@ module.exports = async function(
         {
           ok: false,
           error:
-            `Step 6A is MEL-only. ` +
+            `The message station does not match the authorized handling station. ` +
             `Message station is ${
               station ||
               origin ||
@@ -1188,26 +1245,11 @@ module.exports = async function(
       );
 
     if (!live) {
-      const proposedFlight = {
-        Direction: 'EXPORT',
-        OriginAirport:
-          origin || station,
-        DestinationAirport:
-          destination
-      };
-
-      await requireOperationalCapability(
-        pool,
-        sql,
-        actor,
-        proposedFlight,
-        'UPLOAD_FLIGHT_DATA'
-      );
-
       const authorizationCandidates = await pool.request()
         .input('AuthorizationOperatingDate', sql.Date, operatingDate)
-        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
-          FROM dbo.Flights WHERE OperatingDate=@AuthorizationOperatingDate;`);
+        .input('AuthorizationStationId', sql.BigInt, operationalStation.stationId)
+        .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE StationId=@AuthorizationStationId AND OperatingDate=@AuthorizationOperatingDate;`);
       const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
 
       for (const candidate of authorizationMatches) {
@@ -1229,7 +1271,7 @@ module.exports = async function(
         });
         return;
       }
-      const authorizationFlight = authorizationMatches[0] || proposedFlight;
+      const authorizationFlight = authorizationMatches[0] || { Direction: 'EXPORT' };
       if (authorizationMatches[0] && String(authorizationFlight.Direction || '').toUpperCase() !== 'EXPORT') {
         sendJson(context, 409, {
           ok: false,
@@ -1241,81 +1283,6 @@ module.exports = async function(
       }
     }
 
-    const duplicate =
-      await existingMessage(
-        pool,
-        documentCorId
-      );
-
-
-    if (duplicate) {
-
-      if (!live) {
-        await requireOperationalCapability(
-          pool,
-          sql,
-          actor,
-          duplicateAuthorizationFlight(
-            duplicate
-          ),
-          'UPLOAD_FLIGHT_DATA'
-        );
-      }
-
-      sendJson(
-        context,
-        200,
-        {
-          ok: true,
-
-          duplicate: true,
-
-          duplicateType:
-            'DOCUMENT',
-
-          messageId:
-            duplicate.row
-              .MachMessageId,
-
-          flightId:
-            duplicate.row
-              .MatchedFlightId,
-
-          flightNumber:
-            duplicate.row
-              .MatchedFlightNumber ||
-            duplicate.row
-              .FlightNumber,
-
-          operatingDate:
-            duplicate.row
-              .OperatingDate,
-
-          ulds:
-            duplicate.ulds,
-
-          processingStatus:
-            duplicate.row
-              .ProcessingStatus,
-
-          sourceType:
-            duplicate.row
-              .SourceType,
-
-          live:
-            String(
-              duplicate.row
-                .SourceType ||
-              ''
-            ).toUpperCase() ===
-            'MACH_FOW_LIVE'
-        }
-      );
-
-      return;
-    }
-
-
     /* ========================================================
        START TRANSACTION
        ======================================================== */
@@ -1325,18 +1292,67 @@ module.exports = async function(
 
     await tx.begin();
 
-    await acquireFlightIdentityLock(tx, sql, operatingDate, requestedFlight);
+    await acquireDocumentIdentityLock(tx, documentCorId);
+
+    const duplicateIdentity = await existingMessageIdentity(tx, documentCorId);
+    if (duplicateIdentity) {
+      const duplicateStationId = duplicateIdentity.MatchedFlightStationId || duplicateIdentity.StationId;
+      if (String(duplicateStationId || '') !== String(operationalStation.stationId)) {
+        await tx.rollback();
+        tx = null;
+        sendJson(context, 409, {
+          ok: false,
+          code: 'DOCUMENT_IDENTITY_CONFLICT',
+          error: 'The MACH document identity is already assigned to another operation'
+        });
+        return;
+      }
+
+      if (!live) {
+        await requireOperationalCapability(
+          tx,
+          sql,
+          actor,
+          { StationId: duplicateStationId },
+          'UPLOAD_FLIGHT_DATA'
+        );
+      }
+
+      const duplicate = await existingMessage(tx, documentCorId);
+      if (!duplicate) throw new Error('MACH duplicate identity changed during authorization');
+      await tx.rollback();
+      tx = null;
+
+      sendJson(context, 200, {
+        ok: true,
+        duplicate: true,
+        duplicateType: 'DOCUMENT',
+        messageId: duplicate.row.MachMessageId,
+        flightId: duplicate.row.MatchedFlightId,
+        flightNumber: duplicate.row.MatchedFlightNumber || duplicate.row.FlightNumber,
+        operatingDate: duplicate.row.OperatingDate,
+        ulds: duplicate.ulds,
+        processingStatus: duplicate.row.ProcessingStatus,
+        sourceType: duplicate.row.SourceType,
+        live: String(duplicate.row.SourceType || '').toUpperCase() === 'MACH_FOW_LIVE'
+      });
+      return;
+    }
+
+    await acquireFlightIdentityLock(tx, sql, operationalStation.stationId, operatingDate, requestedFlight);
     if (!live) {
       const authorizationCandidates = await new sql.Request(tx)
         .input('LockedAuthorizationOperatingDate', sql.Date, operatingDate)
-        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
-          FROM dbo.Flights WHERE OperatingDate=@LockedAuthorizationOperatingDate;`);
+        .input('LockedAuthorizationStationId', sql.BigInt, operationalStation.stationId)
+        .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          FROM dbo.Flights WHERE StationId=@LockedAuthorizationStationId AND OperatingDate=@LockedAuthorizationOperatingDate;`);
       const authorizationMatches = findFlightsByIdentity(authorizationCandidates.recordset, requestedFlight);
 
       const flightsToAuthorize =
         authorizationMatches.length
           ? authorizationMatches
           : [{
+              StationId: operationalStation.stationId,
               Direction: 'EXPORT',
               OriginAirport:
                 origin || station,
@@ -1462,9 +1478,7 @@ module.exports = async function(
           'EventLocalDateTime',
           sql.DateTime2,
           eventLocal
-            ? new Date(
-                eventLocal + 'Z'
-              )
+            ? preserveLocalWallClock(eventLocal)
             : null
         )
 
@@ -1490,9 +1504,12 @@ module.exports = async function(
           null
         )
 
+        .input('StationId', sql.BigInt, operationalStation.stationId)
+
         .query(`
           INSERT INTO dbo.IncomingMachMessages
           (
+            StationId,
             DocumentCorID,
             MessageType,
             StatusCode,
@@ -1517,6 +1534,7 @@ module.exports = async function(
 
           VALUES
           (
+            @StationId,
             @DocumentCorID,
             @MessageType,
             @StatusCode,
@@ -1556,9 +1574,12 @@ module.exports = async function(
           operatingDate
         )
 
+        .input('StationId', sql.BigInt, operationalStation.stationId)
+
         .query(`
           SELECT
             FlightId,
+            StationId,
             FlightNumber,
             Direction,
             FlightStatus
@@ -1566,7 +1587,7 @@ module.exports = async function(
           FROM dbo.Flights
 
           WHERE
-            OperatingDate =
+            StationId = @StationId AND OperatingDate =
             @OperatingDate;
         `);
 
@@ -1631,27 +1652,6 @@ module.exports = async function(
       await tx.rollback();
 
       tx = null;
-
-
-      await pool
-        .request()
-
-        .input(
-          'DocumentCorID',
-          sql.NVarChar(100),
-          documentCorId
-        )
-
-        .query(`
-          DELETE
-          FROM dbo.IncomingMachMessages
-
-          WHERE
-            DocumentCorID =
-            @DocumentCorID;
-        `)
-        .catch(() => {});
-
 
       sendJson(
         context,
@@ -1828,7 +1828,7 @@ module.exports = async function(
           .input(
             'OriginAirport',
             sql.NVarChar(4),
-            origin || 'MEL'
+            origin || operationalStation.stationCode
           )
 
           .input(
@@ -1851,9 +1851,12 @@ module.exports = async function(
               : 'MACH FOW Simulator'
           )
 
+          .input('StationId', sql.BigInt, operationalStation.stationId)
+
           .query(`
             INSERT INTO dbo.Flights
             (
+              StationId,
               FlightNumber,
               OperatingDate,
               Direction,
@@ -1871,6 +1874,7 @@ module.exports = async function(
 
             VALUES
             (
+              @StationId,
               @FlightNumber,
               @OperatingDate,
               @Direction,
@@ -2370,36 +2374,37 @@ module.exports = async function(
 
       try {
 
-        const documentCorId =
-          clean(
-            xmlText(
-              extractRawXml(req),
-              'DocumentCorID'
-            ),
-            100
-          );
-
-
-        const dup =
-          await existingMessage(
+        const duplicateIdentity =
+          await existingMessageIdentity(
             pool,
             documentCorId
           );
 
 
-        if (dup) {
+        if (duplicateIdentity && operationalStation) {
+
+          const duplicateStationId = duplicateIdentity.MatchedFlightStationId || duplicateIdentity.StationId;
+          if (String(duplicateStationId || '') !== String(operationalStation.stationId)) {
+            sendJson(context, 409, {
+              ok: false,
+              code: 'DOCUMENT_IDENTITY_CONFLICT',
+              error: 'The MACH document identity is already assigned to another operation'
+            });
+            return;
+          }
 
           if (!liveRequest) {
             await requireOperationalCapability(
               pool,
               sql,
               actor,
-              duplicateAuthorizationFlight(
-                dup
-              ),
+              { StationId: duplicateStationId },
               'UPLOAD_FLIGHT_DATA'
             );
           }
+
+          const dup = await existingMessage(pool, documentCorId);
+          if (!dup) throw new Error('MACH duplicate identity changed during authorization');
 
           sendJson(
             context,

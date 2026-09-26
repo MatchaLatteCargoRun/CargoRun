@@ -12,12 +12,14 @@ function normalizeFlightNumber(value) {
   return `${match[1]}${String(Number(match[2]))}${match[3] || ''}`;
 }
 
-function flightIdentityLockResource(operatingDate, flightNumber) {
-  return `CargoRun:Flight:${String(operatingDate || '').trim()}:${normalizeFlightNumber(flightNumber)}`;
+function flightIdentityLockResource(stationId, operatingDate, flightNumber) {
+  const station = String(stationId ?? '').trim();
+  if (!/^[1-9]\d*$/.test(station)) throw new Error('A stable StationId is required for flight identity');
+  return `CargoRun:Flight:v2:${station}:${String(operatingDate || '').trim()}:${normalizeFlightNumber(flightNumber)}`;
 }
 
-async function acquireFlightIdentityLock(transaction, sql, operatingDate, flightNumber) {
-  const resource = flightIdentityLockResource(operatingDate, flightNumber);
+async function acquireFlightIdentityLock(transaction, sql, stationId, operatingDate, flightNumber) {
+  const resource = flightIdentityLockResource(stationId, operatingDate, flightNumber);
   const result = await new sql.Request(transaction)
     .input('FlightIdentityLockResource', sql.NVarChar(255), resource)
     .query(`

@@ -6,6 +6,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { normalizeUldNumber } = require('../../api/shared/uld');
 const flightHelpers = require('../../api/shared/flight');
+const documentCorIdHelpers = require('../../api/shared/document-cor-id');
 const { normalizeFlightNumber } = flightHelpers;
 const { insertAuditEvent } = require('../../api/shared/audit');
 const completionAmendments = require('../../api/shared/completion-amendments');
@@ -14,6 +15,7 @@ const offloadEligibility = require('../../api/shared/offload-eligibility');
 const exportManifestFinal = require('../../api/shared/export-manifest-final');
 const exportUws = require('../../api/shared/export-uws');
 const operationalAuthorization = require('./operational-authorization-stub');
+const station = require('../../api/shared/station');
 
 const root = path.resolve(__dirname, '..', '..');
 const principal = Buffer.from(JSON.stringify({
@@ -32,6 +34,7 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
       if (name === 'mssql') return sqlMock;
       if (name === '../shared/uld') return { normalizeUldNumber };
       if (name === '../shared/flight') return flightHelpers;
+      if (name === '../shared/document-cor-id') return documentCorIdHelpers;
       if (name === '../shared/flight-statement-evidence') return flightStatementEvidence;
       if (name === '../shared/audit') return { insertAuditEvent };
       if (name === '../shared/completion-amendments') return completionAmendments;
@@ -39,6 +42,15 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
       if (name === '../shared/export-manifest-final') return exportManifestFinal;
       if (name === '../shared/export-uws') return exportUws;
       if (name === '../shared/operational-authorization') return operationalAuthorizationOverride;
+      if (name === '../shared/station') return {
+        ...station,
+        resolveAuthorizedStation: async (_executor, _sql, access, requested) => {
+          const code = String(requested || access?.stations?.[0] || '').toUpperCase();
+          const index = Math.max(0, ['MEL', 'SYD', 'BNE', 'HKG', 'SIN', 'DXB', 'KUL'].indexOf(code));
+          return { stationId: String(index + 1), stationCode: code, displayName: code, timeZoneId: 'Australia/Melbourne' };
+        },
+        resolveStationByCode: async (_executor, _sql, code) => ({ stationId: '1', stationCode: code, displayName: code, timeZoneId: 'Australia/Melbourne' })
+      };
       throw new Error(`Unexpected require: ${name}`);
     }
   });

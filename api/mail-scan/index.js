@@ -51,7 +51,7 @@ module.exports = async function(context, req) {
 
     const selected = await new sql.Request(transaction)
       .input('AuthorizationUldId', sql.BigInt, uldId)
-      .query(`SELECT u.UldId,u.FlightId,f.Direction,f.OriginAirport,f.DestinationAirport
+      .query(`SELECT u.UldId,u.FlightId,f.StationId,f.Direction,f.OriginAirport,f.DestinationAirport
         FROM dbo.ULDs u WITH (UPDLOCK,HOLDLOCK)
         INNER JOIN dbo.Flights f ON f.FlightId=u.FlightId
         WHERE u.UldId=@AuthorizationUldId;`);

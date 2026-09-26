@@ -2,10 +2,14 @@
 
 const actual = require('../../api/shared/operational-authorization');
 const stations = ['MEL', 'SYD', 'BNE', 'HKG', 'SIN', 'DXB', 'KUL'];
+const stationMetadata = stations.map((stationCode, index) => ({
+  stationId: String(index + 1), stationCode, displayName: stationCode, timeZoneId: 'Australia/Melbourne'
+}));
 const access = capabilities => ({
   actorReference: 'test-user',
   provisioned: true,
   stations,
+  stationMetadata,
   capabilities,
   globalCapabilities: [],
   capabilitiesByStation: Object.fromEntries(stations.map(station => [station, capabilities]))
@@ -13,6 +17,7 @@ const access = capabilities => ({
 
 const requireOperationalCapability = async (_executor, _sql, actor, flight, requiredCapability) => ({
   actorReference: actor.reference,
+  stationId: String(flight?.StationId || 1),
   stationCode: String(
     String(flight?.Direction || '').toUpperCase() === 'IMPORT'
       ? flight?.DestinationAirport || 'MEL'

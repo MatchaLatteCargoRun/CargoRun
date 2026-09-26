@@ -77,7 +77,7 @@ module.exports = async function (context, req) {
 
       const flightResult = await pool.request()
         .input('AuthorizationFlightId', sql.BigInt, flightId)
-        .query(`SELECT FlightId,FlightNumber,Direction,OriginAirport,DestinationAirport
+        .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport
           FROM dbo.Flights WHERE FlightId=@AuthorizationFlightId;`);
       await requireOperationalEntityCapability(
         pool,
@@ -149,14 +149,14 @@ module.exports = async function (context, req) {
     const flightResult = await pool.request()
       .input('FlightId', sql.BigInt, flightId)
       .query(`
-        SELECT FlightId,FlightNumber,OperatingDate,
+        SELECT FlightId,StationId,FlightNumber,OperatingDate,
           CONVERT(char(10),OperatingDate,23) AS OperatingDateIso,Direction,OriginAirport,DestinationAirport
         FROM dbo.Flights
         WHERE FlightId = @FlightId;
       `);
 
     const selectedFlight = flightResult.recordset[0] || null;
-    await requireOperationalEntityCapability(pool, sql, actor, selectedFlight, 'MOVE_ULD');
+    const selectedAuthorization = await requireOperationalEntityCapability(pool, sql, actor, selectedFlight, 'MOVE_ULD');
 
     const transaction = new sql.Transaction(pool);
     await transaction.begin();
@@ -165,12 +165,13 @@ module.exports = async function (context, req) {
       await acquireFlightIdentityLock(
         transaction,
         sql,
+        selectedAuthorization.stationId,
         selectedFlight.OperatingDateIso || selectedFlight.OperatingDate,
         selectedFlight.FlightNumber
       );
       const lockedFlight = await new sql.Request(transaction)
         .input('LockedFlightId', sql.BigInt, flightId)
-        .query(`SELECT FlightId,FlightNumber,OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
+        .query(`SELECT FlightId,StationId,FlightNumber,OperatingDate,Direction,OriginAirport,DestinationAirport,FlightStatus
           FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@LockedFlightId;`);
       const locked = lockedFlight.recordset[0] || null;
       await requireOperationalEntityCapability(transaction, sql, actor, locked, 'MOVE_ULD');

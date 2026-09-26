@@ -8,10 +8,11 @@ Included Azure Function:
 
 Azure configuration required:
 1. Deploy the app + api folder to Azure Static Web Apps / Azure Functions.
-2. Add an application setting named FLIGHTAWARE_API_KEY containing your FlightAware AeroAPI key.
-3. Do NOT put the API key in index.html or JavaScript served to browsers.
-4. CargoRun will poll active import flights approximately every 2 minutes while the page is open.
-5. The Flight Board also has a manual Sync Arrivals button.
+2. FlightAware is disabled by default. To enable it, add an application setting named FLIGHTAWARE_ENABLED with the exact value true.
+3. Add an application setting named FLIGHTAWARE_API_KEY containing your FlightAware AeroAPI key.
+4. Do NOT put either application setting in index.html or JavaScript served to browsers.
+5. The browser FlightAware feature remains release-gated OFF, so the server setting alone does not start polling or expose Sync controls.
+6. If the browser feature is re-enabled later, its existing two-minute polling and manual Sync Arrivals controls still require the server setting above.
 
 Timer logic:
 - Prefer actual In Block / actual_in as the acceptance timer start.

@@ -6,12 +6,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { normalizeUldNumber } = require('../api/shared/uld');
+const documentCorIdHelpers = require('../api/shared/document-cor-id');
 const flightHelpers = require('../api/shared/flight');
 const { insertAuditEvent } = require('../api/shared/audit');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
 const fixtures = require('./uld-fixtures.json');
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
+
+function binaryDocumentCorIdEquals(left, right) {
+  const leftBytes = Buffer.from(String(left ?? ''), 'utf16le');
+  const rightBytes = Buffer.from(String(right ?? ''), 'utf16le');
+  return leftBytes.length === rightBytes.length && leftBytes.equals(rightBytes);
+}
 
 // Exercise the actual inline functions without booting the app or mocking a DOM.
 function frontend() {
@@ -171,9 +178,9 @@ test('upload response links canonical server number to formatted pending ULD', a
 function apiHarness(initialRows = []) {
   const state = { rows: structuredClone(initialRows), messages: [], links: [], audits: [], calls: [], commits: 0, rollbacks: 0 };
   const flights = [
-    { FlightId: 1, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'EXPORT', InclusionReason: 'OPERATING_TODAY' },
-    { FlightId: 2, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'IMPORT', InclusionReason: 'OPERATING_TODAY' },
-    { FlightId: 3, FlightNumber: 'CX0179', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'IMPORT', InclusionReason: 'OPERATING_TODAY' }
+    { FlightId: 1, StationId: 1, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'EXPORT', InclusionReason: 'OPERATING_TODAY' },
+    { FlightId: 2, StationId: 1, FlightNumber: 'CX0178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'IMPORT', InclusionReason: 'OPERATING_TODAY' },
+    { FlightId: 3, StationId: 1, FlightNumber: 'CX0179', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE', Direction: 'IMPORT', InclusionReason: 'OPERATING_TODAY' }
   ];
   class Transaction {
     async begin() { this.active = true; this.snapshot = structuredClone({ rows: state.rows, messages: state.messages, links: state.links, audits: state.audits }); }
@@ -192,7 +199,12 @@ function apiHarness(initialRows = []) {
         if (p.AuditTableName === 'AuditEvents') return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
         return result(['OffloadId', 'FlightId', 'UldId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
-      if (q.includes('FROM dbo.IncomingMachMessages')) return result(state.messages.filter(x => x.DocumentCorID === p.DocumentCorID));
+      if (q.includes('FROM dbo.IncomingMachMessages')) {
+        assert.match(q, /DocumentCorID COLLATE Latin1_General_100_BIN2/);
+        return result(state.messages.filter(x =>
+          binaryDocumentCorIdEquals(x.DocumentCorID, p.DocumentCorID)
+        ));
+      }
       if (q.includes('FROM dbo.ExportManifestFinals')) return result([]);
       if (q.includes('FROM dbo.MachFowShipments')) return result(state.links.filter(x => x.MachMessageId === p.MachMessageId));
       if (q.startsWith('INSERT INTO dbo.IncomingMachMessages')) {
@@ -202,7 +214,7 @@ function apiHarness(initialRows = []) {
         Object.assign(state.messages.find(x => x.MachMessageId === p.MachMessageId), { MatchedFlightId: p.FlightId, ProcessingStatus: 'PROCESSED' }); return result([]);
       }
       if (q.includes('FROM dbo.Flights')) {
-        if (q.startsWith('SELECT FlightId, FlightNumber, Direction, OriginAirport, DestinationAirport FROM dbo.Flights')) {
+        if (q.includes('FROM dbo.Flights') && q.includes('OriginAirport') && q.includes('StationId = @StationId AND OperatingDate = @OperatingDate')) {
           return result([]); // Manifest creates a new flight.
         }
         const flightId = p.SelectedFlightId ?? p.LockedFlightId ?? p.FlightId;
@@ -245,6 +257,8 @@ function apiHarness(initialRows = []) {
           ? { normalizeUldNumber }
           : name === '../shared/flight'
             ? flightHelpers
+            : name === '../shared/document-cor-id'
+              ? documentCorIdHelpers
             : name === '../shared/audit'
               ? { insertAuditEvent }
             : name === '../shared/completion-amendments'
@@ -257,6 +271,8 @@ function apiHarness(initialRows = []) {
               ? require('../api/shared/export-uws')
             : name === '../shared/operational-authorization'
               ? operationalAuthorization
+            : name === '../shared/station'
+              ? require('./helpers/station-stub')
             : require(name)
     }, { filename: endpoint + '/index.js' });
     const log = Object.assign(() => {}, { error() {}, warn() {} });
@@ -302,7 +318,7 @@ test('manual creation refuses multiple canonical legacy matches without writing'
   assert.deepEqual(api.state.rows, rows); assert.equal(api.state.commits, 0);
 });
 
-const manifest = ulds => ({ flight: { flightNumber: 'CX0178', operatingDate: '2026-09-17', direction: 'EXPORT' }, ulds });
+const manifest = ulds => ({ flight: { flightNumber: 'CX0178', operatingDate: '2026-09-17', direction: 'EXPORT', originAirport: 'MEL', destinationAirport: 'HKG' }, ulds });
 test('manifest rejects formatting duplicates and canonicalizes accepted writes', async () => {
   const api = apiHarness();
   assert.equal((await api.call('manifest-upload', manifest([{ uldNumber: 'AKE12345CX' }, { uldNumber: 'ake-12345-cx' }]))).status, 400);

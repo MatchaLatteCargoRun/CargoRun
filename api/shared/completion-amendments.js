@@ -135,7 +135,7 @@ async function appendOffloadAmendmentIfRequired(transaction, sql, options) {
 
   const flightResult = await new sql.Request(transaction)
     .input('AmendmentFlightId', sql.BigInt, options.flightId)
-    .query(`SELECT CONVERT(varchar(20), FlightId) AS FlightId, Direction, FlightStatus
+    .query(`SELECT CONVERT(varchar(20), FlightId) AS FlightId, StationId, Direction, FlightStatus
       FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK) WHERE FlightId=@AmendmentFlightId;`);
   if (flightResult.recordset.length !== 1) {
     throw new CompletionAmendmentError('COMPLETION_EVIDENCE_INVALID', 'Amendment flight identity is missing or ambiguous');

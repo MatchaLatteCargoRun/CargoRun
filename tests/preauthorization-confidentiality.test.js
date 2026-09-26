@@ -15,6 +15,7 @@ const flightStatementEvidence = require('../api/shared/flight-statement-evidence
 const offloadEligibility = require('../api/shared/offload-eligibility');
 const exportManifestFinal = require('../api/shared/export-manifest-final');
 const exportUws = require('../api/shared/export-uws');
+const stationHelpers = require('./helpers/station-stub');
 const { sqlHarness, loadHandler: loadOperationalHandler, call } = require('./helpers/operational-harness');
 
 const root = path.resolve(__dirname, '..');
@@ -84,6 +85,7 @@ function loadHandler(relativePath, sqlMock, authorization) {
       if (name === 'mssql') return sqlMock;
       if (name === '../shared/operational-authorization') return authorization;
       if (name === '../shared/flight') return flightHelpers;
+      if (name === '../shared/document-cor-id') return require('../api/shared/document-cor-id');
       if (name === '../shared/uld') return { normalizeUldNumber };
       if (name === '../shared/audit') return { insertAuditEvent };
       if (name === '../shared/completion-amendments') return completionAmendments;
@@ -92,6 +94,7 @@ function loadHandler(relativePath, sqlMock, authorization) {
       if (name === '../shared/offload-eligibility') return offloadEligibility;
       if (name === '../shared/export-manifest-final') return exportManifestFinal;
       if (name === '../shared/export-uws') return exportUws;
+      if (name === '../shared/station') return stationHelpers;
       return require(name);
     }
   }, { filename });

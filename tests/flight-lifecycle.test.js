@@ -10,6 +10,7 @@ const flightHelpers = require('../api/shared/flight');
 const { insertAuditEvent } = require('../api/shared/audit');
 const completionSnapshot = require('../api/shared/completion-snapshot');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
+const stationHelpers = require('./helpers/station-stub');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -55,6 +56,7 @@ function loadHandler(file, sql, replacements = {}) {
         if (name === '../shared/audit') return { insertAuditEvent };
         if (name === '../shared/completion-snapshot') return completionSnapshot;
         if (name === '../shared/operational-authorization') return operationalAuthorization;
+        if (name === '../shared/station') return stationHelpers;
         return require(name);
       }
     },
@@ -131,6 +133,7 @@ function lifecycleHarness(initialFlights, { failAudit = false } = {}) {
         const flight = state.flights.find(row => String(row.FlightId) === String(parameters.FlightId));
         return response(flight ? [{
           FlightId: flight.FlightId,
+          StationId: flight.StationId,
           FlightNumber: flight.FlightNumber,
           OperatingDateIso: flight.OperatingDate,
           Direction: flight.Direction
@@ -178,7 +181,16 @@ function lifecycleHarness(initialFlights, { failAudit = false } = {}) {
 }
 
 function flight(FlightId, FlightStatus = 'ACTIVE', OperatingDate = '2026-09-25', Direction = 'IMPORT') {
-  return { FlightId, FlightNumber: 'CX0163', OperatingDate, Direction, FlightStatus };
+  return {
+    FlightId,
+    StationId: 1,
+    FlightNumber: 'CX0163',
+    OperatingDate,
+    Direction,
+    OriginAirport: Direction === 'IMPORT' ? 'HKG' : 'MEL',
+    DestinationAirport: Direction === 'IMPORT' ? 'MEL' : 'HKG',
+    FlightStatus
+  };
 }
 
 test('generic flight lifecycle rejects finalisation, reversal, same-state, and arbitrary transitions before mutation', async () => {
@@ -258,7 +270,7 @@ test('ACTIVE to CLOSED uses exact FlightId, canonical lock, and one server-autho
   assert.equal(harness.state.audits[0].AuditToStatus, 'CLOSED');
 
   const lock = harness.state.calls.find(call => call.query.includes('sys.sp_getapplock'));
-  assert.equal(lock.parameters.FlightIdentityLockResource, 'CargoRun:Flight:2026-09-24:CX163');
+  assert.equal(lock.parameters.FlightIdentityLockResource, 'CargoRun:Flight:v2:1:2026-09-24:CX163');
   const lockIndex = harness.state.calls.indexOf(lock);
   const updateIndex = harness.state.calls.findIndex(call => call.query.startsWith("UPDATE dbo.Flights SET FlightStatus='CLOSED'"));
   const auditIndex = harness.state.calls.findIndex(call => call.query.startsWith('INSERT INTO dbo.AuditEvents'));
@@ -346,6 +358,7 @@ function completionHarness(direction, options = {}) {
   const state = {
     flights: [{
       FlightId: 501,
+      StationId: 1,
       FlightNumber: isImport ? 'CX0134' : 'CX0998',
       OperatingDate: '2026-09-25',
       OperatingDateIso: '2026-09-25',
@@ -399,7 +412,7 @@ function completionHarness(direction, options = {}) {
         return response(completionColumns(direction));
       }
       if (query.includes('sys.sp_getapplock')) return response([{ LockResult: 0 }]);
-      if (query.startsWith('SELECT FlightId,FlightNumber')) {
+      if (query.startsWith('SELECT FlightId,StationId,FlightNumber')) {
         const selectedFlightId = parameters.InitialFlightId ?? parameters.LockedFlightId ?? parameters.FlightId;
         const row = state.flights.find(item => String(item.FlightId) === String(selectedFlightId));
         return response(row ? [{ ...row }] : []);

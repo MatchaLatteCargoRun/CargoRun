@@ -97,7 +97,7 @@ module.exports = async function flightStatement(context, req) {
     await requireOperationalStations(pool, sql, actor, 'VIEW_FLIGHT_STATEMENT');
     const flightResult = await pool.request()
       .input('StatementFlightId', sql.BigInt, flightId)
-      .query(`SELECT CONVERT(varchar(20),FlightId) AS FlightId, FlightNumber,
+      .query(`SELECT CONVERT(varchar(20),FlightId) AS FlightId, StationId, FlightNumber,
           CONVERT(char(10),OperatingDate,23) AS OperatingDate, Direction,
           OriginAirport,DestinationAirport,FlightStatus
         FROM dbo.Flights WHERE FlightId=@StatementFlightId;`);

@@ -2,6 +2,13 @@
 
 const { authorizeCapability } = require('./configuration');
 const { resolveActorCapabilities } = require('./configuration-mutations');
+const {
+  LEGACY_NULL_STATION_COMPATIBILITY_ENABLED,
+  StationResolutionError,
+  legacyRouteStationCode,
+  normalizeStationRecord,
+  resolveFlightStation
+} = require('./station');
 
 class OperationalAuthorizationError extends Error {
   constructor(code, message, status = 403) {
@@ -73,21 +80,15 @@ function authenticatedActor(req) {
 }
 
 function stationForFlight(flight) {
-  const direction = String(flight?.Direction ?? flight?.direction ?? '').trim().toUpperCase();
-  const station = String(direction === 'IMPORT'
-    ? (flight?.DestinationAirport ?? flight?.destinationAirport ?? '')
-    : direction === 'EXPORT'
-      ? (flight?.OriginAirport ?? flight?.originAirport ?? '')
-      : '').trim().toUpperCase();
-
-  if (!/^[A-Z]{3}$/.test(station)) {
+  try {
+    return legacyRouteStationCode(flight);
+  } catch {
     throw new OperationalAuthorizationError(
       'STATION_ACCESS_DENIED',
       'The operational station could not be authorized',
       403
     );
   }
-  return station;
 }
 
 function normalizeCapability(value) {
@@ -114,13 +115,14 @@ async function resolveActorAccess(executor, sql, actor) {
       .input('OperationalAccessActorReference', sql.NVarChar(150), reference)
       .query(`
         WITH AuthorizationScopes AS (
-          SELECT StationId,StationCode
+          SELECT StationId,StationCode,DisplayName,TimeZoneId
           FROM dbo.CargoRunStations
           WHERE IsEnabled=1
           UNION ALL
-          SELECT CAST(NULL AS bigint),CAST(NULL AS varchar(3))
+          SELECT CAST(NULL AS bigint),CAST(NULL AS varchar(3)),CAST(NULL AS nvarchar(100)),CAST(NULL AS nvarchar(100))
         ), AssignmentDecisions AS (
-          SELECT scope.StationCode,assignment.RoleId,assignment.AssignmentAction,
+          SELECT scope.StationId,scope.StationCode,scope.DisplayName,scope.TimeZoneId,
+            assignment.RoleId,assignment.AssignmentAction,
             ROW_NUMBER() OVER (
               PARTITION BY scope.StationCode,assignment.RoleId
               ORDER BY CASE WHEN assignment.StationId IS NULL THEN 0 ELSE 1 END DESC,
@@ -134,11 +136,12 @@ async function resolveActorAccess(executor, sql, actor) {
           WHERE assignment.EffectiveFrom<=CONVERT(date,SYSUTCDATETIME())
             AND (assignment.EffectiveTo IS NULL OR assignment.EffectiveTo>CONVERT(date,SYSUTCDATETIME()))
         ), EffectiveRoles AS (
-          SELECT StationCode,RoleId
+          SELECT StationId,StationCode,DisplayName,TimeZoneId,RoleId
           FROM AssignmentDecisions
           WHERE DecisionRank=1 AND AssignmentAction='GRANT'
         ), CapabilityDecisions AS (
-          SELECT role.StationCode,decision.RoleId,decision.CapabilityId,decision.CapabilityAction,
+          SELECT role.StationId,role.StationCode,role.DisplayName,role.TimeZoneId,
+            decision.RoleId,decision.CapabilityId,decision.CapabilityAction,
             ROW_NUMBER() OVER (
               PARTITION BY role.StationCode,decision.RoleId,decision.CapabilityId
               ORDER BY decision.EffectiveFrom DESC,decision.RoleCapabilityVersionId DESC
@@ -148,7 +151,8 @@ async function resolveActorAccess(executor, sql, actor) {
           WHERE decision.EffectiveFrom<=CONVERT(date,SYSUTCDATETIME())
             AND (decision.EffectiveTo IS NULL OR decision.EffectiveTo>CONVERT(date,SYSUTCDATETIME()))
         )
-        SELECT DISTINCT decision.StationCode,capability.CapabilityCode
+        SELECT DISTINCT decision.StationId,decision.StationCode,decision.DisplayName,decision.TimeZoneId,
+          capability.CapabilityCode
         FROM CapabilityDecisions decision
         JOIN dbo.CargoRunCapabilities capability ON capability.CapabilityId=decision.CapabilityId
         JOIN dbo.CargoRunRoles role ON role.RoleId=decision.RoleId
@@ -167,6 +171,7 @@ async function resolveActorAccess(executor, sql, actor) {
   const capabilitiesByStation = {};
   const globalCapabilities = [];
   const capabilities = new Set();
+  const stationMetadataByCode = new Map();
   for (const row of result.recordset || []) {
     const capability = normalizeCapability(row.CapabilityCode);
     if (!capability) continue;
@@ -183,6 +188,25 @@ async function resolveActorAccess(executor, sql, actor) {
         503
       );
     }
+    let station;
+    try {
+      station = normalizeStationRecord({ ...row, IsEnabled: 1 });
+    } catch {
+      throw new OperationalAuthorizationError(
+        'AUTHORIZATION_CONFIGURATION_INVALID',
+        'Operational authorization is not configured correctly',
+        503
+      );
+    }
+    const existingStation = stationMetadataByCode.get(stationCode);
+    if (existingStation && existingStation.stationId !== station.stationId) {
+      throw new OperationalAuthorizationError(
+        'AUTHORIZATION_CONFIGURATION_INVALID',
+        'Operational authorization is not configured correctly',
+        503
+      );
+    }
+    stationMetadataByCode.set(stationCode, station);
     if (!capabilitiesByStation[stationCode]) capabilitiesByStation[stationCode] = [];
     capabilitiesByStation[stationCode].push(capability);
   }
@@ -195,6 +219,9 @@ async function resolveActorAccess(executor, sql, actor) {
     actorReference: reference,
     provisioned: capabilities.size > 0,
     stations: Object.keys(capabilitiesByStation).sort(),
+    stationMetadata: [...stationMetadataByCode.values()].sort((left, right) =>
+      left.stationCode.localeCompare(right.stationCode)
+    ),
     capabilities: [...capabilities].sort(),
     globalCapabilities: [...new Set(globalCapabilities)].sort(),
     capabilitiesByStation
@@ -271,8 +298,15 @@ function flightStationPredicate(alias, stationParameters) {
     );
   }
   const allowed = stationParameters.join(',');
-  return `((UPPER(${qualified}.Direction)='IMPORT' AND UPPER(${qualified}.DestinationAirport) IN (${allowed}))
-    OR (UPPER(${qualified}.Direction)='EXPORT' AND UPPER(${qualified}.OriginAirport) IN (${allowed})))`;
+  const legacy = LEGACY_NULL_STATION_COMPATIBILITY_ENABLED
+    ? ` OR (${qualified}.StationId IS NULL AND ((UPPER(${qualified}.Direction)='IMPORT' AND UPPER(${qualified}.DestinationAirport) IN (${allowed}))
+      OR (UPPER(${qualified}.Direction)='EXPORT' AND UPPER(${qualified}.OriginAirport) IN (${allowed}))))`
+    : '';
+  return `((${qualified}.StationId IS NOT NULL AND EXISTS (
+      SELECT 1 FROM dbo.CargoRunStations authorizedStation
+      WHERE authorizedStation.StationId=${qualified}.StationId AND authorizedStation.IsEnabled=1
+        AND authorizedStation.StationCode IN (${allowed})
+    ))${legacy})`;
 }
 
 async function requireOperationalCapability(executor, sql, actor, flight, requiredCapability) {
@@ -287,27 +321,24 @@ async function requireOperationalCapability(executor, sql, actor, flight, requir
     );
   }
 
-  const stationCode = stationForFlight(flight);
-  let stationResult;
+  let station;
   try {
-    stationResult = await new sql.Request(executor)
-      .input('OperationalAuthorizationStation', sql.VarChar(3), stationCode)
-      .query(`SELECT StationId FROM dbo.CargoRunStations
-        WHERE StationCode=@OperationalAuthorizationStation AND IsEnabled=1;`);
-  } catch {
+    station = await resolveFlightStation(executor, sql, flight);
+  } catch (error) {
+    if (error instanceof StationResolutionError) {
+      throw new OperationalAuthorizationError(
+        'STATION_ACCESS_DENIED',
+        'The operational station could not be authorized',
+        403
+      );
+    }
     throw new OperationalAuthorizationError(
       'AUTHORIZATION_CONFIGURATION_UNAVAILABLE',
       'Operational authorization could not be resolved',
       503
     );
   }
-  if ((stationResult.recordset || []).length !== 1) {
-    throw new OperationalAuthorizationError(
-      'STATION_ACCESS_DENIED',
-      'The operational station could not be authorized',
-      403
-    );
-  }
+  const stationCode = station.stationCode;
 
   let capabilities;
   try {
@@ -332,7 +363,7 @@ async function requireOperationalCapability(executor, sql, actor, flight, requir
     );
   }
 
-  return { actorReference: reference, stationCode, requiredCapability: capability, capabilities };
+  return { actorReference: reference, ...station, requiredCapability: capability, capabilities };
 }
 
 function operationalEntityUnavailable() {
@@ -356,6 +387,17 @@ async function requireOperationalEntityCapability(executor, sql, actor, flight, 
 }
 
 function sendOperationalAuthorizationError(context, error, sendJson) {
+  if (error instanceof StationResolutionError) {
+    const denied = error.code === 'STATION_ACCESS_DENIED' || error.code === 'STATION_INVALID';
+    sendJson(context, denied ? 403 : 503, {
+      ok: false,
+      code: denied ? 'STATION_ACCESS_DENIED' : 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE',
+      error: denied
+        ? 'The authenticated user is not authorized for this operation at the selected station'
+        : 'Operational authorization could not be resolved'
+    });
+    return true;
+  }
   if (!(error instanceof OperationalAuthorizationError)) return false;
   sendJson(context, error.status, { ok: false, code: error.code, error: error.message });
   return true;
@@ -363,6 +405,7 @@ function sendOperationalAuthorizationError(context, error, sendJson) {
 
 module.exports = {
   OperationalAuthorizationError,
+  LEGACY_NULL_STATION_COMPATIBILITY_ENABLED,
   authenticatedActor,
   stationForFlight,
   resolveActorAccess,

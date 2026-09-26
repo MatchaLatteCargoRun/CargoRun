@@ -185,85 +185,151 @@ test('disabled UI hides FlightAware controls while normal Import actions remain'
   assert.match(html, /FLIGHTAWARE_ENABLED\?`[^\r\n]*syncAllFlightArrivals\(false\)[^\r\n]*Sync Arrivals/);
 });
 
-test('flight-status handler blocks unmarked requests and retains enabled alternate lookup', async () => {
-  assert.match(handlerSource, /aeroapi\.flightaware\.com\/aeroapi\/flights/);
-  assert.match(handlerSource, /function alternates\(ident\)/);
-  assert.equal(fs.existsSync(path.join(root, 'api', 'flight-status', 'function.json')), true);
-
+function flightStatusHarness({ env = {}, fetchImpl } = {}) {
   const operationalAuthorization = require('./helpers/operational-authorization-stub');
-  const flightLookups = [];
+  const state = {
+    authorizationCalls: [],
+    connectionCount: 0,
+    flightLookups: [],
+    upstreamRequests: []
+  };
+
   class Request {
     constructor() { this.values = {}; }
     input(name, _type, value) { this.values[name] = value; return this; }
     async query(query) {
-      flightLookups.push({ query: String(query), values: { ...this.values } });
+      state.flightLookups.push({ query: String(query), values: { ...this.values } });
       return { recordset: [{
-        FlightId: '101', FlightNumber: 'CX0163', OperatingDate: '2026-09-15',
+        FlightId: '101', StationId: '1', FlightNumber: 'CX0163', OperatingDate: '2026-09-15',
         Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL'
       }] };
     }
   }
   class ConnectionPool {
-    async connect() { return this; }
+    async connect() { state.connectionCount++; return this; }
     request() { return new Request(); }
     async close() {}
   }
   const sqlMock = { ConnectionPool, Request, BigInt: 'bigint' };
+  const authorizationMock = {
+    ...operationalAuthorization,
+    async requireOperationalStations(...args) {
+      state.authorizationCalls.push('stations');
+      return operationalAuthorization.requireOperationalStations(...args);
+    },
+    async requireOperationalEntityCapability(...args) {
+      state.authorizationCalls.push('entity');
+      return operationalAuthorization.requireOperationalEntityCapability(...args);
+    }
+  };
   const module = { exports: {} };
   vm.runInNewContext(handlerSource, {
     module, exports: module.exports, Buffer, URL, Date, console,
-    fetch: (...args) => global.fetch(...args),
-    process: { version: process.version, env: { DATABASE_CONNECTION_STRING: 'test-only', FLIGHTAWARE_API_KEY: 'test-key' } },
+    async fetch(...args) {
+      state.upstreamRequests.push(String(args[0]));
+      if (!fetchImpl) throw new Error('unexpected FlightAware request');
+      return fetchImpl(...args);
+    },
+    process: { version: process.version, env: { ...env } },
     require(name) {
       if (name === 'mssql') return sqlMock;
-      if (name === '../shared/operational-authorization') return operationalAuthorization;
+      if (name === '../shared/operational-authorization') return authorizationMock;
       return require(name);
     }
   }, { filename: path.join(root, 'api', 'flight-status', 'index.js') });
-  const handler = module.exports;
-  const previousFetch = global.fetch;
-  const previousKey = process.env.FLIGHTAWARE_API_KEY;
-  const requests = [];
-  process.env.FLIGHTAWARE_API_KEY = 'test-key';
-  global.fetch = async url => {
-    requests.push(String(url));
-    const alternate = String(url).includes('/CX163?');
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({ flights: alternate ? [{
-        ident_iata: 'CX163', status: 'En Route',
-        destination: { code_iata: 'MEL' },
-        scheduled_in: '2026-09-15T10:00:00Z'
-      }] : [] })
-    };
+
+  return {
+    state,
+    async invoke(req) {
+      const context = { log: { error() {} } };
+      await module.exports(context, req);
+      return { ...context.res, body: JSON.parse(context.res.body) };
+    }
   };
+}
 
-  try {
-    const disabledContext = { log: { error() {} } };
-    await handler(disabledContext, { query: { flight: 'CX0163' }, headers: {} });
-    assert.equal(disabledContext.res.status, 503);
-    assert.equal(JSON.parse(disabledContext.res.body).code, 'FLIGHTAWARE_DISABLED');
-    assert.equal(requests.length, 0);
+test('flight-status OFF cannot be overridden by header, query, or body input and makes zero upstream calls', async () => {
+  assert.match(handlerSource, /aeroapi\.flightaware\.com\/aeroapi\/flights/);
+  assert.match(handlerSource, /function alternates\(ident\)/);
+  assert.match(handlerSource, /process\.env\.FLIGHTAWARE_ENABLED/);
+  assert.doesNotMatch(handlerSource, /x-cargorun-flightaware-enabled/i);
+  assert.equal(fs.existsSync(path.join(root, 'api', 'flight-status', 'function.json')), true);
 
-    const enabledContext = { log: { error() {} } };
-    await handler(enabledContext, {
-      query: { flightId: '101', flight: 'QF999', arrivalAirport: 'SYD', date: '1990-01-01' },
-      headers: {
-        'x-cargorun-flightaware-enabled': 'true',
-        'x-ms-client-principal': Buffer.from(JSON.stringify({ userId: 'flight-reader', userDetails: 'Flight Reader', userRoles: ['authenticated'] })).toString('base64')
-      }
-    });
-    assert.equal(enabledContext.res.status, 200);
-    assert.equal(flightLookups.length, 1);
-    assert.equal(flightLookups[0].values.FlightStatusFlightId, '101');
-    assert.equal(requests.length, 2);
-    assert.match(requests[0], /\/CX0163\?/);
-    assert.match(requests[1], /\/CX163\?/);
-    assert.equal(JSON.parse(enabledContext.res.body).matchedFlight, 'CX163');
-  } finally {
-    global.fetch = previousFetch;
-    if (previousKey === undefined) delete process.env.FLIGHTAWARE_API_KEY;
-    else process.env.FLIGHTAWARE_API_KEY = previousKey;
+  const harness = flightStatusHarness({
+    env: {
+      DATABASE_CONNECTION_STRING: 'test-only',
+      FLIGHTAWARE_API_KEY: 'test-key'
+    }
+  });
+  const spoofedRequests = [
+    {
+      query: { flightId: '101' },
+      headers: { 'x-cargorun-flightaware-enabled': 'true' }
+    },
+    {
+      query: { flightId: '101', flightawareEnabled: 'true', FLIGHTAWARE_ENABLED: 'true' },
+      headers: {}
+    },
+    {
+      query: { flightId: '101' },
+      headers: {},
+      body: { flightawareEnabled: true, FLIGHTAWARE_ENABLED: 'true' }
+    }
+  ];
+
+  for (const req of spoofedRequests) {
+    const response = await harness.invoke(req);
+    assert.equal(response.status, 503);
+    assert.equal(response.body.code, 'FLIGHTAWARE_DISABLED');
   }
+
+  assert.equal(harness.state.connectionCount, 0);
+  assert.deepEqual(harness.state.authorizationCalls, []);
+  assert.deepEqual(harness.state.flightLookups, []);
+  assert.deepEqual(harness.state.upstreamRequests, []);
+});
+
+test('server-enabled flight-status fixture retains authorization and alternate lookup path', async () => {
+  const harness = flightStatusHarness({
+    env: {
+      DATABASE_CONNECTION_STRING: 'test-only',
+      FLIGHTAWARE_ENABLED: 'true',
+      FLIGHTAWARE_API_KEY: 'test-key'
+    },
+    fetchImpl: async url => {
+      const alternate = String(url).includes('/CX163?');
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ flights: alternate ? [{
+          ident_iata: 'CX163', status: 'En Route',
+          destination: { code_iata: 'MEL' },
+          scheduled_in: '2026-09-15T10:00:00Z'
+        }] : [] })
+      };
+    }
+  });
+  const response = await harness.invoke({
+    query: {
+      flightId: '101', flight: 'QF999', arrivalAirport: 'SYD', date: '1990-01-01',
+      flightawareEnabled: 'false'
+    },
+    headers: {
+      'x-cargorun-flightaware-enabled': 'false',
+      'x-ms-client-principal': Buffer.from(JSON.stringify({
+        userId: 'flight-reader', userDetails: 'Flight Reader', userRoles: ['authenticated']
+      })).toString('base64')
+    },
+    body: { FLIGHTAWARE_ENABLED: false }
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(harness.state.connectionCount, 1);
+  assert.deepEqual(harness.state.authorizationCalls, ['stations', 'entity']);
+  assert.equal(harness.state.flightLookups.length, 1);
+  assert.equal(harness.state.flightLookups[0].values.FlightStatusFlightId, '101');
+  assert.equal(harness.state.upstreamRequests.length, 2);
+  assert.match(harness.state.upstreamRequests[0], /\/CX0163\?/);
+  assert.match(harness.state.upstreamRequests[1], /\/CX163\?/);
+  assert.equal(response.body.matchedFlight, 'CX163');
 });

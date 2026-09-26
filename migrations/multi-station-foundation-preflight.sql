@@ -31,6 +31,20 @@ DECLARE @MachCoreReady bit=CASE WHEN @MachObjectId IS NOT NULL
   AND COL_LENGTH(N'dbo.IncomingMachMessages',N'DocumentCorID') IS NOT NULL
   AND COL_LENGTH(N'dbo.IncomingMachMessages',N'MatchedFlightId') IS NOT NULL THEN 1 ELSE 0 END;
 
+-- Runtime binds canonical DocumentCorID values as nvarchar(100). The existing
+-- evidence column must be a native, noncomputed character column that can hold
+-- the full contract before any canonical identity can be enforced.
+DECLARE @DocumentCorIdSchemaReady bit=CASE WHEN EXISTS (
+  SELECT 1 FROM sys.columns columnObject
+  WHERE columnObject.object_id=@MachObjectId
+    AND columnObject.name=N'DocumentCorID'
+    AND columnObject.user_type_id=columnObject.system_type_id
+    AND columnObject.system_type_id IN (167,231)
+    AND columnObject.is_computed=0 AND columnObject.collation_name IS NOT NULL
+    AND ((columnObject.system_type_id=167 AND (columnObject.max_length=-1 OR columnObject.max_length>=100))
+      OR (columnObject.system_type_id=231 AND (columnObject.max_length=-1 OR columnObject.max_length>=200)))
+) THEN 1 ELSE 0 END;
+
 -- 1. Database identity. Confirm the operator is connected to the intended database.
 SELECT DB_NAME() AS DatabaseName,@@SERVERNAME AS ServerName,
   CONVERT(datetime2(3),SYSUTCDATETIME()) AS ObservedAtUtc,
@@ -412,6 +426,62 @@ DECLARE @MachDestinationExpression nvarchar(300)=CASE WHEN COL_LENGTH(N'dbo.Inco
   WHEN COL_LENGTH(N'dbo.IncomingMachMessages',N'SegmentDestination') IS NOT NULL THEN N'CONVERT(nvarchar(20),message.SegmentDestination)'
   ELSE N'CAST(NULL AS nvarchar(20))' END;
 
+-- DocumentCorID contract shared with api/shared/document-cor-id.js:
+-- trim only outer U+0020, accept 1-100 ASCII letters/digits/hyphens, then
+-- canonicalize ASCII letters to uppercase. Existing evidence is never rewritten.
+-- TRANSLATE removes only allowed code units, leaving U+0000 and every other
+-- unsupported code unit detectable by DATALENGTH without collation folding.
+DECLARE @DocumentIdentityCte nvarchar(max)=N'WITH RawDocumentIdentity AS (
+    SELECT message.MachMessageId,
+      CONVERT(nvarchar(max),message.DocumentCorID) AS RawDocumentCorID,
+      LTRIM(RTRIM(CONVERT(nvarchar(max),message.DocumentCorID))) AS TrimmedDocumentCorID
+    FROM dbo.IncomingMachMessages message
+  ), AssessedDocumentIdentity AS (
+    SELECT raw.*,
+      UPPER(raw.TrimmedDocumentCorID COLLATE Latin1_General_100_BIN2) AS CanonicalDocumentCorID,
+      CASE WHEN raw.RawDocumentCorID IS NULL OR DATALENGTH(raw.TrimmedDocumentCorID)=0
+             OR DATALENGTH(raw.TrimmedDocumentCorID)>200
+             OR DATALENGTH(REPLACE(TRANSLATE(
+               raw.TrimmedDocumentCorID COLLATE Latin1_General_100_BIN2,
+               N''ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-'',REPLICATE(N''A'',63)),N''A'',N''''))<>0
+        THEN CONVERT(bit,1) ELSE CONVERT(bit,0) END AS IsInvalid
+    FROM RawDocumentIdentity raw
+  ), ClassifiedDocumentIdentity AS (
+    SELECT assessed.*,
+      CASE WHEN assessed.IsInvalid=0
+             AND (DATALENGTH(assessed.RawDocumentCorID)<>DATALENGTH(assessed.CanonicalDocumentCorID)
+               OR assessed.RawDocumentCorID COLLATE Latin1_General_100_BIN2
+                    <>assessed.CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2)
+        THEN CONVERT(bit,1) ELSE CONVERT(bit,0) END AS RequiresCanonicalization
+    FROM AssessedDocumentIdentity assessed
+  )';
+
+IF @DocumentCorIdSchemaReady=1
+BEGIN
+  SET @ExecutableSql=@DocumentIdentityCte+N'
+    SELECT MachMessageId,RawDocumentCorID,TrimmedDocumentCorID,CanonicalDocumentCorID,
+      CASE WHEN IsInvalid=1 THEN N''INVALID_DOCUMENTCORID''
+           ELSE N''DOCUMENTCORID_CANONICALIZATION_REQUIRED'' END AS Finding
+    FROM ClassifiedDocumentIdentity
+    WHERE IsInvalid=1 OR RequiresCanonicalization=1
+    ORDER BY MachMessageId;';
+  EXEC sys.sp_executesql @ExecutableSql;
+
+  SET @ExecutableSql=@DocumentIdentityCte+N'
+    SELECT CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID,
+      COUNT_BIG(*) AS MessageCount,
+      N''DOCUMENTCORID_CANONICAL_COLLISION'' AS Finding
+    FROM ClassifiedDocumentIdentity
+    WHERE IsInvalid=0
+    GROUP BY CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2
+    HAVING COUNT_BIG(*)>1
+    ORDER BY CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2;';
+  EXEC sys.sp_executesql @ExecutableSql;
+END;
+ELSE
+  SELECT N'INVALID_DOCUMENTCORID_SCHEMA' AS Finding,
+    N'IncomingMachMessages.DocumentCorID must be a native noncomputed varchar/nvarchar column with capacity for 100 ASCII characters.' AS Detail;
+
 IF @MachCoreReady=1
 BEGIN
   DECLARE @MachMessageCte nvarchar(max)=N'WITH MessageEvidence AS (
@@ -482,14 +552,15 @@ BEGIN
     SELECT N'MACH_FLIGHT_CORROBORATION_UNAVAILABLE' AS Finding,
       N'Flights core route columns are missing; message-to-flight route comparison was skipped.' AS Detail;
   SET @ExecutableSql=@MachMessageCte+N'
-    SELECT DocumentCorID,COUNT_BIG(*) AS MessageCount,
+    SELECT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID,
+      COUNT_BIG(*) AS MessageCount,
       COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>'')) AS DistinctMatchedFlightCount,
-      COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>''))))) AS DistinctStationCount
+      COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))) COLLATE Latin1_General_100_BIN2) AS DistinctStationCount
     FROM MessageEvidence
-    GROUP BY DocumentCorID
+    GROUP BY UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2
     HAVING COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>''))>1
-        OR COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))))>1
-    ORDER BY DocumentCorID;';
+        OR COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))) COLLATE Latin1_General_100_BIN2)>1
+    ORDER BY CanonicalDocumentCorID;';
   EXEC sys.sp_executesql @ExecutableSql;
 END;
 ELSE
@@ -814,6 +885,36 @@ IF @FlightCoreReady=1
     WHERE SqlParityGuaranteed=0 AND (HasUnmodelledWhitespaceOrCharacter=1 OR LEN(COALESCE(NumericSegment,N''''))>15)
     HAVING COUNT_BIG(*)>0';
 
+IF @DocumentCorIdSchemaReady=1
+  SET @FindingBody+=N'
+    UNION ALL SELECT N''INVALID_DOCUMENTCORID'',COUNT_BIG(*),N''STOP'',N''DocumentCorID must contain 1-100 ASCII letters, digits, or hyphens after trimming outer U+0020 spaces.''
+      FROM ClassifiedDocumentIdentity WHERE IsInvalid=1 HAVING COUNT_BIG(*)>0
+    UNION ALL SELECT N''DOCUMENTCORID_CANONICALIZATION_REQUIRED'',COUNT_BIG(*),N''STOP'',N''Stored DocumentCorID is not the exact ASCII-uppercase canonical value; existing evidence was not rewritten.''
+      FROM ClassifiedDocumentIdentity WHERE RequiresCanonicalization=1 HAVING COUNT_BIG(*)>0
+    UNION ALL SELECT N''DOCUMENTCORID_CANONICAL_COLLISION'',COUNT_BIG(*),N''STOP'',N''Multiple messages collapse to the same deterministic DocumentCorID identity.''
+      FROM (
+        SELECT CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID
+        FROM ClassifiedDocumentIdentity
+        WHERE IsInvalid=0
+        GROUP BY CanonicalDocumentCorID COLLATE Latin1_General_100_BIN2
+        HAVING COUNT_BIG(*)>1
+      ) collision HAVING COUNT_BIG(*)>0';
+ELSE
+  SET @FindingBody+=N' UNION ALL SELECT N''INVALID_DOCUMENTCORID_SCHEMA'',1,N''STOP'',N''IncomingMachMessages.DocumentCorID must be a native noncomputed varchar/nvarchar column with capacity for 100 ASCII characters.''';
+
+IF @DocumentCorIdSchemaReady=1 AND EXISTS (
+  SELECT 1 FROM sys.indexes indexObject
+  JOIN sys.index_columns keyColumn ON keyColumn.object_id=indexObject.object_id
+    AND keyColumn.index_id=indexObject.index_id AND keyColumn.key_ordinal>0
+  JOIN sys.columns columnObject ON columnObject.object_id=keyColumn.object_id
+    AND columnObject.column_id=keyColumn.column_id
+  WHERE indexObject.object_id=@MachObjectId AND indexObject.is_unique=1
+    AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0
+    AND columnObject.name=N'DocumentCorID'
+    AND columnObject.collation_name<>N'Latin1_General_100_BIN2'
+)
+  SET @FindingBody+=N' UNION ALL SELECT N''DOCUMENTCORID_COLLATION_CONFLICT'',1,N''STOP'',N''An existing unique DocumentCorID key uses linguistic rather than BIN2 equality.''';
+
 IF @MachCoreReady=1
 BEGIN
   SET @FindingBody+=N'
@@ -837,11 +938,11 @@ IF @MachCoreReady=1 AND COL_LENGTH(N'dbo.IncomingMachMessages',N'StationAirport'
   SET @FindingBody+=N'
     UNION ALL SELECT N''DOCUMENT_CORRELATION_CONFLICT'',COUNT_BIG(*),N''STOP'',N''A DocumentCorID is associated with multiple flight or station decisions.''
     FROM (
-      SELECT DocumentCorID
+      SELECT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2 AS CanonicalDocumentCorID
       FROM dbo.IncomingMachMessages
-      GROUP BY DocumentCorID
+      GROUP BY UPPER(LTRIM(RTRIM(CONVERT(nvarchar(max),DocumentCorID))) COLLATE Latin1_General_100_BIN2
       HAVING COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>''))>1
-          OR COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))))>1
+          OR COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))) COLLATE Latin1_General_100_BIN2)>1
     ) conflict
     HAVING COUNT_BIG(*)>0';
 
@@ -869,6 +970,9 @@ SET @FindingBody+=@RequiredChildFindingSql;
 
 DECLARE @FinalWith nvarchar(max)=N'';
 IF @FlightCoreReady=1 SET @FinalWith=@FlightClassificationCte+N','+STUFF(@CanonicalCte,1,5,N'');
+IF @DocumentCorIdSchemaReady=1
+  SET @FinalWith=CASE WHEN @FinalWith=N'' THEN @DocumentIdentityCte
+    ELSE @FinalWith+N','+STUFF(@DocumentIdentityCte,1,5,N'') END;
 
 DECLARE @FinalSql nvarchar(max)=@FinalWith+CASE WHEN @FinalWith=N'' THEN N'WITH ' ELSE N', ' END+N'Findings AS ('+@FindingBody+N'),
   FinalOutput AS (

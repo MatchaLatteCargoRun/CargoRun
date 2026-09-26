@@ -21,7 +21,7 @@ function requestWithPrincipal(value) {
   return { headers: value ? { 'x-ms-client-principal': value } : {} };
 }
 
-function authorizationSql({ stationRows = [{ StationId: 1 }], capabilities = [], accessRows = [], stationFailure = null, capabilityFailure = null, accessFailure = null } = {}) {
+function authorizationSql({ stationRows = [{ StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId: 'Australia/Melbourne', IsEnabled: 1 }], capabilities = [], accessRows = [], stationFailure = null, capabilityFailure = null, accessFailure = null } = {}) {
   const state = { queries: [] };
   class Request {
     constructor(executor) { this.executor = executor; this.values = {}; }
@@ -155,12 +155,15 @@ test('session access resolution distinguishes unprovisioned, provisioned, and un
   assert.deepEqual(empty.capabilities, []);
 
   const granted = await actualAuthorization.resolveActorAccess({}, authorizationSql({ accessRows: [
-    { StationCode: 'MEL', CapabilityCode: 'VIEW_FLIGHTS' },
-    { StationCode: 'MEL', CapabilityCode: 'MOVE_ULD' },
+    { StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId: 'Australia/Melbourne', CapabilityCode: 'VIEW_FLIGHTS' },
+    { StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId: 'Australia/Melbourne', CapabilityCode: 'MOVE_ULD' },
     { StationCode: null, CapabilityCode: 'VIEW_ADMIN_AUDIT' }
   ] }).sql, actor);
   assert.equal(granted.provisioned, true);
   assert.deepEqual(granted.stations, ['MEL']);
+  assert.deepEqual(granted.stationMetadata, [{
+    stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne'
+  }]);
   assert.deepEqual(granted.capabilities, ['MOVE_ULD', 'VIEW_ADMIN_AUDIT', 'VIEW_FLIGHTS']);
   assert.deepEqual(granted.globalCapabilities, ['VIEW_ADMIN_AUDIT']);
 
@@ -182,6 +185,7 @@ test('GET session returns safe unprovisioned metadata and keeps configuration fa
     userId: 'stable-user-id',
     displayName: 'Station Operator',
     stations: [],
+    stationMetadata: [],
     capabilities: []
   });
   assert.equal(JSON.stringify(emptyResponse.body).includes('connection'), false);
@@ -632,7 +636,7 @@ test('Import finalisation, Export finalisation, and Export FINAL direct calls au
 
 test('manifest create direct call requires UPLOAD_FLIGHT_DATA before inserting flight or upload rows', async () => {
   const harness = earlyDenialSql({ direction: 'EXPORT', flightRows: [] });
-  const response = await invoke(loadHandler('api/manifest-upload/index.js', harness.sql), 'POST', {
+  const response = await invoke(loadHandler('api/manifest-upload/index.js', harness.sql, unprovisionedReadAuthorization), 'POST', {
     flight: {
       flightNumber: 'CX0178', operatingDate: '2026-09-17', direction: 'EXPORT',
       airlineCode: 'CX', originAirport: 'MEL', destinationAirport: 'HKG', sourceFileName: 'manifest.xlsx'
@@ -646,7 +650,7 @@ test('manifest create direct call requires UPLOAD_FLIGHT_DATA before inserting f
 
 test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine token remains accepted', async () => {
   const humanHarness = earlyDenialSql({ direction: 'EXPORT' });
-  const humanResponse = await invoke(loadHandler('api/mach-fow/index.js', humanHarness.sql), 'POST', {
+  const humanResponse = await invoke(loadHandler('api/mach-fow/index.js', humanHarness.sql, unprovisionedReadAuthorization), 'POST', {
     xml: '<FSUMessage><DocumentCorID>AUTH-TEST</DocumentCorID><MessageType>FSU</MessageType>' +
       '<StatusCode>FOW</StatusCode><StsCar>CX</StsCar><StsCarNum>178</StsCarNum>' +
       '<StsDatt>17 SEP 2026</StsDatt><StsApt>MEL</StsApt><StsSegDep>MEL</StsSegDep>' +

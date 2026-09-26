@@ -109,7 +109,7 @@ test('completion capture queries FOW evidence only by exact FlightId and does no
   assert.match(helper, /WHERE m\.MatchedFlightId=@EvidenceFowFlightId/);
   assert.doesNotMatch(helper, /WHERE m\.FlightNumber|UPDATE dbo\.(?:IncomingMachMessages|MachFowShipments|ExportManifestFinals)/i);
   assert.match(completion, /loadFlightStatementEvidence\(tx,sql,flightId\)/);
-  assert.match(completion, /acquireFlightIdentityLock\(tx,sql,flight\.OperatingDateIso,flight\.FlightNumber\)/);
+  assert.match(completion, /acquireFlightIdentityLock\(tx,sql,flightAuthorization\.stationId,flight\.OperatingDateIso,flight\.FlightNumber\)/);
 });
 
 test('same visible flight number on another date cannot leak FOW evidence across FlightId', async () => {

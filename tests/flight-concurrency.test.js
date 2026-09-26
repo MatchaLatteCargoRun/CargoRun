@@ -8,6 +8,7 @@ const vm = require('node:vm');
 const flightHelpers = require('../api/shared/flight');
 const { normalizeUldNumber } = require('../api/shared/uld');
 const { insertAuditEvent } = require('../api/shared/audit');
+const documentCorIdHelpers = require('../api/shared/document-cor-id');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
 
 const root = path.resolve(__dirname, '..');
@@ -19,6 +20,12 @@ const principal = Buffer.from(JSON.stringify({
 
 function result(recordset = [], rowsAffected = []) {
   return { recordset, rowsAffected };
+}
+
+function binaryDocumentCorIdEquals(left, right) {
+  const leftBytes = Buffer.from(String(left ?? ''), 'utf16le');
+  const rightBytes = Buffer.from(String(right ?? ''), 'utf16le');
+  return leftBytes.length === rightBytes.length && leftBytes.equals(rightBytes);
 }
 
 function harness(initialFlights = []) {
@@ -40,31 +47,42 @@ function harness(initialFlights = []) {
     lockResult: 0,
     lockError: null,
     lockHolds: [],
+    documentLockHolds: [],
     activeFlightLocks: 0,
     maxActiveFlightLocks: 0,
+    activeDocumentLocks: 0,
+    maxActiveDocumentLocks: 0,
+    uniqueDocumentConflict: null,
     failAudit: false,
     forceFinaliseCasLoss: false,
     mutateBeforeLockedRead: null
   };
   const lockTails = new Map();
 
-  async function acquire(tx, resource) {
+  async function acquire(tx, resource, kind) {
     const previous = lockTails.get(resource) || Promise.resolve();
     let release;
     const current = new Promise(resolve => { release = resolve; });
     lockTails.set(resource, previous.then(() => current));
     await previous;
-    state.activeFlightLocks++;
-    state.maxActiveFlightLocks = Math.max(state.maxActiveFlightLocks, state.activeFlightLocks);
-    const hold = state.lockHolds.shift();
+    if (kind === 'flight') {
+      state.activeFlightLocks++;
+      state.maxActiveFlightLocks = Math.max(state.maxActiveFlightLocks, state.activeFlightLocks);
+    } else {
+      state.activeDocumentLocks++;
+      state.maxActiveDocumentLocks = Math.max(state.maxActiveDocumentLocks, state.activeDocumentLocks);
+    }
+    const hold = (kind === 'flight' ? state.lockHolds : state.documentLockHolds).shift();
     if (hold) {
       hold.markAcquired();
       await hold.waitForRelease;
     }
-    tx.releaseLock = () => {
-      state.activeFlightLocks--;
+    tx.releaseLocks ??= [];
+    tx.releaseLocks.push(() => {
+      if (kind === 'flight') state.activeFlightLocks--;
+      else state.activeDocumentLocks--;
       release();
-    };
+    });
   }
 
   class Transaction {
@@ -77,7 +95,7 @@ function harness(initialFlights = []) {
       }
       for (const row of state.flights) delete row.__previousFlightStatus;
       state.commits++;
-      this.releaseLock?.();
+      for (const release of this.releaseLocks || []) release();
     }
     async rollback() {
       for (const row of state.flights) {
@@ -92,7 +110,7 @@ function harness(initialFlights = []) {
       }
       this.active = false;
       state.rollbacks++;
-      this.releaseLock?.();
+      for (const release of this.releaseLocks || []) release();
     }
   }
 
@@ -115,7 +133,8 @@ function harness(initialFlights = []) {
           state.mutateBeforeLockedRead = null;
           mutate(state);
         }
-        await acquire(this.tx, p.FlightIdentityLockResource);
+        const resource = p.DocumentIdentityLockResource || p.FlightIdentityLockResource;
+        await acquire(this.tx, resource, p.DocumentIdentityLockResource ? 'document' : 'flight');
         return result([{ LockResult: state.lockResult }]);
       }
       if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS') && p.TableName === 'ImportCompletionRecords') {
@@ -132,7 +151,10 @@ function harness(initialFlights = []) {
         ]);
       }
       if (q.includes('FROM dbo.IncomingMachMessages')) {
-        return result(state.messages.filter(row => row.DocumentCorID === p.DocumentCorID));
+        assert.match(q, /DocumentCorID COLLATE Latin1_General_100_BIN2/);
+        return result(state.messages.filter(row =>
+          binaryDocumentCorIdEquals(row.DocumentCorID, p.DocumentCorID)
+        ));
       }
       if (q.includes('FROM dbo.ExportManifestFinals')) {
         const id = p.ManifestFinalFlightId ?? p.ExistingFinalFlightId ?? p.ManualFinalFlightId ?? p.LockedFinalFlightId ?? p.FinalFlightId ?? p.UwsFinalFlightId ?? p.LockedUwsFinalFlightId;
@@ -178,12 +200,24 @@ function harness(initialFlights = []) {
         return result([row]);
       }
       if (q.startsWith('INSERT INTO dbo.IncomingMachMessages')) {
+        if (state.uniqueDocumentConflict) {
+          state.messages.push({
+            ...state.uniqueDocumentConflict,
+            DocumentCorID: p.DocumentCorID
+          });
+          state.uniqueDocumentConflict = null;
+          const error = new Error('simulated concurrent unique DocumentCorID conflict');
+          error.number = 2601;
+          throw error;
+        }
         const row = { ...p, MachMessageId: state.messages.length + 1, __tx: this.tx.id };
         state.messages.push(row);
         return result([row]);
       }
       if (q.startsWith('DELETE FROM dbo.IncomingMachMessages')) {
-        state.messages = state.messages.filter(row => row.DocumentCorID !== p.DocumentCorID);
+        state.messages = state.messages.filter(row =>
+          !binaryDocumentCorIdEquals(row.DocumentCorID, p.DocumentCorID)
+        );
         return result();
       }
       if (q.startsWith('UPDATE dbo.IncomingMachMessages')) {
@@ -198,9 +232,12 @@ function harness(initialFlights = []) {
       if (q.includes('FROM dbo.Flights')) {
         const exactId = p.SelectedFlightId ?? p.InitialFlightId ?? p.LockedFlightId ?? p.FlightId;
         const operatingDate = p.OperatingDate ?? p.UwsOperatingDate ?? p.LockedUwsOperatingDate;
+        const stationId = p.AuthorizationStationId ?? p.LockedAuthorizationStationId ?? p.StationId ??
+          p.UwsStationId ?? p.LockedUwsStationId;
         return result(state.flights.filter(row => exactId
           ? String(row.FlightId) === String(exactId)
-          : (!operatingDate || String(row.OperatingDate) === String(operatingDate))
+          : (!operatingDate || String(row.OperatingDate) === String(operatingDate)) &&
+            (!stationId || String(row.StationId ?? 1) === String(stationId))
         ));
       }
       if (q.startsWith('INSERT INTO dbo.Flights')) {
@@ -318,11 +355,16 @@ function harness(initialFlights = []) {
         module,
         exports: module.exports,
         Buffer,
-        process: { env: { DATABASE_CONNECTION_STRING: 'test-only' } },
+        process: { env: {
+          DATABASE_CONNECTION_STRING: 'test-only',
+          MACH_FOW_INGEST_TOKEN: 'test-machine-token'
+        } },
         require: name => name === 'mssql'
           ? sql
           : name === '../shared/flight'
             ? flightHelpers
+            : name === '../shared/document-cor-id'
+              ? documentCorIdHelpers
             : name === '../shared/uld'
               ? { normalizeUldNumber }
               : name === '../shared/audit'
@@ -351,6 +393,8 @@ function harness(initialFlights = []) {
                 ? require('../api/shared/export-uws')
               : name === '../shared/operational-authorization'
                 ? operationalAuthorization
+              : name === '../shared/station'
+                ? require('./helpers/station-stub')
               : require(name)
       },
       { filename: endpoint + '/index.js' }
@@ -358,12 +402,14 @@ function harness(initialFlights = []) {
     return module.exports;
   }
 
-  async function call(endpoint, body) {
+  async function call(endpoint, body, options = {}) {
     const context = { log: Object.assign(() => {}, { error() {}, warn() {} }) };
     await load(endpoint)(context, {
       method: 'POST',
       body,
-      headers: { 'x-ms-client-principal': principal }
+      headers: options.machine
+        ? { 'x-cargorun-mach-key': 'test-machine-token' }
+        : { 'x-ms-client-principal': principal }
     });
     return { status: context.res.status, body: JSON.parse(context.res.body) };
   }
@@ -377,7 +423,16 @@ function harness(initialFlights = []) {
     return { acquired, release };
   }
 
-  return { state, call, holdNextFlightLock };
+  function holdNextDocumentLock() {
+    let markAcquired;
+    let release;
+    const acquired = new Promise(resolve => { markAcquired = resolve; });
+    const waitForRelease = new Promise(resolve => { release = resolve; });
+    state.documentLockHolds.push({ markAcquired, waitForRelease });
+    return { acquired, release };
+  }
+
+  return { state, call, holdNextFlightLock, holdNextDocumentLock };
 }
 
 const manual = (flightNumber = 'CX0178', operatingDate = '2026-09-17') => ({
@@ -402,12 +457,19 @@ const upload = (flightNumber = 'CX0178', operatingDate = '2026-09-17', serial = 
   ulds: [{ uldNumber: `AKE${serial}CX` }]
 });
 
-function fow(document, serials = ['12345'], date = '17 SEP 2026') {
+function fow(document, serials = ['12345'], date = '17 SEP 2026', options = {}) {
   const ulds = serials.map(serial =>
     `<FSUMessageULDList><ULDTyp>AKE</ULDTyp><ULDSrl>${serial}</ULDSrl><ULDOwnr>CX</ULDOwnr></FSUMessageULDList>`
   ).join('');
+  const station = Object.hasOwn(options, 'station') ? options.station : 'MEL';
+  const segmentOrigin = Object.hasOwn(options, 'segmentOrigin') ? options.segmentOrigin : 'MEL';
+  const destination = Object.hasOwn(options, 'destination') ? options.destination : 'HKG';
+  const eventTime = Object.hasOwn(options, 'time') ? options.time : null;
+  const stationXml = station ? `<StsApt>${station}</StsApt>` : '';
+  const segmentXml = segmentOrigin ? `<StsSegDep>${segmentOrigin}</StsSegDep>` : '';
+  const timeXml = eventTime === null ? '' : `<StsTime>${eventTime}</StsTime>`;
   return {
-    xml: `<FSUMessage><DocumentCorID>${document}</DocumentCorID><MessageType>FSU</MessageType><StatusCode>FOW</StatusCode><StsCar>CX</StsCar><StsCarNum>178</StsCarNum><StsDatt>${date}</StsDatt><StsApt>MEL</StsApt><StsSegDep>MEL</StsSegDep><StsSegArr>HKG</StsSegArr><DocPrfx>160</DocPrfx><DocNum>11111111</DocNum>${ulds}</FSUMessage>`
+    xml: `<FSUMessage><DocumentCorID>${document}</DocumentCorID><MessageType>FSU</MessageType><StatusCode>FOW</StatusCode><StsCar>CX</StsCar><StsCarNum>178</StsCarNum><StsDatt>${date}</StsDatt>${stationXml}${segmentXml}<StsSegArr>${destination}</StsSegArr>${timeXml}<DocPrfx>160</DocPrfx><DocNum>11111111</DocNum>${ulds}</FSUMessage>`
   };
 }
 
@@ -417,9 +479,33 @@ test('flight normalization preserves the established FOW identity rule', () => {
   }
   assert.equal(flightHelpers.normalizeFlightNumber('CX0178A'), 'CX178A');
   assert.notEqual(
-    flightHelpers.flightIdentityLockResource('2026-09-17', 'CX178'),
-    flightHelpers.flightIdentityLockResource('2026-09-18', 'CX178')
+    flightHelpers.flightIdentityLockResource('1', '2026-09-17', 'CX178'),
+    flightHelpers.flightIdentityLockResource('1', '2026-09-18', 'CX178')
   );
+});
+
+test('FOW StsTime accepts valid day boundaries and preserves local wall-clock digits', async () => {
+  for (const time of ['0000', '2359']) {
+    const api = harness();
+    const response = await api.call('mach-fow', fow(`FOW-TIME-${time}`, ['12345'], '17 SEP 2026', { time }));
+
+    assert.equal(response.status, 201, time);
+    assert.equal(response.body.eventLocalDateTime, `2026-09-17T${time.slice(0, 2)}:${time.slice(2)}:00`, time);
+    assert.equal(api.state.messages.length, 1, time);
+    assert.equal(api.state.messages[0].EventLocalDateTime.toISOString(), `2026-09-17T${time.slice(0, 2)}:${time.slice(2)}:00.000Z`, time);
+  }
+});
+
+test('FOW StsTime rejects out-of-range hours and minutes', async () => {
+  for (const time of ['2400', '1260', '9999']) {
+    const api = harness();
+    const response = await api.call('mach-fow', fow(`FOW-TIME-${time}`, ['12345'], '17 SEP 2026', { time }));
+
+    assert.equal(response.status, 201, time);
+    assert.equal(response.body.eventLocalDateTime, null, time);
+    assert.equal(api.state.messages.length, 1, time);
+    assert.equal(api.state.messages[0].EventLocalDateTime, null, time);
+  }
 });
 
 test('normal FOW reuses an existing active flight and different dates remain separate', async () => {
@@ -475,6 +561,195 @@ test('concurrent FOW requests create one flight and retain all ULD linkage', asy
   assert.equal(a.body.flightId, b.body.flightId);
   assert.deepEqual(api.state.ulds.map(row => row.UldNumber).sort(), ['AKE12345CX', 'AKE23456CX', 'AKE34567CX']);
   assert.equal(api.state.links.length, 4);
+});
+
+test('same-station concurrent duplicate DocumentCorID is globally serialized and processed once', async () => {
+  const api = harness();
+  const [first, second] = await Promise.all([
+    api.call('mach-fow', fow('  global-document-same-station  ')),
+    api.call('mach-fow', fow('GLOBAL-DOCUMENT-SAME-STATION'))
+  ]);
+  assert.deepEqual([first.status, second.status].sort(), [200, 201]);
+  assert.equal([first.body, second.body].filter(item => item.duplicate).length, 1);
+  assert.equal(api.state.messages.length, 1);
+  assert.equal(api.state.maxActiveDocumentLocks, 1);
+  assert.equal(api.state.messages[0].DocumentCorID, 'GLOBAL-DOCUMENT-SAME-STATION');
+  assert.equal(api.state.calls.filter(call => call.p.DocumentIdentityLockResource ===
+    'CargoRun:DocumentCorID:v2:GLOBAL-DOCUMENT-SAME-STATION').length, 2);
+});
+
+test('human and machine MACH paths share canonical DocumentCorID storage and lookup', async () => {
+  const api = harness();
+  const human = await api.call('mach-fow', fow('  shared-machine-human-id  '));
+  const machine = await api.call(
+    'mach-fow',
+    fow('SHARED-MACHINE-HUMAN-ID'),
+    { machine: true }
+  );
+
+  assert.equal(human.status, 201);
+  assert.equal(machine.status, 200);
+  assert.equal(machine.body.duplicate, true);
+  assert.equal(api.state.messages.length, 1);
+  assert.equal(api.state.messages[0].DocumentCorID, 'SHARED-MACHINE-HUMAN-ID');
+  assert.match(api.state.messages[0].RawXml, /<DocumentCorID>  shared-machine-human-id  <\/DocumentCorID>/);
+  const lookups = api.state.calls.filter(call => call.q.includes('FROM dbo.IncomingMachMessages'));
+  assert.ok(lookups.length >= 2);
+  for (const lookup of lookups) {
+    assert.equal(lookup.p.DocumentCorID, 'SHARED-MACHINE-HUMAN-ID');
+    assert.match(lookup.q, /DocumentCorID COLLATE Latin1_General_100_BIN2/);
+    assert.match(lookup.q, /@DocumentCorID COLLATE Latin1_General_100_BIN2/);
+  }
+});
+
+test('human and machine MACH paths reject invalid DocumentCorID values before database work', async () => {
+  const invalidValues = [
+    '   ',
+    'DOC\tID',
+    'DOC\u00a0ID',
+    '\u00a0DOC-ID',
+    'DOC-ID\u2003',
+    'DOC-\uff21',
+    'stra\u00dfe',
+    'A'.repeat(101)
+  ];
+
+  for (const machine of [false, true]) {
+    for (const value of invalidValues) {
+      const api = harness();
+      const response = await api.call('mach-fow', fow(value), { machine });
+      assert.equal(response.status, 422, `${machine ? 'machine' : 'human'} ${JSON.stringify(value)}`);
+      assert.equal(response.body.code, 'INVALID_DOCUMENT_COR_ID');
+      assert.equal(
+        response.body.error,
+        'DocumentCorID must be a string containing 1-100 ASCII letters, digits, or hyphens'
+      );
+      assert.equal(api.state.calls.length, 0);
+      assert.equal(api.state.messages.length, 0);
+    }
+
+    const api = harness();
+    const withoutDocument = fow('PLACEHOLDER');
+    withoutDocument.xml = withoutDocument.xml.replace(
+      /<DocumentCorID>[\s\S]*?<\/DocumentCorID>/,
+      ''
+    );
+    const response = await api.call('mach-fow', withoutDocument, { machine });
+    assert.equal(response.status, 422);
+    assert.equal(response.body.code, 'INVALID_DOCUMENT_COR_ID');
+    assert.equal(api.state.calls.length, 0);
+  }
+});
+
+test('unique-index race fallback reuses canonical lookup and redacts cross-station metadata', async () => {
+  const sameStation = harness();
+  sameStation.state.uniqueDocumentConflict = {
+    MachMessageId: 501,
+    StationId: 1,
+    MatchedFlightStationId: 1,
+    MatchedFlightId: 901,
+    MatchedFlightNumber: 'CX0178',
+    FlightNumber: 'CX0178',
+    OperatingDate: '2026-09-17',
+    ProcessingStatus: 'PROCESSED',
+    SourceType: 'MACH_FOW_LIVE'
+  };
+  const duplicate = await sameStation.call(
+    'mach-fow',
+    fow('  unique-race-id  ')
+  );
+  assert.equal(duplicate.status, 200);
+  assert.equal(duplicate.body.duplicate, true);
+  assert.equal(sameStation.state.messages.length, 1);
+  assert.equal(sameStation.state.messages[0].DocumentCorID, 'UNIQUE-RACE-ID');
+  assert.equal(sameStation.state.rollbacks, 1);
+
+  const crossStation = harness();
+  crossStation.state.uniqueDocumentConflict = {
+    MachMessageId: 777,
+    StationId: 8,
+    MatchedFlightStationId: 8,
+    MatchedFlightId: 902,
+    MatchedFlightNumber: 'NZ0124',
+    FlightNumber: 'NZ0124',
+    OperatingDate: '2026-09-17',
+    ProcessingStatus: 'PROCESSED',
+    SourceType: 'MACH_FOW_LIVE',
+    UldNumber: 'AKE99999NZ'
+  };
+  const conflict = await crossStation.call(
+    'mach-fow',
+    fow('UNIQUE-RACE-CROSS-STATION')
+  );
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.code, 'DOCUMENT_IDENTITY_CONFLICT');
+  assert.deepEqual(Object.keys(conflict.body).sort(), ['code', 'error', 'ok']);
+  assert.doesNotMatch(JSON.stringify(conflict.body), /777|902|NZ0124|AKE99999NZ/);
+  assert.equal(crossStation.state.messages.length, 1);
+  assert.equal(crossStation.state.rollbacks, 1);
+});
+
+test('rolled-back DocumentCorID request cannot delete a different-station committed message', async () => {
+  const api = harness([{
+    FlightId: 9,
+    StationId: 1,
+    FlightNumber: 'CX0178',
+    OperatingDate: '2026-09-17',
+    Direction: 'EXPORT',
+    FlightStatus: 'FINALISED'
+  }]);
+  const hold = api.holdNextDocumentLock();
+  const rejected = api.call('mach-fow', fow('  global-document-rollback  '));
+  await hold.acquired;
+  const committed = api.call('mach-fow', fow('GLOBAL-DOCUMENT-ROLLBACK', ['23456'], '17 SEP 2026', {
+    station: 'AKL',
+    segmentOrigin: 'AKL',
+    destination: 'SYD'
+  }));
+  hold.release();
+
+  const [rejectedResult, committedResult] = await Promise.all([rejected, committed]);
+  assert.equal(rejectedResult.status, 409);
+  assert.equal(committedResult.status, 201);
+  assert.equal(api.state.messages.length, 1);
+  assert.equal(api.state.messages[0].DocumentCorID, 'GLOBAL-DOCUMENT-ROLLBACK');
+  assert.equal(String(api.state.messages[0].StationId), '8');
+  assert.equal(api.state.calls.some(call => /^DELETE FROM dbo\.IncomingMachMessages/i.test(call.q)), false);
+
+  const crossStationDuplicate = await api.call('mach-fow', fow('  global-document-rollback  '));
+  assert.equal(crossStationDuplicate.status, 409);
+  assert.equal(crossStationDuplicate.body.code, 'DOCUMENT_IDENTITY_CONFLICT');
+  assert.deepEqual(Object.keys(crossStationDuplicate.body).sort(), ['code', 'error', 'ok']);
+  assert.equal(api.state.messages.length, 1);
+});
+
+test('MACH handling station and outbound segment evidence must agree while cargo destination remains non-authoritative', async () => {
+  const valid = harness();
+  assert.equal((await valid.call('mach-fow', fow('SEGMENT-VALID'))).status, 201);
+
+  const contradictory = harness();
+  const rejected = await contradictory.call('mach-fow', fow('SEGMENT-CONTRADICTORY', ['12345'], '17 SEP 2026', {
+    station: 'MEL',
+    segmentOrigin: 'SYD',
+    destination: 'BKK'
+  }));
+  assert.equal(rejected.status, 422);
+  assert.equal(contradictory.state.messages.length, 0);
+
+  const cargoDestination = harness();
+  assert.equal((await cargoDestination.call('mach-fow', fow('DESTINATION-NON-AUTHORITY', ['12345'], '17 SEP 2026', {
+    station: 'MEL',
+    segmentOrigin: 'MEL',
+    destination: 'SYD'
+  }))).status, 201);
+  assert.equal(String(cargoDestination.state.messages[0].StationId), '1');
+
+  const missingOptionalSegment = harness();
+  assert.equal((await missingOptionalSegment.call('mach-fow', fow('SEGMENT-OPTIONAL', ['12345'], '17 SEP 2026', {
+    station: 'MEL',
+    segmentOrigin: null,
+    destination: 'BKK'
+  }))).status, 201);
 });
 
 test('manual/manual and upload/upload races create one operational flight', async () => {
@@ -595,19 +870,19 @@ test('all three writers request the exact same canonical lock resource', async (
   await api.call('manifest-upload', upload('CX 00178'));
   await api.call('mach-fow', fow('FOW-LOCK-KEY'));
   const resources = api.state.calls
-    .filter(call => call.q.includes('sys.sp_getapplock'))
+    .filter(call => call.q.includes('sys.sp_getapplock') && call.p.FlightIdentityLockResource)
     .map(call => call.p.FlightIdentityLockResource);
   assert.deepEqual(resources, [
-    'CargoRun:Flight:2026-09-17:CX178',
-    'CargoRun:Flight:2026-09-17:CX178',
-    'CargoRun:Flight:2026-09-17:CX178'
+    'CargoRun:Flight:v2:1:2026-09-17:CX178',
+    'CargoRun:Flight:v2:1:2026-09-17:CX178',
+    'CargoRun:Flight:v2:1:2026-09-17:CX178'
   ]);
   assert.notEqual(
-    flightHelpers.flightIdentityLockResource('2026-09-18', 'CX0178'),
+    flightHelpers.flightIdentityLockResource('1', '2026-09-18', 'CX0178'),
     resources[0]
   );
   assert.notEqual(
-    flightHelpers.flightIdentityLockResource('2026-09-17', 'QF0178'),
+    flightHelpers.flightIdentityLockResource('1', '2026-09-17', 'QF0178'),
     resources[0]
   );
 });
@@ -738,7 +1013,7 @@ test('Import finalisation keeps exact FlightId when visible flight numbers repea
   assert.ok(lifecycleIndex < auditIndex);
   assert.match(transactionalSql[lifecycleIndex], /FlightId=@FinaliseFlightId AND UPPER\(LTRIM\(RTRIM\(FlightStatus\)\)\)='ACTIVE'/);
   const lockCall = api.state.calls.find(call => call.q.includes('sys.sp_getapplock'));
-  assert.equal(lockCall.p.FlightIdentityLockResource, 'CargoRun:Flight:2026-09-25:CX134');
+  assert.equal(lockCall.p.FlightIdentityLockResource, 'CargoRun:Flight:v2:1:2026-09-25:CX134');
 });
 
 test('Import finalisation rolls back completion when lifecycle compare-and-set loses', async () => {
@@ -844,7 +1119,7 @@ test('concurrent FOW and Confirm Final share the flight lock and never leak a no
   assert.deepEqual(api.state.finalMembers.map(row => row.UldNumber), ['AKE11111CX', 'PMC33333CX']);
   assert.equal(api.state.finalMembers.some(row => row.UldNumber === 'AKE99999CX'), false);
   const finalLock = api.state.calls.find(call => call.q.includes('sys.sp_getapplock') && call.p.FlightIdentityLockResource);
-  assert.equal(finalLock.p.FlightIdentityLockResource, 'CargoRun:Flight:2026-09-17:CX178');
+  assert.equal(finalLock.p.FlightIdentityLockResource, 'CargoRun:Flight:v2:1:2026-09-17:CX178');
 });
 
 test('FINAL uses exact FlightId when the visible flight number repeats on different dates', async () => {

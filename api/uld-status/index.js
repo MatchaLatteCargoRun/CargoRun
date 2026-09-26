@@ -151,6 +151,7 @@ module.exports = async function (context, req) {
           u.FlightId,
           u.UldNumber,
           u.CurrentStatus,
+          f.StationId,
           f.Direction,
           f.OriginAirport,
           f.DestinationAirport,
