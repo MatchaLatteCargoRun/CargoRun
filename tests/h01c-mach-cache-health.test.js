@@ -242,16 +242,15 @@ function machGetHarness(storedMessages) {
 
   const authorization = {
     authenticatedActor: () => ({ displayName: 'MEL Supervisor', reference: 'stable-mel-supervisor' }),
-    requireOperationalStations: async (_executor, _sql, _actor, capability) => {
-      authorizationCalls.push(capability);
-      return { stations: ['MEL'], requiredCapability: capability };
-    },
-    bindStationParameters: (request, _sql, stations, prefix) => stations.map((stationCode, index) => {
-      const parameter = `${prefix}${index}`;
-      request.input(parameter, 'nvarchar', stationCode);
-      return parameter;
+    resolveActorAccess: async () => ({
+      stationMetadata: [{ stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne' }],
+      capabilitiesByStation: { MEL: ['VIEW_SUPERVISOR'] }
     }),
-    flightStationPredicate: (_alias, parameters) => parameters.length ? '1=1' : '1=0',
+    authorizeRequestedStation: ({ stationId, requiredCapability }) => {
+      authorizationCalls.push(requiredCapability);
+      if (stationId !== '1') throw authorizationError('STATION_ACCESS_DENIED');
+      return { stationId: '1', stationCode: 'MEL', requiredCapability };
+    },
     requireOperationalCapability: async () => { throw new Error('not used'); },
     sendOperationalAuthorizationError: () => false
   };
@@ -288,7 +287,7 @@ function machGetHarness(storedMessages) {
     const context = { log: Object.assign(() => {}, { error() {}, warn() {} }) };
     await module.exports(context, {
       method: 'GET',
-      query: {},
+      query: { stationId: '1' },
       headers: { 'x-ms-client-principal': principal }
     });
     return {

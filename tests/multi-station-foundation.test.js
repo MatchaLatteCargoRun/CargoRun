@@ -500,7 +500,8 @@ test('list and exact entity authorization inherit explicit flight ownership', ()
     assert.match(read(file), /StationId/, file);
   }
   for (const file of ['api/flights/index.js', 'api/history/index.js', 'api/offloads/index.js', 'api/import-completions/index.js', 'api/export-completions/index.js', 'api/mach-fow/index.js']) {
-    assert.match(read(file), /flightStationPredicate/, file);
+    assert.match(read(file), /authorizeRequestedStation/, file);
+    assert.match(read(file), /StationId=@(?:Selected)?StationId/, file);
   }
 });
 

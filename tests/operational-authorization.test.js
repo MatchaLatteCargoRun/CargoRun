@@ -178,6 +178,44 @@ test('session access resolution distinguishes unprovisioned, provisioned, and un
   );
 });
 
+test('selected station authorization uses stable StationId and station-specific capabilities', () => {
+  const userAccess = {
+    stationMetadata: [
+      { stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne' },
+      { stationId: '2', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland' }
+    ],
+    capabilities: ['VIEW_FLIGHTS', 'VIEW_HISTORY'],
+    globalCapabilities: [],
+    capabilitiesByStation: {
+      MEL: ['VIEW_FLIGHTS', 'VIEW_HISTORY'],
+      AKL: ['VIEW_FLIGHTS']
+    }
+  };
+  assert.equal(actualAuthorization.authorizeRequestedStation({
+    userAccess, stationId: '2', requiredCapability: 'VIEW_FLIGHTS'
+  }).stationCode, 'AKL');
+  assert.equal(actualAuthorization.authorizeRequestedStation({
+    userAccess, stationId: '1', requiredCapability: 'VIEW_HISTORY'
+  }).stationCode, 'MEL');
+
+  for (const stationId of [undefined, '', '0', '-1', 'abc', '9'.repeat(1000), '9007199254740993', '9223372036854775808', '3']) {
+    assert.throws(
+      () => actualAuthorization.authorizeRequestedStation({ userAccess, stationId, requiredCapability: 'VIEW_FLIGHTS' }),
+      error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+    );
+  }
+  assert.throws(
+    () => actualAuthorization.authorizeRequestedStation({ userAccess, stationId: '2', requiredCapability: 'VIEW_HISTORY' }),
+    error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+  );
+  assert.throws(
+    () => actualAuthorization.authorizeRequestedStation({
+      userAccess, stationId: Number.MAX_SAFE_INTEGER + 1, requiredCapability: 'VIEW_FLIGHTS'
+    }),
+    error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+  );
+});
+
 test('authorization rejects malformed, unknown, and fixed-offset station timezones', async () => {
   const actor = actualAuthorization.authenticatedActor(requestWithPrincipal(authenticatedPrincipal));
   for (const TimeZoneId of ['', 'Mars/Olympus', '+10:00', 'Etc/GMT-10']) {
@@ -260,24 +298,23 @@ test('unprovisioned identities receive no flight, ULD, offload, history, complet
 
 test('MEL flight lists are filtered in SQL and cannot be broadened by browser station or capability fields', async () => {
   const flights = [
-    { FlightId: '1', FlightNumber: 'CX134', Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL' },
-    { FlightId: '2', FlightNumber: 'CX178', Direction: 'EXPORT', OriginAirport: 'MEL', DestinationAirport: 'HKG' },
-    { FlightId: '3', FlightNumber: 'QF11', Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'LAX' }
+    { FlightId: '1', StationId: '1', FlightNumber: 'CX134', Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL' },
+    { FlightId: '2', StationId: '1', FlightNumber: 'CX178', Direction: 'EXPORT', OriginAirport: 'MEL', DestinationAirport: 'HKG' },
+    { FlightId: '3', StationId: '2', FlightNumber: 'QF11', Direction: 'EXPORT', OriginAirport: 'MEL', DestinationAirport: 'HKG' }
   ];
   const harness = readSqlHarness({ flights });
   const response = await invoke(
     loadHandler('api/flights/index.js', harness.sql, stationAuthorization(['MEL'])),
     'GET',
     { station: 'SYD', role: 'ADMIN', capabilities: ['VIEW_FLIGHTS'] },
-    { station: 'SYD', capability: 'VIEW_FLIGHTS' }
+    { stationId: '1', station: 'SYD', capability: 'VIEW_FLIGHTS' }
   );
   assert.equal(response.status, 200);
   assert.deepEqual(response.body.flights.map(row => String(row.FlightId)), ['1', '2']);
   const select = harness.state.queries.find(entry => entry.text.includes('LEFT JOIN dbo.ExportManifestFinals'));
   assert.ok(select);
-  assert.deepEqual(Object.values(select.values), ['MEL']);
-  assert.match(select.text, /DestinationAirport.*IN.*FlightReadStation0/);
-  assert.match(select.text, /OriginAirport.*IN.*FlightReadStation0/);
+  assert.equal(select.values.StationId, '1');
+  assert.match(select.text, /WHERE f\.StationId=@StationId/);
 });
 
 test('wrong-station exact FlightId is masked before ULD or Flight Statement child data is read', async () => {
@@ -359,9 +396,10 @@ test('read endpoint inventory uses server authorization and leaves only generic 
   ];
   for (const [file, capability] of listGates) {
     const text = source(file);
-    assert.match(text, /requireOperationalStations/);
+    assert.match(text, /resolveActorAccess/);
+    assert.match(text, /authorizeRequestedStation/);
     assert.match(text, new RegExp(`['"]${capability}['"]`));
-    assert.match(text, /flightStationPredicate/);
+    assert.match(text, /StationId=@(?:Selected)?StationId/);
   }
   for (const file of [
     'api/flights/index.js', 'api/ulds/index.js', 'api/uld-status/index.js',
@@ -416,6 +454,7 @@ function authorizationDenial(code = 'CAPABILITY_REQUIRED') {
 
 const unprovisionedReadAuthorization = {
   ...actualAuthorization,
+  resolveActorAccess: authorizationDenial(),
   requireOperationalStations: authorizationDenial(),
   requireOperationalCapability: authorizationDenial(),
   requireAnyOperationalCapability: authorizationDenial()
@@ -423,6 +462,18 @@ const unprovisionedReadAuthorization = {
 
 function stationAuthorization(stations = ['MEL']) {
   const stationSet = new Set(stations);
+  const stationMetadata = [...stationSet].map((stationCode, index) => ({
+    stationId: String(index + 1), stationCode, displayName: stationCode,
+    timeZoneId: stationCode === 'AKL' ? 'Pacific/Auckland' : 'Australia/Melbourne'
+  }));
+  const access = capabilities => ({
+    provisioned: true,
+    stations: [...stationSet],
+    stationMetadata,
+    capabilities,
+    capabilitiesByStation: Object.fromEntries(stationMetadata.map(station => [station.stationCode, capabilities])),
+    globalCapabilities: []
+  });
   const requireOperationalCapability = async (_executor, _sql, actor, flight, requiredCapability) => {
     const stationCode = actualAuthorization.stationForFlight(flight);
     if (!stationSet.has(stationCode)) return authorizationDenial('STATION_ACCESS_DENIED')();
@@ -430,12 +481,9 @@ function stationAuthorization(stations = ['MEL']) {
   };
   return {
     ...actualAuthorization,
+    resolveActorAccess: async () => access(['VIEW_FLIGHTS', 'VIEW_HISTORY', 'VIEW_FLIGHT_STATEMENT', 'VIEW_SUPERVISOR']),
     requireOperationalStations: async (_executor, _sql, _actor, requiredCapability) => ({
-      provisioned: true,
-      stations: [...stationSet],
-      capabilities: [requiredCapability],
-      capabilitiesByStation: Object.fromEntries([...stationSet].map(station => [station, [requiredCapability]])),
-      globalCapabilities: [],
+      ...access([requiredCapability]),
       requiredCapability
     }),
     requireOperationalCapability,
@@ -489,12 +537,7 @@ function readSqlHarness({ flights = [], accessRows = [], accessFailure = null } 
         return { recordset: flights.filter(flight => String(flight.FlightId) === String(exactId)) };
       }
       if (text.includes('FROM dbo.Flights f') && text.includes('LEFT JOIN dbo.ExportManifestFinals')) {
-        const allowed = Object.entries(this.values)
-          .filter(([name]) => name.startsWith('FlightReadStation'))
-          .map(([, value]) => value);
-        return { recordset: flights.filter(flight => allowed.includes(
-          String(flight.Direction).toUpperCase() === 'IMPORT' ? flight.DestinationAirport : flight.OriginAirport
-        )) };
+        return { recordset: flights.filter(flight => String(flight.StationId) === String(this.values.StationId)) };
       }
       throw new Error(`Unexpected read SQL: ${text.slice(0, 180)}`);
     }

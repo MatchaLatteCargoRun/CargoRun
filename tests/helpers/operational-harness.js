@@ -10,6 +10,7 @@ const documentCorIdHelpers = require('../../api/shared/document-cor-id');
 const { normalizeFlightNumber } = flightHelpers;
 const { insertAuditEvent } = require('../../api/shared/audit');
 const completionAmendments = require('../../api/shared/completion-amendments');
+const completionSnapshot = require('../../api/shared/completion-snapshot');
 const flightStatementEvidence = require('../../api/shared/flight-statement-evidence');
 const offloadEligibility = require('../../api/shared/offload-eligibility');
 const exportManifestFinal = require('../../api/shared/export-manifest-final');
@@ -38,6 +39,7 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
       if (name === '../shared/flight-statement-evidence') return flightStatementEvidence;
       if (name === '../shared/audit') return { insertAuditEvent };
       if (name === '../shared/completion-amendments') return completionAmendments;
+      if (name === '../shared/completion-snapshot') return completionSnapshot;
       if (name === '../shared/offload-eligibility') return offloadEligibility;
       if (name === '../shared/export-manifest-final') return exportManifestFinal;
       if (name === '../shared/export-uws') return exportUws;
@@ -51,6 +53,7 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
         },
         resolveStationByCode: async (_executor, _sql, code) => ({ stationId: '1', stationCode: code, displayName: code, timeZoneId: 'Australia/Melbourne' })
       };
+      if (name === 'crypto') return require('crypto');
       throw new Error(`Unexpected require: ${name}`);
     }
   });

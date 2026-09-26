@@ -158,6 +158,7 @@ test('GET /api/history remains authenticated, bounded, and returns normalized st
   const harness = historySqlHarness();
   const handler = loadHistoryHandler(harness.sql);
   const response = await callHistory(handler, 'GET', null, {
+    stationId: '1',
     limit: '9000',
     startUtc: '2026-09-24T00:00:00.000Z',
     endUtc: '2026-09-25T00:00:00.000Z'
@@ -183,6 +184,7 @@ test('GET /api/history remains authenticated, bounded, and returns normalized st
   });
   const select = harness.state.queries.find(entry => entry.query.includes('SELECT TOP (@Limit)'));
   assert.equal(select.parameters.Limit, 5000);
+  assert.equal(select.parameters.StationId, '1');
   assert.ok(Number.isFinite(select.parameters.StartUtc.getTime()));
   assert.ok(Number.isFinite(select.parameters.EndUtc.getTime()));
 });

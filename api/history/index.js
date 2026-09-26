@@ -1,9 +1,8 @@
 const sql = require('mssql');
 const {
   authenticatedActor,
-  requireOperationalStations,
-  bindStationParameters,
-  flightStationPredicate,
+  resolveActorAccess,
+  authorizeRequestedStation,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 
@@ -95,7 +94,12 @@ module.exports = async function(context, req) {
     if (!connectionString) { sendJson(context,503,{ok:false,error:'Service configuration is unavailable'}); return; }
     const actor = authenticatedActor(req);
     pool = await new sql.ConnectionPool(connectionString).connect();
-    const access = await requireOperationalStations(pool,sql,actor,'VIEW_HISTORY');
+    const access = await resolveActorAccess(pool,sql,actor);
+    const station = authorizeRequestedStation({
+      userAccess: access,
+      stationId: req.query?.stationId,
+      requiredCapability: 'VIEW_HISTORY'
+    });
     const columns = await columnsFor(pool.request(),'AuditEvents');
     if (!columns.length) { sendJson(context,503,{ok:false,error:'History service is unavailable'}); return; }
     const idCol = pick(columns,['AuditEventId','EventId','Id']);
@@ -109,9 +113,10 @@ module.exports = async function(context, req) {
     const requestedLimit = Math.max(1, Math.min(5000, Number(req.query?.limit || 3000) || 3000));
     const startUtc = clean(req.query?.startUtc, 50);
     const endUtc = clean(req.query?.endUtc, 50);
-    const request = pool.request().input('Limit', sql.Int, requestedLimit);
-    const stationParameters = bindStationParameters(request,sql,access.stations,'HistoryStation');
-    const where = [flightStationPredicate('flight',stationParameters)];
+    const request = pool.request()
+      .input('Limit', sql.Int, requestedLimit)
+      .input('StationId', sql.BigInt, station.stationId);
+    const where = ['flight.StationId=@StationId'];
     if (timeCol && startUtc && endUtc) {
       request.input('StartUtc', sql.DateTime2, new Date(startUtc)).input('EndUtc', sql.DateTime2, new Date(endUtc));
       where.push(`audit.${q(timeCol)} >= @StartUtc AND audit.${q(timeCol)} < @EndUtc`);

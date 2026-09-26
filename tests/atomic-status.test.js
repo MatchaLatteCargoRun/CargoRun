@@ -179,12 +179,12 @@ test('offload GET returns operating date from the flight linked by FlightId', as
   const h = sqlHarness({
     offload: { OffloadId: 90, FlightId: 100, FlightNumber: 'CX178', UldNumber: 'AKE12345CX', ParkingBay: 'F25', Status: 'REQUESTED' },
     flights: [
-      { FlightId: 100, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' },
-      { FlightId: 110, FlightNumber: 'CX178', OperatingDate: '2026-09-18', FlightStatus: 'ACTIVE' }
+      { FlightId: 100, StationId: 1, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' },
+      { FlightId: 110, StationId: 2, FlightNumber: 'CX178', OperatingDate: '2026-09-18', FlightStatus: 'ACTIVE' }
     ]
   });
   const handler = loadHandler('api/offloads/index.js', h.sql);
-  const response = await call(handler, 'GET');
+  const response = await call(handler, 'GET', null, { stationId: '1' });
   assert.equal(response.status, 200);
   assert.equal(response.body.offloads[0].flightId, 100);
   assert.equal(response.body.offloads[0].operatingDate, '2026-09-17');

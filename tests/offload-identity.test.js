@@ -19,7 +19,7 @@ test('selector includes historical CLOSED/finalised exports and excludes imports
   flight({FlightId:'5',FlightStatus:'FINALISED'}),flight({FlightId:'6',FlightStatus:'FINALIZED'}),
   flight({FlightId:'7',FlightStatus:'CANCELLED'})
  ]});
- const r=await call(h.handler,'GET',null,{eligibleFlights:'true'});
+ const r=await call(h.handler,'GET',null,{eligibleFlights:'true',stationId:'1'});
  assert.equal(r.status,200);
  assert.deepEqual(r.body.flights.map(f=>[f.flightId,f.flightStatus]),[['1','ACTIVE'],['2','ACTIVE'],['4','CLOSED'],['5','FINALISED'],['6','FINALIZED']]);
  assert.equal(r.body.flights.find(f=>f.flightId==='4').operatingDate,'2025-01-01');

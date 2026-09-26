@@ -13,8 +13,8 @@ const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
   requireOperationalStations,
-  bindStationParameters,
-  flightStationPredicate,
+  resolveActorAccess,
+  authorizeRequestedStation,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
@@ -699,23 +699,21 @@ module.exports = async function(
     if (req.method === 'GET') {
 
       const access =
-        await requireOperationalStations(
+        await resolveActorAccess(
           pool,
           sql,
-          actor,
-          'VIEW_SUPERVISOR'
+          actor
         );
+
+      const requestedStation = authorizeRequestedStation({
+        userAccess: access,
+        stationId: req.query?.stationId,
+        requiredCapability: 'VIEW_SUPERVISOR'
+      });
 
       const messageRequest =
-        pool.request();
-
-      const messageStations =
-        bindStationParameters(
-          messageRequest,
-          sql,
-          access.stations,
-          'MachReadStation'
-        );
+        pool.request()
+          .input('StationId', sql.BigInt, requestedStation.stationId);
 
       const r =
         await messageRequest
@@ -759,6 +757,8 @@ module.exports = async function(
                 WHERE
                   x.MachMessageId =
                   m.MachMessageId
+                  AND x.FlightId =
+                  f.FlightId
 
               ) AS UldCount,
 
@@ -773,6 +773,8 @@ module.exports = async function(
                 WHERE
                   x.MachMessageId =
                   m.MachMessageId
+                  AND x.FlightId =
+                  f.FlightId
 
               ) AS UldNumbers
 
@@ -783,7 +785,8 @@ module.exports = async function(
                  m.MatchedFlightId
 
             WHERE
-              ${flightStationPredicate('f', messageStations)}
+              m.StationId=@StationId
+              AND f.StationId=@StationId
 
             ORDER BY
               m.ReceivedAtUtc DESC,
@@ -794,12 +797,7 @@ module.exports = async function(
       const stats =
         await (() => {
           const statsRequest = pool.request();
-          const statsStations = bindStationParameters(
-            statsRequest,
-            sql,
-            access.stations,
-            'MachStatsStation'
-          );
+          statsRequest.input('StationId', sql.BigInt, requestedStation.stationId);
           return statsRequest
           .query(`
             SELECT
@@ -825,7 +823,7 @@ module.exports = async function(
 
             FROM dbo.IncomingMachMessages m
             INNER JOIN dbo.Flights f ON f.FlightId=m.MatchedFlightId
-            WHERE ${flightStationPredicate('f', statsStations)};
+            WHERE m.StationId=@StationId AND f.StationId=@StationId;
           `);
         })();
 

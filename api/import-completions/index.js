@@ -6,8 +6,8 @@ const { buildCompletionSnapshot, CompletionSnapshotError } = require('../shared/
 const {
   authenticatedActor,
   requireOperationalStations,
-  bindStationParameters,
-  flightStationPredicate,
+  resolveActorAccess,
+  authorizeRequestedStation,
   requireOperationalEntityCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
@@ -54,22 +54,25 @@ module.exports=async function(context,req){let pool,tx;try{
   const cs=process.env.DATABASE_CONNECTION_STRING;if(!cs){sendJson(context,503,{ok:false,code:'SERVICE_CONFIGURATION_UNAVAILABLE',error:'Service configuration is unavailable'});return}
   const identity=authenticatedActor(req);
   pool=await new sql.ConnectionPool(cs).connect();
-  const requiredCapability=req.method==='GET'?'VIEW_FLIGHT_STATEMENT':'FINALISE_FLIGHT';
-  const access=await requireOperationalStations(pool,sql,identity,requiredCapability);
+  const access=req.method==='GET'
+    ? await resolveActorAccess(pool,sql,identity)
+    : await requireOperationalStations(pool,sql,identity,'FINALISE_FLIGHT');
+  const requestedStation=req.method==='GET'
+    ? authorizeRequestedStation({userAccess:access,stationId:req.query?.stationId,requiredCapability:'VIEW_FLIGHT_STATEMENT'})
+    : null;
   const columns=await columnsFor(pool.request(),'ImportCompletionRecords');if(!columns.length){sendJson(context,503,{ok:false,code:'COMPLETION_SCHEMA_NOT_READY',error:'Operational data is unavailable'});return}
 
   if(req.method==='GET'){
     const flightIdCol=pick(columns,['FlightId']);
     if(!flightIdCol){sendJson(context,503,{ok:false,code:'COMPLETION_AUTHORIZATION_UNAVAILABLE',error:'Operational data is unavailable'});return}
-    const request=pool.request();
-    const stationParameters=bindStationParameters(request,sql,access.stations,'ImportCompletionStation');
+    const request=pool.request().input('StationId',sql.BigInt,requestedStation.stationId);
     const timeCol=pick(columns,['FinalisedAtUtc','FinalizedAtUtc','FinalisedAt','FinalizedAt']);
     const idCol=pick(columns,['ImportCompletionRecordId','CompletionRecordId','Id'])||columns[0].COLUMN_NAME;
     const order=timeCol?`i.${q(timeCol)} DESC`:`i.${q(idCol)} DESC`;
     const r=await request.query(`SELECT i.*, f.FlightNumber AS __FlightNumber
       FROM dbo.ImportCompletionRecords i
       INNER JOIN dbo.Flights f ON f.FlightId=i.${q(flightIdCol)}
-      WHERE ${flightStationPredicate('f',stationParameters)}
+      WHERE f.StationId=@StationId
       ORDER BY ${order};`);
     sendJson(context,200,{ok:true,count:r.recordset.length,records:r.recordset.map(x=>normalize(x,columns,x.__FlightNumber))});return;
   }

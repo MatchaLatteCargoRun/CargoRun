@@ -26,8 +26,11 @@ function normalizeStationCode(value) {
 }
 
 function normalizeStationId(value) {
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    throw new StationResolutionError('STATION_INVALID', 'The operational station is invalid');
+  }
   const id = String(value ?? '').trim();
-  if (!/^[1-9]\d*$/.test(id)) {
+  if (!/^[1-9]\d*$/.test(id) || id.length > 19 || BigInt(id) > 9223372036854775807n) {
     throw new StationResolutionError('STATION_INVALID', 'The operational station is invalid');
   }
   return id;

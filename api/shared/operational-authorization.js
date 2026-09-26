@@ -256,6 +256,49 @@ function capabilitiesForStation(userAccess, stationId) {
   return [...new Set(capabilities.map(normalizeCapability).filter(Boolean))].sort();
 }
 
+function authorizeRequestedStation({ userAccess, stationId, requiredCapability } = {}) {
+  const capability = normalizeCapability(requiredCapability);
+  if (!capability) {
+    throw new OperationalAuthorizationError(
+      'AUTHORIZATION_CONFIGURATION_INVALID',
+      'Operational authorization is not configured for this action',
+      503
+    );
+  }
+
+  let id;
+  try {
+    id = normalizeStationId(stationId);
+  } catch {
+    throw new OperationalAuthorizationError(
+      'STATION_ACCESS_DENIED',
+      'The authenticated user is not authorized for this operation at the selected station',
+      403
+    );
+  }
+
+  const station = (Array.isArray(userAccess?.stationMetadata) ? userAccess.stationMetadata : [])
+    .find(candidate => String(candidate?.stationId || '') === id);
+  if (!station) {
+    throw new OperationalAuthorizationError(
+      'STATION_ACCESS_DENIED',
+      'The authenticated user is not authorized for this operation at the selected station',
+      403
+    );
+  }
+
+  const capabilities = capabilitiesForStation(userAccess, id);
+  if (!capabilities.includes(capability)) {
+    throw new OperationalAuthorizationError(
+      'STATION_ACCESS_DENIED',
+      'The authenticated user is not authorized for this operation at the selected station',
+      403
+    );
+  }
+
+  return { ...station, requiredCapability: capability, capabilities };
+}
+
 async function requireOperationalStations(executor, sql, actor, requiredCapability) {
   const capability = normalizeCapability(requiredCapability);
   if (!capability) {
@@ -438,6 +481,7 @@ module.exports = {
   stationForFlight,
   resolveActorAccess,
   capabilitiesForStation,
+  authorizeRequestedStation,
   requireOperationalStations,
   requireAnyOperationalCapability,
   bindStationParameters,
