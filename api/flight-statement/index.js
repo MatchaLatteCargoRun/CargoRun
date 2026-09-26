@@ -102,7 +102,9 @@ module.exports = async function flightStatement(context, req) {
           OriginAirport,DestinationAirport,FlightStatus
         FROM dbo.Flights WHERE FlightId=@StatementFlightId;`);
     const flight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;
-    await requireOperationalEntityCapability(pool, sql, actor, flight, 'VIEW_FLIGHT_STATEMENT');
+    const owningStation = await requireOperationalEntityCapability(
+      pool, sql, actor, flight, 'VIEW_FLIGHT_STATEMENT'
+    );
     if (String(flight.Direction || '').toUpperCase() !== 'EXPORT') {
       sendJson(context, 409, { ok: false, code: 'STATEMENT_NOT_EXPORT', error: 'Flight Statement is available only for export flights' });
       return;
@@ -167,6 +169,10 @@ module.exports = async function flightStatement(context, req) {
       ok: true,
       flight: {
         flightId: String(flight.FlightId),
+        stationId: String(owningStation.stationId),
+        stationCode: owningStation.stationCode,
+        displayName: owningStation.displayName,
+        timeZoneId: owningStation.timeZoneId,
         flightNumber: flight.FlightNumber,
         operatingDate: flight.OperatingDate,
         direction: flight.Direction,

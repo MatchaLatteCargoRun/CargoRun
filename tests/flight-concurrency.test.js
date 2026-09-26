@@ -1016,6 +1016,22 @@ test('Import finalisation keeps exact FlightId when visible flight numbers repea
   assert.equal(lockCall.p.FlightIdentityLockResource, 'CargoRun:Flight:v2:1:2026-09-25:CX134');
 });
 
+test('Import finalisation response carries the exact owning station display metadata', async () => {
+  const api = harness([{ ...importFlight(48, '2026-09-26'), StationId: 8, DestinationAirport: 'AKL' }]);
+  const response = await api.call('import-completions', { flightId: '48' });
+
+  assert.equal(response.status, 201);
+  assert.deepEqual(
+    {
+      stationId: response.body.record.stationId,
+      stationCode: response.body.record.stationCode,
+      displayName: response.body.record.displayName,
+      timeZoneId: response.body.record.timeZoneId
+    },
+    { stationId: '8', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland' }
+  );
+});
+
 test('Import finalisation rolls back completion when lifecycle compare-and-set loses', async () => {
   const api = harness([importFlight()]);
   api.state.forceFinaliseCasLoss = true;

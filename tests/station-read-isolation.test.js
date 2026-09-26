@@ -100,7 +100,11 @@ function isolationSqlHarness() {
       }
       if (text.includes('FROM dbo.ImportCompletionRecords i')) {
         return { recordset: imports.filter(row => String(stationForFlight(row.FlightId)) === stationId)
-          .map(row => ({ ...row, __FlightNumber: flightNumber(row.FlightId) })) };
+          .map(row => {
+            const owner = accessFixture().stationMetadata.find(station => station.stationId === String(stationForFlight(row.FlightId)));
+            return { ...row, __FlightNumber: flightNumber(row.FlightId), __StationId: owner.stationId,
+              __StationCode: owner.stationCode, __StationDisplayName: owner.displayName, __TimeZoneId: owner.timeZoneId };
+          }) };
       }
       if (text.includes('FROM dbo.ExportCompletionRecords e')) {
         return { recordset: exports.filter(row => String(stationForFlight(row.FlightId)) === stationId)
@@ -174,6 +178,23 @@ test('equal-looking MEL and AKL records stay isolated by authoritative StationId
       assert.ok(operationalQueries.every(entry => String(entry.values.StationId ?? entry.values.SelectedStationId) === stationId), endpoint.name);
     }
   }
+});
+
+test('Import completion report records carry authoritative owning-station display metadata', async () => {
+  const harness = isolationSqlHarness();
+  const handler = loadHandler('api/import-completions/index.js', harness.sql, authorizationFixture());
+  const response = await call(handler, 'GET', null, { stationId: '2' });
+  assert.equal(response.status, 200);
+  assert.equal(response.body.records.length, 1);
+  assert.deepEqual(
+    {
+      stationId: response.body.records[0].stationId,
+      stationCode: response.body.records[0].stationCode,
+      displayName: response.body.records[0].displayName,
+      timeZoneId: response.body.records[0].timeZoneId
+    },
+    { stationId: '2', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland' }
+  );
 });
 
 test('aggregate capabilities cannot authorize a station that lacks the requested capability', async () => {

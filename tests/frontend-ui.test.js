@@ -190,7 +190,7 @@ test('mobile route renderers and bottom navigation remain in place', () => {
   assert.match(html, /isMobileUI\(\)\?mobileBottomNav\(\):''/);
 });
 
-test('desktop lookup normalizes zero-padded flight numbers and limits default results to three Melbourne dates', () => {
+test('desktop lookup normalizes zero-padded flight numbers and limits default results to three selected-station dates', () => {
   const start = html.indexOf('function normalizeFlightLookup(');
   const end = html.indexOf('function flightLookupResultRow(', start);
   const context = vm.createContext({
@@ -206,7 +206,10 @@ test('desktop lookup normalizes zero-padded flight numbers and limits default re
     Intl,
     Date,
     stableOperationalId: value => /^[1-9]\d*$/.test(String(value || '')) ? String(value) : '',
-    flightDateISO: () => ''
+    flightDateISO: () => '',
+    selectedStationDateKey: () => '2026-09-19',
+    selectedStationCode: () => 'MEL',
+    validHistoryDateKey: value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))
   });
   vm.runInContext(html.slice(start, end), context);
   const now = Date.parse('2026-09-19T02:00:00Z');
@@ -241,7 +244,9 @@ test('lookup result actions and shift report retain stable identity and statemen
   assert.match(html, /openUldLookupResult\('\$\{esc\(flightId\)\}','\$\{esc\(match\.uldId\)\}'\)/);
   assert.match(html, /rows\.find\(row=>stableOperationalId\(row\.UldId\)===uid\)/);
   assert.match(html, /class="shift-document"/);
-  assert.match(html, /CargoRun MEL Shift Report/);
+  assert.match(html, /CargoRun Shift Report/);
+  assert.doesNotMatch(html, /CargoRun MEL Shift Report/);
+  assert.match(html, /selected-station operating date/);
   assert.match(html, /Print \/ Save PDF/);
 });
 

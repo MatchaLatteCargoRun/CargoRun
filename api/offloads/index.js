@@ -323,7 +323,9 @@ module.exports = async function (context, req) {
         }
         const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
         const selectedFlight = flightResult.recordset?.[0] || null;
-        await requireOperationalEntityCapability(pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS');
+        const owningStation = await requireOperationalEntityCapability(
+          pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS'
+        );
         const flightStatus = canonical(selectedFlight?.FlightStatus);
         if (selectedFlight.Direction !== 'EXPORT' || !offloadFlightStatuses.includes(flightStatus)) {
           sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select an ACTIVE, CLOSED or FINALISED export flight' });
@@ -344,6 +346,8 @@ module.exports = async function (context, req) {
           ok: true,
           flight: {
             flightId: String(selectedFlight.FlightId), flightNumber: selectedFlight.FlightNumber,
+            stationId: String(owningStation.stationId), stationCode: owningStation.stationCode,
+            displayName: owningStation.displayName, timeZoneId: owningStation.timeZoneId,
             operatingDate: selectedFlight.OperatingDate, direction: selectedFlight.Direction,
             flightStatus: selectedFlight.FlightStatus
           },
@@ -366,7 +370,9 @@ module.exports = async function (context, req) {
 
         const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
         const selectedFlight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;
-        await requireOperationalEntityCapability(pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS');
+        const owningStation = await requireOperationalEntityCapability(
+          pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS'
+        );
 
         const uldIdCol = pick(columns, ['UldId']);
         const requestedAtCol = pick(columns, ['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc']);
@@ -390,6 +396,10 @@ module.exports = async function (context, req) {
           ok: true,
           flight: {
             flightId: String(selectedFlight.FlightId),
+            stationId: String(owningStation.stationId),
+            stationCode: owningStation.stationCode,
+            displayName: owningStation.displayName,
+            timeZoneId: owningStation.timeZoneId,
             flightNumber: selectedFlight.FlightNumber,
             operatingDate: selectedFlight.OperatingDate,
             direction: selectedFlight.Direction,
