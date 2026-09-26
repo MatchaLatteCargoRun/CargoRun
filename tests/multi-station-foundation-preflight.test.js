@@ -23,6 +23,22 @@ test('multi-station preflight is read-only and creates no competing station mast
   assert.match(sql, /CargoRunStations[^\r\n]*AUTHORITATIVE_STATION_MASTER|AUTHORITATIVE_STATION_MASTER[^\r\n]*CargoRunStations/i);
 });
 
+test('every sp_executesql call receives one complete nvarchar variable', () => {
+  const invocation = /^\s*EXEC(?:UTE)?\s+(?:sys\.)?sp_executesql\s+([^;]+);/gmi;
+  const calls = [...sql.matchAll(invocation)];
+  const callKeywords = sql.match(/\bEXEC(?:UTE)?\s+(?:sys\.)?sp_executesql\b/gi) || [];
+  assert.ok(calls.length > 0, 'expected dynamic SQL execution sites');
+  assert.equal(calls.length, callKeywords.length, 'every sp_executesql invocation must match the safe call form');
+  for (const call of calls) {
+    assert.match(call[1].trim(), /^@[A-Za-z][A-Za-z0-9_]*$/,
+      `sp_executesql must not receive an inline expression: ${call[0]}`);
+  }
+  assert.doesNotMatch(sql, /EXEC(?:UTE)?\s+(?:sys\.)?sp_executesql\s+@[A-Za-z][A-Za-z0-9_]*\s*\+/i);
+  assert.doesNotMatch(sql, /EXEC(?:UTE)?\s+(?:sys\.)?sp_executesql\s+N?'/i);
+  assert.doesNotMatch(sql, /\bEXEC(?:UTE)?\s*\(/i,
+    'dynamic SQL must use a complete variable passed to sp_executesql');
+});
+
 test('multi-station preflight inventories live schema and target StationId columns', () => {
   for (const catalog of ['sys.tables', 'sys.columns', 'sys.indexes', 'sys.foreign_keys', 'sys.check_constraints', 'sys.triggers', 'sys.default_constraints']) {
     assert.match(sql, new RegExp(catalog.replace('.', '\\.'), 'i'));

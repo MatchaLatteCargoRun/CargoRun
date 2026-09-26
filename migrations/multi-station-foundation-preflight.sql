@@ -6,6 +6,7 @@ DECLARE @FlightsObjectId int=OBJECT_ID(N'dbo.Flights',N'U');
 DECLARE @StationsObjectId int=OBJECT_ID(N'dbo.CargoRunStations',N'U');
 DECLARE @MachObjectId int=OBJECT_ID(N'dbo.IncomingMachMessages',N'U');
 DECLARE @FowObjectId int=OBJECT_ID(N'dbo.MachFowShipments',N'U');
+DECLARE @ExecutableSql nvarchar(max);
 DECLARE @FlightIdReady bit=CASE WHEN OBJECT_ID(N'dbo.Flights',N'U') IS NOT NULL
   AND COL_LENGTH(N'dbo.Flights',N'FlightId') IS NOT NULL THEN 1 ELSE 0 END;
 
@@ -181,10 +182,13 @@ ORDER BY target.TableName,triggerObject.name;
 
 -- 8. Authoritative station rows. Missing columns are reported without compiling an unsafe direct reference.
 IF @StationCoreReady=1
-  EXEC sys.sp_executesql N'
+BEGIN
+  SET @ExecutableSql=N'
     SELECT StationId,StationCode,DisplayName,TimeZoneId,IsEnabled
     FROM dbo.CargoRunStations
     ORDER BY StationCode,StationId;';
+  EXEC sys.sp_executesql @ExecutableSql;
+END;
 ELSE
   SELECT CAST(NULL AS bigint) AS StationId,CAST(NULL AS varchar(3)) AS StationCode,
     CAST(NULL AS nvarchar(100)) AS DisplayName,CAST(NULL AS nvarchar(100)) AS TimeZoneId,
@@ -356,7 +360,7 @@ DECLARE @FlightClassificationCte nvarchar(max)=N'WITH MachEvidence AS ('+@MachEv
 -- 10. Flight population inventory. Each result is empty, rather than unsafe, if core columns are absent.
 IF @FlightCoreReady=1
 BEGIN
-  EXEC sys.sp_executesql N'
+  SET @ExecutableSql=N'
     SELECT COUNT_BIG(*) AS TotalFlights,MIN(OperatingDate) AS EarliestOperatingDate,
       MAX(OperatingDate) AS LatestOperatingDate
     FROM dbo.Flights;
@@ -367,20 +371,24 @@ BEGIN
     FROM dbo.Flights GROUP BY DATEPART(year,OperatingDate) ORDER BY OperatingYear;
     SELECT OriginAirport,COUNT_BIG(*) AS RecordCount FROM dbo.Flights GROUP BY OriginAirport ORDER BY OriginAirport;
     SELECT DestinationAirport,COUNT_BIG(*) AS RecordCount FROM dbo.Flights GROUP BY DestinationAirport ORDER BY DestinationAirport;';
+  EXEC sys.sp_executesql @ExecutableSql;
 
-  EXEC sys.sp_executesql @FlightClassificationCte+N'
+  SET @ExecutableSql=@FlightClassificationCte+N'
     SELECT SourceIndicator,COUNT_BIG(*) AS RecordCount,MIN(CreatedAtUtc) AS EarliestCreatedAtUtc,
       MAX(CreatedAtUtc) AS LatestCreatedAtUtc
     FROM ClassifiedFlights GROUP BY SourceIndicator ORDER BY SourceIndicator;';
-  EXEC sys.sp_executesql @FlightClassificationCte+N'
+  EXEC sys.sp_executesql @ExecutableSql;
+  SET @ExecutableSql=@FlightClassificationCte+N'
     SELECT OwnershipClassification,COUNT_BIG(*) AS RecordCount
     FROM ClassifiedFlights GROUP BY OwnershipClassification ORDER BY OwnershipClassification;';
-  EXEC sys.sp_executesql @FlightClassificationCte+N'
+  EXEC sys.sp_executesql @ExecutableSql;
+  SET @ExecutableSql=@FlightClassificationCte+N'
     SELECT FlightId,FlightNumber,OperatingDate,Direction,FlightStatus,OriginAirport,DestinationAirport,
       SourceIndicator,CreatedAtUtc,MachMelCount,MachConflictCount,MachInvalidCount,MachRouteConflictCount,
       OwnershipClassification,ClassificationReason
     FROM ClassifiedFlights
     ORDER BY OwnershipClassification,OperatingDate,FlightId;';
+  EXEC sys.sp_executesql @ExecutableSql;
 END;
 ELSE
 BEGIN
@@ -413,7 +421,7 @@ BEGIN
         '+@MachDestinationExpression+N' AS SegmentDestination
       FROM dbo.IncomingMachMessages message
     )';
-  EXEC sys.sp_executesql @MachMessageCte+N'
+  SET @ExecutableSql=@MachMessageCte+N'
     SELECT CASE
         WHEN MatchedFlightId IS NULL THEN N''UNMATCHED''
         WHEN NULLIF(LTRIM(RTRIM(StationAirport)),N'''') IS NULL
@@ -431,45 +439,49 @@ BEGIN
         WHEN UPPER(LTRIM(RTRIM(StationAirport)))=N''MEL'' THEN N''MEL_SUPPORT''
         ELSE N''STATION_CONFLICT'' END
     ORDER BY EvidenceClassification;';
+  EXEC sys.sp_executesql @ExecutableSql;
   IF @FlightCoreReady=1
-    EXEC sys.sp_executesql @MachMessageCte+N'
-    SELECT message.MachMessageId,message.DocumentCorID,message.MatchedFlightId,
-      message.StationAirport,message.SegmentOrigin,message.SegmentDestination,
-      flight.FlightId,flight.Direction,flight.OriginAirport AS FlightOriginAirport,
-      flight.DestinationAirport AS FlightDestinationAirport,
-      CASE
-        WHEN message.MatchedFlightId IS NULL THEN N''UNMATCHED_MESSAGE''
-        WHEN flight.FlightId IS NULL THEN N''MATCHED_FLIGHT_MISSING''
-        WHEN NULLIF(LTRIM(RTRIM(message.StationAirport)),N'''') IS NULL THEN N''INVALID_MESSAGE_STATION''
-        WHEN UPPER(LTRIM(RTRIM(message.StationAirport)))<>N''MEL'' THEN N''MACH_STATION_CONFLICT''
-        WHEN UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''IMPORT''
-          AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport))))<>N''MEL'' THEN N''MESSAGE_FLIGHT_ROUTE_CONFLICT''
-        WHEN UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''EXPORT''
-          AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport))))<>N''MEL'' THEN N''MESSAGE_FLIGHT_ROUTE_CONFLICT''
-        WHEN message.SegmentOrigin IS NOT NULL AND message.FlightId IS NOT NULL
-          AND UPPER(LTRIM(RTRIM(message.SegmentOrigin)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport)))) THEN N''MESSAGE_SEGMENT_CONFLICT''
-        WHEN message.SegmentDestination IS NOT NULL AND message.FlightId IS NOT NULL
-          AND UPPER(LTRIM(RTRIM(message.SegmentDestination)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport)))) THEN N''MESSAGE_SEGMENT_CONFLICT''
-        ELSE N''CONSISTENT'' END AS Finding
-    FROM (
-      SELECT evidence.*,evidence.MatchedFlightId AS FlightId FROM MessageEvidence evidence
-    ) message
-    LEFT JOIN dbo.Flights flight ON flight.FlightId=TRY_CONVERT(bigint,message.MatchedFlightId)
-    WHERE message.MatchedFlightId IS NULL OR flight.FlightId IS NULL
-       OR NULLIF(LTRIM(RTRIM(message.StationAirport)),N'''') IS NULL
-       OR UPPER(LTRIM(RTRIM(message.StationAirport)))<>N''MEL''
-       OR (UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''IMPORT''
-           AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport))))<>N''MEL'')
-       OR (UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''EXPORT''
-           AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport))))<>N''MEL'')
-       OR (message.SegmentOrigin IS NOT NULL AND flight.FlightId IS NOT NULL
-           AND UPPER(LTRIM(RTRIM(message.SegmentOrigin)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport)))))
-       OR (message.SegmentDestination IS NOT NULL AND flight.FlightId IS NOT NULL
-           AND UPPER(LTRIM(RTRIM(message.SegmentDestination)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport)))));';
+  BEGIN
+    SET @ExecutableSql=@MachMessageCte+N'
+      SELECT message.MachMessageId,message.DocumentCorID,message.MatchedFlightId,
+        message.StationAirport,message.SegmentOrigin,message.SegmentDestination,
+        flight.FlightId,flight.Direction,flight.OriginAirport AS FlightOriginAirport,
+        flight.DestinationAirport AS FlightDestinationAirport,
+        CASE
+          WHEN message.MatchedFlightId IS NULL THEN N''UNMATCHED_MESSAGE''
+          WHEN flight.FlightId IS NULL THEN N''MATCHED_FLIGHT_MISSING''
+          WHEN NULLIF(LTRIM(RTRIM(message.StationAirport)),N'''') IS NULL THEN N''INVALID_MESSAGE_STATION''
+          WHEN UPPER(LTRIM(RTRIM(message.StationAirport)))<>N''MEL'' THEN N''MACH_STATION_CONFLICT''
+          WHEN UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''IMPORT''
+            AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport))))<>N''MEL'' THEN N''MESSAGE_FLIGHT_ROUTE_CONFLICT''
+          WHEN UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''EXPORT''
+            AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport))))<>N''MEL'' THEN N''MESSAGE_FLIGHT_ROUTE_CONFLICT''
+          WHEN message.SegmentOrigin IS NOT NULL AND message.FlightId IS NOT NULL
+            AND UPPER(LTRIM(RTRIM(message.SegmentOrigin)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport)))) THEN N''MESSAGE_SEGMENT_CONFLICT''
+          WHEN message.SegmentDestination IS NOT NULL AND message.FlightId IS NOT NULL
+            AND UPPER(LTRIM(RTRIM(message.SegmentDestination)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport)))) THEN N''MESSAGE_SEGMENT_CONFLICT''
+          ELSE N''CONSISTENT'' END AS Finding
+      FROM (
+        SELECT evidence.*,evidence.MatchedFlightId AS FlightId FROM MessageEvidence evidence
+      ) message
+      LEFT JOIN dbo.Flights flight ON flight.FlightId=TRY_CONVERT(bigint,message.MatchedFlightId)
+      WHERE message.MatchedFlightId IS NULL OR flight.FlightId IS NULL
+         OR NULLIF(LTRIM(RTRIM(message.StationAirport)),N'''') IS NULL
+         OR UPPER(LTRIM(RTRIM(message.StationAirport)))<>N''MEL''
+         OR (UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''IMPORT''
+             AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport))))<>N''MEL'')
+         OR (UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),flight.Direction))))=N''EXPORT''
+             AND UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport))))<>N''MEL'')
+         OR (message.SegmentOrigin IS NOT NULL AND flight.FlightId IS NOT NULL
+             AND UPPER(LTRIM(RTRIM(message.SegmentOrigin)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.OriginAirport)))))
+         OR (message.SegmentDestination IS NOT NULL AND flight.FlightId IS NOT NULL
+             AND UPPER(LTRIM(RTRIM(message.SegmentDestination)))<>UPPER(LTRIM(RTRIM(CONVERT(nvarchar(20),flight.DestinationAirport)))));';
+    EXEC sys.sp_executesql @ExecutableSql;
+  END;
   ELSE
     SELECT N'MACH_FLIGHT_CORROBORATION_UNAVAILABLE' AS Finding,
       N'Flights core route columns are missing; message-to-flight route comparison was skipped.' AS Detail;
-  EXEC sys.sp_executesql @MachMessageCte+N'
+  SET @ExecutableSql=@MachMessageCte+N'
     SELECT DocumentCorID,COUNT_BIG(*) AS MessageCount,
       COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>'')) AS DistinctMatchedFlightCount,
       COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>''))))) AS DistinctStationCount
@@ -478,6 +490,7 @@ BEGIN
     HAVING COUNT(DISTINCT COALESCE(CONVERT(nvarchar(100),MatchedFlightId),N''<NULL>''))>1
         OR COUNT(DISTINCT UPPER(LTRIM(RTRIM(COALESCE(StationAirport,N''<NULL>'')))))>1
     ORDER BY DocumentCorID;';
+  EXEC sys.sp_executesql @ExecutableSql;
 END;
 ELSE
 BEGIN
@@ -491,7 +504,7 @@ IF @FowObjectId IS NOT NULL
    AND COL_LENGTH(N'dbo.MachFowShipments',N'FlightId') IS NOT NULL
    AND @MachCoreReady=1
 BEGIN
-  EXEC sys.sp_executesql N'
+  SET @ExecutableSql=N'
     SELECT shipment.MachMessageId,shipment.FlightId AS ShipmentFlightId,
       message.MatchedFlightId AS MessageFlightId
     FROM dbo.MachFowShipments shipment
@@ -500,6 +513,7 @@ BEGIN
        OR TRY_CONVERT(bigint,shipment.FlightId)<>TRY_CONVERT(bigint,message.MatchedFlightId)
        OR message.MatchedFlightId IS NULL
     ORDER BY shipment.MachMessageId,shipment.FlightId;';
+  EXEC sys.sp_executesql @ExecutableSql;
 END;
 ELSE
   SELECT N'MISSING_FOW_CORROBORATION_COLUMN' AS Finding,required.ColumnName AS Detail
@@ -558,14 +572,15 @@ DECLARE @CanonicalCte nvarchar(max)=N'WITH RawFlightIdentity AS (
 
 IF @FlightCoreReady=1
 BEGIN
-  EXEC sys.sp_executesql @CanonicalCte+N'
+  SET @ExecutableSql=@CanonicalCte+N'
     SELECT FlightId,OperatingDate,OriginalFlightNumber,CompactFlightNumber,NumericSegment,
       N''APPLICATION_ASSISTED_NORMALIZATION_REQUIRED'' AS Finding
     FROM CanonicalFlightIdentity
     WHERE SqlParityGuaranteed=0
       AND (HasUnmodelledWhitespaceOrCharacter=1 OR LEN(COALESCE(NumericSegment,N''''))>15)
     ORDER BY OperatingDate,FlightId;';
-  EXEC sys.sp_executesql @CanonicalCte+N'
+  EXEC sys.sp_executesql @ExecutableSql;
+  SET @ExecutableSql=@CanonicalCte+N'
     SELECT N''MEL'' AS ConceptualStationCode,OperatingDate,NormalizedFlightNumber,
       COUNT_BIG(*) AS FlightCount,COUNT(DISTINCT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(30),Direction))))) AS DirectionCount,
       COUNT(DISTINCT UPPER(LTRIM(RTRIM(CONVERT(nvarchar(50),FlightStatus))))) AS StatusCount,
@@ -575,7 +590,8 @@ BEGIN
     GROUP BY OperatingDate,NormalizedFlightNumber
     HAVING COUNT_BIG(*)>1
     ORDER BY OperatingDate,NormalizedFlightNumber;';
-  EXEC sys.sp_executesql @CanonicalCte+N'
+  EXEC sys.sp_executesql @ExecutableSql;
+  SET @ExecutableSql=@CanonicalCte+N'
     SELECT N''MEL'' AS ConceptualStationCode,OperatingDate,NormalizedFlightNumber,
       FlightId,OriginalFlightNumber,Direction,FlightStatus,SourceIndicator
     FROM CanonicalFlightIdentity
@@ -587,6 +603,7 @@ BEGIN
           AND otherFlight.FlightId<>CanonicalFlightIdentity.FlightId
       )
     ORDER BY OperatingDate,NormalizedFlightNumber,FlightId;';
+  EXEC sys.sp_executesql @ExecutableSql;
 END;
 ELSE
   SELECT N'CANONICAL_PREFLIGHT_UNAVAILABLE' AS Finding,N'Flights core identity columns are missing.' AS Detail;
@@ -616,12 +633,13 @@ IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.MachFowShipments',N'U') IS NOT NULL AND 
 IF @FlightIdReady=1 AND OBJECT_ID(N'dbo.AuditEvents',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.AuditEvents',N'FlightId') IS NOT NULL
   SET @ChildDetailSql+=N' UNION ALL SELECT N''AuditEvents'',CONVERT(nvarchar(200),'+CASE WHEN COL_LENGTH(N'dbo.AuditEvents',N'AuditEventId') IS NOT NULL THEN N'child.AuditEventId' WHEN COL_LENGTH(N'dbo.AuditEvents',N'EventId') IS NOT NULL THEN N'child.EventId' ELSE N'child.FlightId' END+N'),CONVERT(nvarchar(100),child.FlightId),CASE WHEN child.FlightId IS NULL THEN N''AUDIT_WITHOUT_FLIGHT'' ELSE N''ORPHAN_CHILD'' END FROM dbo.AuditEvents child LEFT JOIN dbo.Flights parent ON parent.FlightId=child.FlightId WHERE child.FlightId IS NULL OR parent.FlightId IS NULL';
 
-EXEC sys.sp_executesql N'WITH ChildFindings AS ('+@ChildDetailSql+N')
+SET @ExecutableSql=N'WITH ChildFindings AS ('+@ChildDetailSql+N')
   SELECT ChildTable,Finding,COUNT_BIG(*) AS RecordCount
   FROM ChildFindings GROUP BY ChildTable,Finding ORDER BY ChildTable,Finding;
   WITH ChildFindings AS ('+@ChildDetailSql+N')
   SELECT ChildTable,ChildReference,ChildFlightId,Finding
   FROM ChildFindings ORDER BY ChildTable,Finding,ChildReference;';
+EXEC sys.sp_executesql @ExecutableSql;
 
 -- 14. Report required child ownership columns that are absent instead of silently skipping them.
 ;WITH RequiredOwnership(TableName,ColumnName) AS (
@@ -654,19 +672,21 @@ SELECT N'INGESTION_RULE_CUTOFF_NOT_STORED' AS Finding,N'REVIEW' AS Severity,
 
 IF @FlightCoreReady=1
 BEGIN
-  EXEC sys.sp_executesql @FlightClassificationCte+N'
+  SET @ExecutableSql=@FlightClassificationCte+N'
     SELECT FlightId,FlightNumber,OperatingDate,Direction,FlightStatus,OriginAirport,DestinationAirport,
       OwnershipClassification,ClassificationReason,SourceIndicator,CreatedAtUtc
     FROM ClassifiedFlights
     WHERE UPPER(REPLACE(LTRIM(RTRIM(CONVERT(nvarchar(50),FlightStatus))),N''_'',N'''')) IN (N''CLOSED'',N''FINALISED'',N''FINALIZED'')
     ORDER BY OperatingDate,FlightId;';
-  EXEC sys.sp_executesql @FlightClassificationCte+N'
+  EXEC sys.sp_executesql @ExecutableSql;
+  SET @ExecutableSql=@FlightClassificationCte+N'
     SELECT OwnershipClassification,
       SUM(CASE WHEN UPPER(REPLACE(LTRIM(RTRIM(CONVERT(nvarchar(50),FlightStatus))),N''_'',N'''')) IN (N''CLOSED'',N''FINALISED'',N''FINALIZED'') THEN 1 ELSE 0 END) AS ClosedOrFinalisedCount,
       COUNT_BIG(*) AS RecordCount,MIN(CreatedAtUtc) AS EarliestCreatedAtUtc,MAX(CreatedAtUtc) AS LatestCreatedAtUtc
     FROM ClassifiedFlights
     GROUP BY OwnershipClassification
     ORDER BY OwnershipClassification;';
+  EXEC sys.sp_executesql @ExecutableSql;
 
   DECLARE @HistoricalEvidenceSql nvarchar(max)=N'
     SELECT CAST(NULL AS nvarchar(100)) AS EvidenceType,CAST(NULL AS bigint) AS EvidenceId,
@@ -682,18 +702,20 @@ BEGIN
   IF OBJECT_ID(N'dbo.MachFowShipments',N'U') IS NOT NULL AND COL_LENGTH(N'dbo.MachFowShipments',N'FlightId') IS NOT NULL
     SET @HistoricalEvidenceSql+=N' UNION ALL SELECT N''FOW_SHIPMENT'',TRY_CONVERT(bigint,'+CASE WHEN COL_LENGTH(N'dbo.MachFowShipments',N'MachMessageId') IS NOT NULL THEN N'evidence.MachMessageId' ELSE N'evidence.FlightId' END+N'),TRY_CONVERT(bigint,evidence.FlightId),flight.OwnershipClassification,flight.ClassificationReason FROM dbo.MachFowShipments evidence JOIN ClassifiedFlights flight ON flight.FlightId=evidence.FlightId WHERE flight.OwnershipClassification<>N''SAFE_MEL_CANDIDATE''';
 
-  EXEC sys.sp_executesql @FlightClassificationCte+N', HistoricalEvidence AS ('+@HistoricalEvidenceSql+N')
+  SET @ExecutableSql=@FlightClassificationCte+N', HistoricalEvidence AS ('+@HistoricalEvidenceSql+N')
     SELECT EvidenceType,EvidenceId,FlightId,OwnershipClassification,ClassificationReason
     FROM HistoricalEvidence ORDER BY EvidenceType,FlightId,EvidenceId;';
+  EXEC sys.sp_executesql @ExecutableSql;
 
   DECLARE @LegacyStationExpression nvarchar(300)=CASE WHEN COL_LENGTH(N'dbo.Flights',N'StationId') IS NOT NULL
     THEN N'CONVERT(nvarchar(100),f.StationId)' ELSE N'CAST(NULL AS nvarchar(100))' END;
-  EXEC sys.sp_executesql N'
+  SET @ExecutableSql=N'
     SELECT f.FlightId,f.FlightNumber,f.OperatingDate,f.Direction,'+@LegacyStationExpression+N' AS ExistingStationId,
       N''LEGACY_ROW_WOULD_BE_INACCESSIBLE_UNTIL_BACKFILLED'' AS Finding
     FROM dbo.Flights f
     WHERE '+CASE WHEN COL_LENGTH(N'dbo.Flights',N'StationId') IS NOT NULL THEN N'f.StationId IS NULL' ELSE N'1=1' END+N'
     ORDER BY f.OperatingDate,f.FlightId;';
+  EXEC sys.sp_executesql @ExecutableSql;
 END;
 ELSE
   SELECT N'HISTORICAL_REVIEW_UNAVAILABLE' AS Finding,N'Flights core columns are missing.' AS Detail;
