@@ -73,7 +73,8 @@ test('session authorization reuses the shared CargoRun loader without a static a
   const accessGate = html.slice(html.indexOf('function accessGateScreen()'), html.indexOf('let actionLoaderDepth'));
   const boot = html.slice(html.indexOf('async function bootCargoRun()'), html.indexOf('\nbootCargoRun();'));
   assert.match(boot, /showDataLoader\('Checking CargoRun access','Confirming your CargoRun role and station access\.'\)/);
-  assert.match(boot, /updateDataLoader\('Loading live operations/);
+  assert.match(boot, /switchCargoRunStation\(stationId,\{reason:'startup'\}\)/);
+  assert.match(html, /showDataLoader\(reason==='startup'\?'Loading live operations…':reason==='retry'\?'Retrying station…':'Switching station…'/);
   assert.match(html, /purgeCargoRunOperationalState\(\{preserveIdentity:true,preserveDataLoader:true\}\)/);
   assert.doesNotMatch(accessGate, /Checking CargoRun access|Confirming your CargoRun role and station access/);
   assert.match(accessGate, /Access not provisioned/);

@@ -6,6 +6,7 @@ const {
   LEGACY_NULL_STATION_COMPATIBILITY_ENABLED,
   StationResolutionError,
   legacyRouteStationCode,
+  normalizeStationId,
   normalizeStationRecord,
   resolveFlightStation
 } = require('./station');
@@ -228,6 +229,33 @@ async function resolveActorAccess(executor, sql, actor) {
   };
 }
 
+function capabilitiesForStation(userAccess, stationId) {
+  let id;
+  try {
+    id = normalizeStationId(stationId);
+  } catch {
+    throw new OperationalAuthorizationError(
+      'STATION_ACCESS_DENIED',
+      'The requested station is not authorized',
+      403
+    );
+  }
+  const station = (Array.isArray(userAccess?.stationMetadata) ? userAccess.stationMetadata : [])
+    .find(candidate => String(candidate?.stationId || '') === id);
+  if (!station) {
+    throw new OperationalAuthorizationError(
+      'STATION_ACCESS_DENIED',
+      'The requested station is not authorized',
+      403
+    );
+  }
+  const stationCode = String(station.stationCode || '').trim().toUpperCase();
+  const capabilities = Array.isArray(userAccess?.capabilitiesByStation?.[stationCode])
+    ? userAccess.capabilitiesByStation[stationCode]
+    : [];
+  return [...new Set(capabilities.map(normalizeCapability).filter(Boolean))].sort();
+}
+
 async function requireOperationalStations(executor, sql, actor, requiredCapability) {
   const capability = normalizeCapability(requiredCapability);
   if (!capability) {
@@ -409,6 +437,7 @@ module.exports = {
   authenticatedActor,
   stationForFlight,
   resolveActorAccess,
+  capabilitiesForStation,
   requireOperationalStations,
   requireAnyOperationalCapability,
   bindStationParameters,

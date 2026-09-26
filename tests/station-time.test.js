@@ -6,6 +6,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const {
   StationTimeError,
+  normalizeTimeZone,
   stationDateKey,
   formatInstantInStation,
   utcBoundsForStationDate,
@@ -123,4 +124,13 @@ test('strict validation rejects malformed dates, times, zones, instants, and opt
   }
   assert.throws(() => resolveStationLocalDateTime('2026-04-05', '02:30', MEL, 'COMPATIBLE'), StationTimeError);
   assert.throws(() => formatInstantInStation('2026-01-01T00:00:00Z', MEL, { includeSeconds: 'yes' }), StationTimeError);
+});
+
+test('timezone validation preserves named IANA zones and rejects blank, invalid, and fixed-offset forms', () => {
+  for (const value of [MEL, AKL, 'UTC', 'America/Los_Angeles']) {
+    assert.equal(normalizeTimeZone(value), value);
+  }
+  for (const value of ['', ' ', 'Mars/Olympus', '+10:00', '-04:30', 'Etc/GMT', 'Etc/GMT+4', null, undefined]) {
+    assert.throws(() => normalizeTimeZone(value), StationTimeError, String(value));
+  }
 });

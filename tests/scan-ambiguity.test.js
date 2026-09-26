@@ -227,6 +227,6 @@ test('offload request UI uses server eligibility and stable multi-select ULD ide
   assert.match(html, /id="offFlightId"/);
   assert.match(html, /id="offUldCandidates"/);
   assert.doesNotMatch(html, /id="offUld"/);
-  assert.match(html, /offloads\?eligibleFlights=true/);
+  assert.match(html, /selectedStationApiUrl\('\/api\/offloads',\{eligibleFlights:true\}\)/);
   assert.match(html, /JSON\.stringify\(\{action:'BULK_CREATE',flightId,uldIds,/);
 });

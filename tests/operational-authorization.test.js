@@ -166,11 +166,29 @@ test('session access resolution distinguishes unprovisioned, provisioned, and un
   }]);
   assert.deepEqual(granted.capabilities, ['MOVE_ULD', 'VIEW_ADMIN_AUDIT', 'VIEW_FLIGHTS']);
   assert.deepEqual(granted.globalCapabilities, ['VIEW_ADMIN_AUDIT']);
+  assert.deepEqual(actualAuthorization.capabilitiesForStation(granted, '1'), ['MOVE_ULD', 'VIEW_FLIGHTS']);
+  assert.throws(
+    () => actualAuthorization.capabilitiesForStation(granted, '2'),
+    error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+  );
 
   await assert.rejects(
     actualAuthorization.resolveActorAccess({}, authorizationSql({ accessFailure: new Error('schema missing') }).sql, actor),
     error => error.status === 503 && error.code === 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE'
   );
+});
+
+test('authorization rejects malformed, unknown, and fixed-offset station timezones', async () => {
+  const actor = actualAuthorization.authenticatedActor(requestWithPrincipal(authenticatedPrincipal));
+  for (const TimeZoneId of ['', 'Mars/Olympus', '+10:00', 'Etc/GMT-10']) {
+    await assert.rejects(
+      actualAuthorization.resolveActorAccess({}, authorizationSql({ accessRows: [
+        { StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId, CapabilityCode: 'VIEW_FLIGHTS' }
+      ] }).sql, actor),
+      error => error.status === 503 && error.code === 'AUTHORIZATION_CONFIGURATION_INVALID',
+      TimeZoneId
+    );
+  }
 });
 
 test('GET session returns safe unprovisioned metadata and keeps configuration failures distinct', async () => {
@@ -190,6 +208,19 @@ test('GET session returns safe unprovisioned metadata and keeps configuration fa
   });
   assert.equal(JSON.stringify(emptyResponse.body).includes('connection'), false);
   assert.equal(JSON.stringify(emptyResponse.body).includes('sql'), false);
+
+  const grantedHarness = readSqlHarness({ accessRows: [
+    { StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId: 'Australia/Melbourne', CapabilityCode: 'MOVE_ULD' },
+    { StationId: 2, StationCode: 'AKL', DisplayName: 'Auckland', TimeZoneId: 'Pacific/Auckland', CapabilityCode: 'VIEW_FLIGHTS' },
+    { StationCode: null, CapabilityCode: 'VIEW_ADMIN_AUDIT' }
+  ] });
+  const grantedResponse = await invoke(loadHandler('api/session/index.js', grantedHarness.sql, actualAuthorization), 'GET');
+  assert.equal(grantedResponse.status, 200);
+  assert.deepEqual(grantedResponse.body.stationMetadata, [
+    { stationId: '2', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland', capabilities: ['VIEW_FLIGHTS'] },
+    { stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne', capabilities: ['MOVE_ULD'] }
+  ]);
+  assert.deepEqual(grantedResponse.body.capabilities, ['MOVE_ULD', 'VIEW_ADMIN_AUDIT', 'VIEW_FLIGHTS']);
 
   const failedHarness = readSqlHarness({ accessFailure: new Error('schema missing') });
   const failedResponse = await invoke(loadHandler('api/session/index.js', failedHarness.sql, actualAuthorization), 'GET');
@@ -307,12 +338,14 @@ test('wrong-station UldId and OffloadId resolve their owning FlightId and cannot
 test('frontend session gate precedes every operational sync and blocks scheduler startup when unprovisioned', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const boot = html.slice(html.indexOf('async function bootCargoRun()'), html.indexOf('bootCargoRun();') + 'bootCargoRun();'.length);
-  assert.ok(boot.indexOf('await loadCargoRunSession()') < boot.indexOf('syncCentralData('));
+  assert.ok(boot.indexOf('await loadCargoRunSession()') < boot.indexOf('switchCargoRunStation('));
   assert.match(boot, /if\(!provisioned\)return;/);
-  assert.ok(boot.indexOf('if(!provisioned)return;') < boot.indexOf('centralSyncScheduler.start()'));
-  assert.match(html, /canRun:\(\)=>canUseCargoRunApi\(\)&&cargoRunAccess\.status==='provisioned'/);
+  assert.match(boot, /if\(!stationId\)\{render\(\);return\}/);
+  const stationSwitch = html.slice(html.indexOf('async function switchCargoRunStation('), html.indexOf('function refreshHistoryOnEntry('));
+  assert.ok(stationSwitch.indexOf('syncCentralData(') < stationSwitch.indexOf('centralSyncScheduler.start()'));
+  assert.match(html, /canRun:\(\)=>canUseCargoRunApi\(\)&&cargoRunAccess\.status==='provisioned'&&!!selectedStation\(\)/);
   assert.match(html, /if\(cargoRunAccess\.status!=='provisioned'\).*accessGateScreen\(\).*return/);
-  assert.match(html, /status:data\.provisioned\?'provisioned':'unprovisioned'/);
+  assert.match(html, /status:operationallyProvisioned\?'provisioned':'unprovisioned'/);
   assert.match(html, /cargoRunAccess=\{status:'error'/);
   assert.doesNotMatch(html, /status:\s*'unprovisioned'.*catch/s);
 });

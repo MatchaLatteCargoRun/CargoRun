@@ -1,5 +1,7 @@
 'use strict';
 
+const { normalizeTimeZone } = require('./station-time');
+
 const LEGACY_NULL_STATION_COMPATIBILITY_ENABLED = true;
 const MACHINE_STATION_CODE = 'MEL';
 const STATION_TIME_ZONE_FIXTURES = Object.freeze({
@@ -38,8 +40,14 @@ function normalizeStationRecord(row) {
   const stationId = normalizeStationId(row.StationId);
   const stationCode = normalizeStationCode(row.StationCode);
   const displayName = String(row.DisplayName || '').trim();
-  const timeZoneId = String(row.TimeZoneId || '').trim();
-  if (!displayName || !timeZoneId) {
+  const rawTimeZoneId = String(row.TimeZoneId || '').trim();
+  if (!displayName || !rawTimeZoneId) {
+    throw new StationResolutionError('STATION_INVALID', 'The operational station is not configured correctly');
+  }
+  let timeZoneId;
+  try {
+    timeZoneId = normalizeTimeZone(rawTimeZoneId);
+  } catch {
     throw new StationResolutionError('STATION_INVALID', 'The operational station is not configured correctly');
   }
   return { stationId, stationCode, displayName, timeZoneId };

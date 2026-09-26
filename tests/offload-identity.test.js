@@ -277,7 +277,8 @@ function ui(){
  elements.modal={classList:{contains:()=>true}};const requests=[],notices=[],cargoRunAccess={status:'provisioned'},operationalSessionGeneration=1;
  const context=vm.createContext({document:{getElementById:id=>elements[id]},modal(){},modalHead:()=>'',esc:String,azureDisplayDate:String,
   stableOperationalId:x=>/^[1-9]\d*$/.test(String(x??'').trim())?String(x).trim():'',
-  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},syncAzureOffloads:async()=>true,
+  selectedStationApiUrl:(path,parameters={})=>`${path}?${new URLSearchParams({...parameters,stationId:'1'}).toString()}`,
+  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},syncAzureOffloads:async()=>true,canUseStationAction:()=>true,
   cargoRunAccess,operationalSessionGeneration,
   operationalSessionIsCurrent:generation=>generation===operationalSessionGeneration&&cargoRunAccess.status==='provisioned'});
  vm.runInContext(html.slice(html.indexOf('let offloadRequestSession='),html.indexOf('function handleOffload(')),context);

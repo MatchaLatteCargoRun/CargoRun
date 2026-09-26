@@ -269,6 +269,7 @@ function utcBoundsForStationDate(localDate, timeZoneId) {
 
 module.exports = {
   StationTimeError,
+  normalizeTimeZone,
   stationDateKey,
   formatInstantInStation,
   utcBoundsForStationDate,

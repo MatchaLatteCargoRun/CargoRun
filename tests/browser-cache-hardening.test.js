@@ -49,6 +49,7 @@ function createStateContext(cachedState = null) {
     render() {},
     location: { protocol: 'https:', href: '' },
     centralSyncScheduler: { stop() {}, request: async () => true },
+    synchronizeSelectedStation: async () => true,
     fetch: async () => { throw new Error('fetch not configured'); }
   });
   const stateSource = sourceBetween('const CARGORUN_STATE_VERSION=', '/* =========================================================');
@@ -67,7 +68,7 @@ function deferred() {
 }
 
 function provision(context) {
-  vm.runInContext("cargoRunAccess={status:'provisioned',stations:['MEL'],capabilities:['VIEW_FLIGHTS']}", context);
+  vm.runInContext("cargoRunAccess={status:'provisioned',stations:['MEL'],stationMetadata:[{stationId:'1',stationCode:'MEL',displayName:'Melbourne',timeZoneId:'Australia/Melbourne',capabilities:['VIEW_FLIGHTS']}],capabilities:['VIEW_FLIGHTS']};selectedStationId='1'", context);
 }
 
 function readJson(context, expression) {
@@ -171,7 +172,7 @@ test('sign-out synchronously purges legacy cache and operational memory before r
 test('a server user change clears the previous user operational rows', async () => {
   const { context } = createStateContext();
   installSessionFunction(context);
-  const sessionA = { ok: true, authenticated: true, provisioned: true, userId: 'user-a', displayName: 'User A', stations: ['MEL'], capabilities: ['VIEW_FLIGHTS'] };
+  const sessionA = { ok: true, authenticated: true, provisioned: true, userId: 'user-a', displayName: 'User A', stations: ['MEL'], stationMetadata: [{ stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne', capabilities: ['VIEW_FLIGHTS'] }], capabilities: ['VIEW_FLIGHTS'] };
   context.fetch = async () => response(200, sessionA);
   assert.equal(await context.loadCargoRunSession(), true);
   vm.runInContext("state.imports=[{flight:'USER-A-FLIGHT'}];state.history=[{action:'USER-A-HISTORY'}]", context);
@@ -193,11 +194,11 @@ test('a server user change clears the previous user operational rows', async () 
 test('station or capability changes clear data from the previous authorization scope', async () => {
   const { context } = createStateContext();
   installSessionFunction(context);
-  let session = { ok: true, authenticated: true, provisioned: true, userId: 'same-user', stations: ['MEL'], capabilities: ['VIEW_FLIGHTS', 'VIEW_HISTORY'] };
+  let session = { ok: true, authenticated: true, provisioned: true, userId: 'same-user', stations: ['MEL'], stationMetadata: [{ stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne', capabilities: ['VIEW_FLIGHTS', 'VIEW_HISTORY'] }], capabilities: ['VIEW_FLIGHTS', 'VIEW_HISTORY'] };
   context.fetch = async () => response(200, session);
   assert.equal(await context.loadCargoRunSession(), true);
   vm.runInContext("state.exports=[{flight:'MEL-ONLY'}];state.completedImports=[{verificationId:'MEL-EVIDENCE'}]", context);
-  session = { ...session, stations: ['SYD'], capabilities: ['VIEW_FLIGHTS'] };
+  session = { ...session, stations: ['SYD'], stationMetadata: [{ stationId: '2', stationCode: 'SYD', displayName: 'Sydney', timeZoneId: 'Australia/Sydney', capabilities: ['VIEW_FLIGHTS'] }], capabilities: ['VIEW_FLIGHTS'] };
   assert.equal(await context.loadCargoRunSession(), true);
   assert.deepEqual(readJson(context, 'state.exports'), []);
   assert.deepEqual(readJson(context, 'state.completedImports'), []);
@@ -233,10 +234,11 @@ test('provisioned startup waits for session and then loads only fresh authorized
     hideDataLoader() { events.push(['hide']); },
     updateDataLoader() { events.push(['update']); },
     currentStationCode: () => 'MEL',
+    selectedStation: () => ({ stationId: '1', stationCode: 'MEL' }),
     loadEntraIdentity: async () => { events.push(['identity']); return true; },
     loadCargoRunSession: async () => { events.push(['session']); return true; },
-    syncCentralData: async () => { events.push(['sync']); state.imports = [{ flight: 'FRESH100' }]; return true; },
-    centralSyncScheduler: { start: async () => { events.push(['start']); } }
+    switchCargoRunStation: async () => { events.push(['sync']); state.imports = [{ flight: 'FRESH100' }]; events.push(['start']); return true; },
+    centralSyncScheduler: { start: async () => { events.push(['unexpected-start']); } }
   });
   vm.runInContext(sourceBetween('async function bootCargoRun()', '\nbootCargoRun();'), context);
   await context.bootCargoRun();
@@ -245,7 +247,6 @@ test('provisioned startup waits for session and then loads only fresh authorized
   assert.ok(names.indexOf('sync') < names.indexOf('start'));
   assert.equal(names.filter(name => name === 'loader').length, 2);
   assert.ok(names.lastIndexOf('loader') < names.indexOf('session'));
-  assert.ok(names.indexOf('session') < names.indexOf('update'));
   assert.deepEqual(events.find(event => event[1] === 'Checking CargoRun access'), ['loader', 'Checking CargoRun access', 'Confirming your CargoRun role and station access.']);
   assert.deepEqual(state.imports, [{ flight: 'FRESH100' }]);
   assert.deepEqual(events[0], ['render', []]);
@@ -262,6 +263,7 @@ test('unprovisioned startup does not synchronize or start the scheduler', async 
     hideDataLoader() { events.push('hide'); },
     updateDataLoader() { events.push('update'); },
     currentStationCode: () => 'MEL',
+    selectedStation: () => null,
     loadEntraIdentity: async () => { events.push('identity'); return true; },
     loadCargoRunSession: async () => { events.push('session'); return false; },
     syncCentralData: async () => { events.push('sync'); },
@@ -338,6 +340,7 @@ test('a stale MACH FOW response cannot replace new-session data or clear its loa
   provision(context);
   Object.assign(context, {
     fetch: () => pending.promise,
+    selectedStationApiUrl: path => `${path}?stationId=1`,
     toast: () => events.push('toast'),
     render: () => events.push('render'),
     console: { error: () => events.push('error') }
@@ -470,10 +473,11 @@ test('stale startup sync cannot start scheduling or hide a replacement-session l
     updateDataLoader() { events.push('update'); },
     hideDataLoader() { loaderVisible = false; events.push('hide'); },
     currentStationCode: () => 'MEL',
+    selectedStation: () => ({ stationId: '1', stationCode: 'MEL' }),
     loadEntraIdentity: async () => true,
     loadCargoRunSession: async () => true,
-    syncCentralData: () => { syncStarted.resolve(); return sync.promise; },
-    centralSyncScheduler: { start: async () => { events.push('start'); } }
+    switchCargoRunStation: () => { syncStarted.resolve(); return sync.promise; },
+    centralSyncScheduler: { start: async () => { events.push('unexpected-start'); } }
   });
   vm.runInContext(sourceBetween('async function bootCargoRun()', '\nbootCargoRun();'), context);
 
@@ -484,6 +488,6 @@ test('stale startup sync cannot start scheduling or hide a replacement-session l
   sync.resolve(true);
   await stale;
 
-  assert.equal(events.includes('start'), false);
+  assert.equal(events.includes('unexpected-start'), false);
   assert.equal(loaderVisible, true);
 });

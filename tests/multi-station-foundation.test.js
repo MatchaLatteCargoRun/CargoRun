@@ -508,7 +508,9 @@ test('session exposes safe station metadata while preserving legacy station code
   const session = read('api/session/index.js');
   const auth = read('api/shared/operational-authorization.js');
   assert.match(session, /stations: access\.stations/);
-  assert.match(session, /stationMetadata: access\.stationMetadata/);
+  assert.match(session, /const stationMetadata = access\.stationMetadata\.map/);
+  assert.match(session, /capabilities: capabilitiesForStation\(access, station\.stationId\)/);
+  assert.match(session, /stationMetadata,/);
   for (const field of ['StationId', 'StationCode', 'DisplayName', 'TimeZoneId']) assert.match(auth, new RegExp(field));
 });
 
