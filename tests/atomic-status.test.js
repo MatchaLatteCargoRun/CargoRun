@@ -269,7 +269,8 @@ test('operational mutation handlers write required audits before commit', () => 
     assert.match(source, /await insertAuditEvent\(/, relativePath);
   }
   const frontend = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
-  assert.match(frontend, /body:JSON\.stringify\(\{flightId:f\.azureFlightId,inBlockAtUtc\}\)/);
+  assert.match(frontend, /body:JSON\.stringify\(\{flightId:f\.azureFlightId,inBlockLocal\}\)/);
+  assert.doesNotMatch(frontend, /body:JSON\.stringify\(\{flightId:f\.azureFlightId,inBlockAtUtc\}\)/);
 });
 
 test('canonical ULD status function exposes the unchanged public route', () => {

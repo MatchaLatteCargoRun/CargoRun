@@ -725,6 +725,9 @@ let adminShcFilters={search:'',group:'',airline:'',unassignedOnly:false};
 let adminGroupEditorState={choices:[],initial:[],search:'',filter:'ALL',loading:false};
 let adminAuditFilters={date:'',user:'',entity:'',airline:'',operation:''};
 let operationalSessionGeneration=0;
+let timingEditorGeneration=0;
+let timingRequestGeneration=0;
+let timingEditorState=null;
 const operationalReportWindows=new Set();
 function validStationTimeZoneId(value){
  const timeZoneId=typeof value==='string'?value:'';
@@ -754,6 +757,87 @@ function formatStationInstant(value,timeZoneId,kind){
 function formatStationDateTime(value,timeZoneId){return formatStationInstant(value,timeZoneId,'dateTime')}
 function formatStationDate(value,timeZoneId){return formatStationInstant(value,timeZoneId,'date')}
 function formatStationTime(value,timeZoneId){return formatStationInstant(value,timeZoneId,'time')}
+function stationLocalInputParts(value,timeZoneId){
+ const zone=validStationTimeZoneId(timeZoneId),date=stationInstantDate(value);
+ if(!zone||!date)return null;
+ try{
+  const parts=new Intl.DateTimeFormat('en-CA-u-ca-gregory-nu-latn',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(date),read=type=>parts.find(part=>part.type===type)?.value||'';
+  const localDate=`${read('year').padStart(4,'0')}-${read('month')}-${read('day')}`,localTime=`${read('hour')}:${read('minute')}`;
+  return validHistoryDateKey(localDate)&&/^([01]\d|2[0-3]):[0-5]\d$/.test(localTime)?{localDate,localTime}:null;
+ }catch{return null}
+}
+function stationLocalInput(date,time){
+ const localDate=String(date||''),localTime=String(time||'');
+ if(!validHistoryDateKey(localDate))return {ok:false,code:'LOCAL_DATE_INVALID',message:'Enter a valid local date.'};
+ if(!/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d)?$/.test(localTime))return {ok:false,code:'LOCAL_TIME_INVALID',message:'Enter a valid local time.'};
+ return {ok:true,localDate,localTime};
+}
+function stationLocalErrorCode(data){return String(data?.code||data?.error?.code||'').trim().toUpperCase()}
+function stationLocalErrorMessage(code,fallback='The local time could not be saved.'){
+ if(code==='LOCAL_TIME_NONEXISTENT')return 'This local time does not exist because the clocks move forward. Choose another time.';
+ if(code==='LOCAL_TIME_AMBIGUOUS')return 'This local time occurs twice because the clocks move back. Choose the intended occurrence.';
+ if(code==='LOCAL_DATE_INVALID')return 'Enter a valid local date.';
+ if(code==='LOCAL_TIME_INVALID')return 'Enter a valid local time.';
+ if(code==='LOCAL_TIME_DISAMBIGUATION_INVALID')return 'Choose the earlier or later occurrence.';
+ return fallback;
+}
+function stationLocalCandidateLabel(candidate,choice){
+ const safeChoice=choice==='LATER'?'Later':'Earlier',provided=String(candidate?.label||candidate?.displayLabel||'').trim();
+ return provided||`${safeChoice} occurrence`;
+}
+function timingEditorInput(kind){
+ const ids=kind==='ETD'?['exportEtdDate','exportEtdTime']:kind==='IN_BLOCK'?['manualInBlockDate','manualInBlockTime']:[];
+ return ids.length?{localDate:String(document.getElementById(ids[0])?.value||''),localTime:String(document.getElementById(ids[1])?.value||'')}:null;
+}
+function beginTimingEditor(kind,localId,flightId,input){
+ if(timingEditorState?.requestGeneration&&typeof hideActionLoader==='function')hideActionLoader(true);
+ timingEditorState={editorGeneration:++timingEditorGeneration,requestGeneration:null,kind,localId:String(localId),flightId:String(flightId),localDate:String(input?.localDate||''),localTime:String(input?.localTime||''),fold:null};
+ return timingEditorState;
+}
+function invalidateTimingEditor(){
+ const hadPending=!!timingEditorState?.requestGeneration;
+ timingEditorGeneration++;
+ timingEditorState=null;
+ if(hadPending&&typeof hideActionLoader==='function')hideActionLoader(true);
+}
+function timingEditorOwns(kind,localId,flightId,input,editorGeneration=null){
+ const editor=timingEditorState;
+ return !!editor&&editor.kind===kind&&editor.localId===String(localId)&&editor.flightId===String(flightId)
+  &&editor.localDate===String(input?.localDate||'')&&editor.localTime===String(input?.localTime||'')
+  &&(editorGeneration===null||editor.editorGeneration===Number(editorGeneration));
+}
+function beginTimingRequest(kind,localId,flightId,input,disambiguation=null,editorGeneration=null){
+ if(!timingEditorOwns(kind,localId,flightId,input,editorGeneration))return null;
+ const editor=timingEditorState,choice=disambiguation===null?null:String(disambiguation);
+ if(editor.fold&&!choice)return null;
+ if(choice){
+  if(editorGeneration===null||!editor.fold||editor.fold.localDate!==editor.localDate||editor.fold.localTime!==editor.localTime
+    ||!editor.fold.candidates.some(candidate=>candidate?.disambiguation===choice))return null;
+ }
+ editor.requestGeneration=++timingRequestGeneration;
+ return {sessionGeneration:operationalSessionGeneration,editorGeneration:editor.editorGeneration,requestGeneration:editor.requestGeneration,
+  kind:editor.kind,localId:editor.localId,flightId:editor.flightId,localDate:editor.localDate,localTime:editor.localTime,disambiguation:choice};
+}
+function timingRequestIsCurrent(request){
+ const input=request&&timingEditorInput(request.kind),flight=request&&(request.kind==='ETD'?state.exports:state.imports).find(candidate=>candidate.id===request.localId);
+ return !!request&&operationalSessionIsCurrent(request.sessionGeneration)&&timingEditorOwns(request.kind,request.localId,request.flightId,request,request.editorGeneration)
+  &&String(flight?.azureFlightId||'')===request.flightId&&timingEditorState.requestGeneration===request.requestGeneration
+  &&input?.localDate===request.localDate&&input?.localTime===request.localTime;
+}
+function settleTimingRequest(request,issue=null){
+ if(!timingRequestIsCurrent(request))return null;
+ const code=String(issue?.code||''),candidates=Array.isArray(issue?.candidates)?issue.candidates:[];
+ timingEditorState.requestGeneration=null;
+ timingEditorState.fold=code==='LOCAL_TIME_AMBIGUOUS'?{localDate:request.localDate,localTime:request.localTime,candidates}:null;
+ return timingEditorState;
+}
+function timingEditorInputChanged(kind,localId){
+ const editor=timingEditorState,input=timingEditorInput(kind);
+ if(!editor||editor.kind!==kind||editor.localId!==String(localId)||!input)return false;
+ if(editor.localDate===input.localDate&&editor.localTime===input.localTime)return true;
+ return kind==='ETD'?showSetExportEtd(localId,input):showSetInBlock(localId,input);
+}
+function currentTimingEditor(){return timingEditorState?{...timingEditorState,fold:timingEditorState.fold?{...timingEditorState.fold,candidates:[...timingEditorState.fold.candidates]}:null}:null}
 function normalizeAuthorizedStations(value){
  if(!Array.isArray(value))throw new Error('CargoRun station access response is invalid');
  const ids=new Set(),codes=new Set();
@@ -775,6 +859,15 @@ function exactFlightStation(flight){
  const stationId=String(flight?.stationId??'').trim(),stationCode=String(flight?.stationCode||'').trim().toUpperCase();
  const displayName=String(flight?.displayName||'').trim(),timeZoneId=validStationTimeZoneId(flight?.timeZoneId);
  return /^[1-9]\d*$/.test(stationId)&&/^[A-Z]{3}$/.test(stationCode)&&displayName&&timeZoneId?{stationId,stationCode,displayName,timeZoneId}:null;
+}
+function serverResolvedFlightStation(data,flight){
+ const resolved=data?.stationTimeResolution||{},stationId=String(resolved.stationId??'').trim(),stationCode=String(resolved.stationCode||'').trim().toUpperCase(),timeZoneId=validStationTimeZoneId(resolved.timeZoneId);
+ if(!/^[1-9]\d*$/.test(stationId)||!/^[A-Z]{3}$/.test(stationCode)||!timeZoneId)return null;
+ const exact=exactFlightStation(flight);
+ if(!exact||exact.stationId!==stationId||exact.stationCode!==stationCode||exact.timeZoneId!==timeZoneId)return null;
+ const authorized=authorizedStationById(stationId);
+ if(authorized&&(authorized.stationCode!==stationCode||authorized.timeZoneId!==timeZoneId))return null;
+ return {stationId,stationCode,timeZoneId,displayName:authorized?.displayName||exact.displayName};
 }
 function stationDateKeyForTimeZone(ts,timeZoneId){const zone=validStationTimeZoneId(timeZoneId),d=stationInstantDate(ts);if(!zone||!d)return '';const parts=new Intl.DateTimeFormat('en-CA-u-ca-gregory-nu-latn',{timeZone:zone,year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(d),read=type=>parts.find(part=>part.type===type)?.value||'';return `${read('year').padStart(4,'0')}-${read('month')}-${read('day')}`}
 function selectedStationDateKey(ts=Date.now()){return stationDateKeyForTimeZone(ts,selectedStationTimeZone())}
@@ -848,6 +941,7 @@ function save(){state.stateVersion=CARGORUN_STATE_VERSION}
 function clearCargoRunOperationalMemory({preserveIdentity=true,preserveDataLoader=false}={}){
  const sessionUser=preserveIdentity&&state?.sessionUser?{...state.sessionUser}:null;
  operationalSessionGeneration++;
+ invalidateTimingEditor();
  selectedStationId='';
  selectedStationSync={status:'IDLE',stationId:'',error:''};
  state=structuredClone(seed);
@@ -1076,12 +1170,14 @@ async function syncAzureFlights(quiet=false,skipRender=false){
       state[type]=relevant.map(({apiFlight,apiUlds})=>{
         const existing=oldList.find(f=>!matchedLocalFlights.has(f)&&sameAzureFlight(f,apiFlight))||null;
         if(existing)matchedLocalFlights.add(existing);
+        const owningStation=authorizedStationById(apiFlight.StationId);
+        if(!owningStation)throw new Error('Flight owning-station metadata is unavailable');
         const existingUlds=existing?.ulds||[];
         const mappedUlds=apiUlds.map(apiUld=>{
           const oldUld=findActiveUld(existingUlds,apiUld)||null;
           return azureUldToUi(apiUld,direction,oldUld);
         });
-        return {...(existing||{}),id:`az-${type==='imports'?'imp':'exp'}-${apiFlight.FlightId}`,azureFlightId:apiFlight.FlightId,flight:String(apiFlight.FlightNumber||'').toUpperCase(),operatingDate:azureDateOnly(apiFlight.OperatingDate),flightDate:azureDisplayDate(apiFlight.OperatingDate),originAirport:String(apiFlight.OriginAirport||existing?.originAirport||'').toUpperCase(),destinationAirport:String(apiFlight.DestinationAirport||existing?.destinationAirport||'').toUpperCase(),sourceFile:existing?.sourceFile||'',sourceType:apiFlight.SourceType||existing?.sourceType||'Azure SQL',uploadedAt:existing?.uploadedAt||(apiFlight.CreatedAtUtc?Date.parse(apiFlight.CreatedAtUtc):Date.now()),shcs:[...new Set(mappedUlds.flatMap(u=>u.shcs||[]))],closed:false,flightStatus:azureFlightStatus(existing,apiFlight),exportManifestFinal:apiFlight.ExportFinalManifestId?{finalManifestId:stableOperationalId(apiFlight.ExportFinalManifestId),confirmedAtUtc:apiFlight.ExportFinalConfirmedAtUtc||null,confirmedByDisplayName:String(apiFlight.ExportFinalConfirmedByDisplayName||''),finalUldCount:Number(apiFlight.ExportFinalUldCount)||0,matchedCount:Number(apiFlight.ExportFinalMatchedCount)||0,addedCount:Number(apiFlight.ExportFinalAddedCount)||0,excludedCount:Number(apiFlight.ExportFinalExcludedCount)||0}:null,ulds:mappedUlds};
+        return {...(existing||{}),id:`az-${type==='imports'?'imp':'exp'}-${apiFlight.FlightId}`,azureFlightId:apiFlight.FlightId,flight:String(apiFlight.FlightNumber||'').toUpperCase(),operatingDate:azureDateOnly(apiFlight.OperatingDate),flightDate:azureDisplayDate(apiFlight.OperatingDate),stationId:owningStation.stationId,stationCode:owningStation.stationCode,displayName:owningStation.displayName,timeZoneId:owningStation.timeZoneId,originAirport:String(apiFlight.OriginAirport||existing?.originAirport||'').toUpperCase(),destinationAirport:String(apiFlight.DestinationAirport||existing?.destinationAirport||'').toUpperCase(),sourceFile:existing?.sourceFile||'',sourceType:apiFlight.SourceType||existing?.sourceType||'Azure SQL',uploadedAt:existing?.uploadedAt||(apiFlight.CreatedAtUtc?Date.parse(apiFlight.CreatedAtUtc):Date.now()),shcs:[...new Set(mappedUlds.flatMap(u=>u.shcs||[]))],closed:false,flightStatus:azureFlightStatus(existing,apiFlight),exportManifestFinal:apiFlight.ExportFinalManifestId?{finalManifestId:stableOperationalId(apiFlight.ExportFinalManifestId),confirmedAtUtc:apiFlight.ExportFinalConfirmedAtUtc||null,confirmedByDisplayName:String(apiFlight.ExportFinalConfirmedByDisplayName||''),finalUldCount:Number(apiFlight.ExportFinalUldCount)||0,matchedCount:Number(apiFlight.ExportFinalMatchedCount)||0,addedCount:Number(apiFlight.ExportFinalAddedCount)||0,excludedCount:Number(apiFlight.ExportFinalExcludedCount)||0}:null,ulds:mappedUlds};
       });
     }
     state.azureSync={...(state.azureSync||{}),lastFlightSuccess:Date.now(),flightCount:remoteFlights.length};
@@ -1613,12 +1709,47 @@ function acceptanceSla(f,u){const start=arrivalTimerStart(f);if(!start)return {l
 function flightAcceptanceSummary(f){let late=0,warn=0;for(const u of f.ulds||[]){if(u.status!=='Unarrived')continue;const s=acceptanceSla(f,u);if(s.level==='late')late++;else if(s.level==='warn')warn++;}return {late,warn,total:late+warn}}
 function acceptanceBadge(f,u){if(u.status!=='Unarrived'&&!u.acceptedAt)return '';const s=acceptanceSla(f,u);if(s.minutes===null)return '';if(u.acceptedAt)return `<span class="acceptance-age ok">Accepted ${s.minutes}m after arrival</span>`;if(s.level==='late')return `<span class="acceptance-age late">Acceptance late • ${s.minutes}m</span>`;if(s.level==='warn')return `<span class="acceptance-age warn">Acceptance warning • ${s.minutes}m</span>`;return `<span class="acceptance-age ok">Acceptance timer • ${s.minutes}m</span>`}
 function arrivalSummaryHtml(f){const fs=f.flightStatus||{},start=arrivalTimerStart(f),sla=flightAcceptanceSummary(f);let label='Arrival not synced',cls='offline';if(toMs(fs.inBlockAt||fs.actualIn)){label=`In block ${fmtTime(toMs(fs.inBlockAt||fs.actualIn))}`;cls=sla.late?'late':sla.warn?'warn':'live'}else if(toMs(fs.landedAt||fs.actualOn)){label=`Landed ${fmtTime(toMs(fs.landedAt||fs.actualOn))}`;cls=sla.late?'late':sla.warn?'warn':'live'}else if(toMs(fs.estimatedArrival)){label=`ETA ${fmtTime(toMs(fs.estimatedArrival))}`;cls='offline'}return `<div class="arrival-line"><span class="arrival-pill ${cls}">${esc(label)}</span>${start?`<span>${Math.max(0,ageMinutes(start.ts))}m since timer start</span>`:''}${fs.provider?`<span>${esc(fs.provider)}</span>`:''}</div>`}
-function localDateTimeValue(ts=Date.now()){const d=new Date(ts),off=d.getTimezoneOffset()*60000;return new Date(d.getTime()-off).toISOString().slice(0,16)}
 function canUseFlightStatusApi(){return FLIGHTAWARE_ENABLED&&(location.protocol==='http:'||location.protocol==='https:')}
 async function syncFlightArrivalById(id,quiet=false){if(!FLIGHTAWARE_ENABLED)return false;const generation=operationalSessionGeneration,f=state.imports.find(x=>x.id===id),flightId=stableOperationalId(f?.azureFlightId);if(!f||f.closed||!flightId||!operationalSessionIsCurrent(generation))return false;const s=flightStatusSettings();if(!canUseFlightStatusApi()){if(!quiet)toast('Live arrival sync activates once CargoRun is hosted in Azure. Manual In Block works now.');return false}try{const qs=new URLSearchParams({flightId});const res=await fetch(`${s.endpoint||'/api/flight-status'}?${qs}`,{headers:{Accept:'application/json','X-CargoRun-FlightAware-Enabled':String(FLIGHTAWARE_ENABLED)}});let data={};try{data=await res.json()}catch{}if(!operationalSessionIsCurrent(generation))return false;if(!res.ok)throw new Error(data.error||`Flight status ${res.status}`);f.flightStatus={...(f.flightStatus||{}),provider:data.provider||'FlightAware AeroAPI',status:data.status||'',scheduledArrival:data.scheduledArrival||null,estimatedArrival:data.estimatedArrival||null,landedAt:data.landedAt||null,inBlockAt:data.inBlockAt||null,lastChecked:Date.now(),matchedFlight:data.matchedFlight||f.flight,source:'azure'};logEvent('Flight','Arrival status synced',{flight:f.flight,detail:`${f.flightStatus.inBlockAt?'In block '+fmtDateTime(toMs(f.flightStatus.inBlockAt)):f.flightStatus.landedAt?'Landed '+fmtDateTime(toMs(f.flightStatus.landedAt)):'Flight status updated'}`,user:'CargoRun'});save();if(!quiet){toast(`${f.flight} arrival status updated`);render()}return true}catch(err){if(!operationalSessionIsCurrent(generation))return false;f.flightStatus={...(f.flightStatus||{}),lastChecked:Date.now(),lastError:err.message||'Flight status unavailable'};save();if(!quiet)toast(`${f.flight}: ${err.message||'flight status unavailable'}`);return false}}
 async function syncAllFlightArrivals(quiet=false){if(!FLIGHTAWARE_ENABLED)return false;const generation=operationalSessionGeneration,flights=activeFlights('imports');if(!flights.length||!operationalSessionIsCurrent(generation))return false;let ok=0;for(const f of flights){if(await syncFlightArrivalById(f.id,true))ok++;if(!operationalSessionIsCurrent(generation))return false}if(!quiet){toast(ok?`Arrival status updated for ${ok}/${flights.length} import flights`:'No live arrival statuses updated');render()}return ok>0}
-function showSetInBlock(id){if(!canUseStationAction('setInBlock'))return false;const f=state.imports.find(x=>x.id===id);if(!f)return;modal(`${modalHead('Set Aircraft In Block')}<p>Fallback for when the external flight-status feed is unavailable. This time starts CargoRun's ULD acceptance timers.</p><div class="field"><label>IN BLOCK TIME</label><input id="manualInBlock" type="datetime-local" value="${localDateTimeValue()}"></div><div class="accept-note">The record will show that the time was manually entered and who entered it.</div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveManualInBlock('${id}')">Start Timers</button></div>`)}
-async function saveManualInBlock(id){const generation=operationalSessionGeneration,f=state.imports.find(x=>x.id===id),v=document.getElementById('manualInBlock')?.value;if(!f||!v||!f.azureFlightId||!operationalSessionIsCurrent(generation))return;const ts=new Date(v).getTime();if(!Number.isFinite(ts)){toast('Enter a valid time');return}showActionLoader('Saving In Block…',f.flight);try{const inBlockAtUtc=new Date(ts).toISOString(),res=await fetch('/api/flights',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,inBlockAtUtc})}),data=await res.json().catch(()=>({}));if(!operationalSessionIsCurrent(generation))return;if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Flights API ${res.status}`);f.flightStatus={...(f.flightStatus||{}),provider:'Manual',inBlockAt:inBlockAtUtc,landedAt:f.flightStatus?.landedAt||null,lastChecked:Date.now(),source:'manual',manualBy:currentUser().name};logEvent('Flight','In block set manually',{flight:f.flight,detail:`In block ${fmtDateTime(ts)}`,user:currentUser().name,persist:false});save();closeModal();toast(`${f.flight} acceptance timers started`);render()}catch(err){if(!operationalSessionIsCurrent(generation))return;console.error(err);toast(err?.message||'In Block could not be saved')}finally{if(operationalSessionIsCurrent(generation))hideActionLoader()}}
+function showSetInBlock(id,entry=null,issue=null,request=null){
+ if(!canUseStationAction('setInBlock'))return false;
+ const f=state.imports.find(x=>x.id===id);if(!f)return false;
+ const station=exactFlightStation(f);if(!station){toast('Flight station metadata is unavailable. Refresh station operations and try again.');return false}
+ const defaults=entry||stationLocalInputParts(Date.now(),station.timeZoneId)||{localDate:'',localTime:''},code=String(issue?.code||''),candidates=Array.isArray(issue?.candidates)?issue.candidates:[];
+ const editor=request?settleTimingRequest(request,issue):beginTimingEditor('IN_BLOCK',id,f.azureFlightId,defaults);if(!editor)return false;
+ const issueHtml=code?`<div class="${code==='LOCAL_TIME_AMBIGUOUS'?'accept-note':'report-exception'}" role="alert"><strong>${esc(stationLocalErrorMessage(code))}</strong></div>`:'';
+ const actions=code==='LOCAL_TIME_AMBIGUOUS'?`<button class="secondary" onclick="saveManualInBlock('${esc(id)}','EARLIER',${editor.editorGeneration})">${esc(stationLocalCandidateLabel(candidates.find(candidate=>candidate?.disambiguation==='EARLIER'),'EARLIER'))}</button><button class="primary" onclick="saveManualInBlock('${esc(id)}','LATER',${editor.editorGeneration})">${esc(stationLocalCandidateLabel(candidates.find(candidate=>candidate?.disambiguation==='LATER'),'LATER'))}</button>`:`<button class="primary" onclick="saveManualInBlock('${esc(id)}')">Start Timers</button>`;
+ modal(`${modalHead('Set Aircraft In Block')}<p>Fallback for when the external flight-status feed is unavailable. This time starts CargoRun's ULD acceptance timers.</p>${issueHtml}<div class="field"><label>IN BLOCK LOCAL DATE</label><input id="manualInBlockDate" type="date" value="${esc(defaults.localDate)}" onchange="timingEditorInputChanged('IN_BLOCK','${esc(id)}')"></div><div class="field"><label>IN BLOCK LOCAL TIME</label><input id="manualInBlockTime" type="time" step="60" value="${esc(defaults.localTime)}" onchange="timingEditorInputChanged('IN_BLOCK','${esc(id)}')"></div><div class="accept-note">CargoRun will verify this exact FlightId on the server and use its stored station timezone. Flight station: <strong>${esc(station.stationCode)}</strong> • ${esc(station.timeZoneId)}. The record will show who entered the time.</div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button>${actions}</div>`,'normal',true);
+ return true;
+}
+async function saveManualInBlock(id,disambiguation=null,editorGeneration=null){
+ const generation=operationalSessionGeneration,f=state.imports.find(x=>x.id===id);if(!f||!f.azureFlightId||!operationalSessionIsCurrent(generation))return false;
+ const localDate=String(document.getElementById('manualInBlockDate')?.value||''),localTime=String(document.getElementById('manualInBlockTime')?.value||''),input=stationLocalInput(localDate,localTime);
+ if(!timingEditorOwns('IN_BLOCK',id,f.azureFlightId,{localDate,localTime},disambiguation?editorGeneration:null)){showSetInBlock(id,{localDate,localTime},input.ok?null:{code:input.code});return false}
+ if(!input.ok){showSetInBlock(id,{localDate,localTime},{code:input.code});return false}
+ const request=beginTimingRequest('IN_BLOCK',id,f.azureFlightId,input,disambiguation,disambiguation?editorGeneration:null);if(!request)return false;
+ const inBlockLocal={localDate:input.localDate,localTime:input.localTime,...(disambiguation?{disambiguation}:{})};
+ showActionLoader('Saving In Block…',f.flight);
+ try{
+  const res=await fetch('/api/flights',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,inBlockLocal})}),data=await res.json().catch(()=>({}));
+  if(!timingRequestIsCurrent(request))return false;
+  const code=stationLocalErrorCode(data);
+  if(code==='LOCAL_TIME_NONEXISTENT'||code==='LOCAL_TIME_AMBIGUOUS'||code==='LOCAL_DATE_INVALID'||code==='LOCAL_TIME_INVALID'||code==='LOCAL_TIME_DISAMBIGUATION_INVALID'){
+   hideActionLoader();
+   showSetInBlock(id,input,{code,candidates:data.candidates},request);return false;
+  }
+  if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Flights API ${res.status}`);
+  const inBlockAtUtc=data?.flight?.InBlockAtUtc,instant=stationInstantDate(inBlockAtUtc),station=serverResolvedFlightStation(data,f);
+  if(!instant||!station)throw new Error('CargoRun did not return the saved In Block station-time result');
+  hideActionLoader();
+  Object.assign(f,station);
+  f.flightStatus={...(f.flightStatus||{}),provider:'Manual',inBlockAt:inBlockAtUtc,landedAt:f.flightStatus?.landedAt||null,lastChecked:Date.now(),source:'manual',manualBy:currentUser().name};
+  logEvent('Flight','In block set manually',{flight:f.flight,detail:`In block ${formatStationDateTime(inBlockAtUtc,station.timeZoneId)}`,user:currentUser().name,persist:false});
+  save();closeModal();toast(`${f.flight} acceptance timers started`);render();return true;
+ }catch(err){if(!timingRequestIsCurrent(request))return false;console.error(err);toast(err?.message||'In Block could not be saved');return false}
+ finally{if(timingRequestIsCurrent(request))hideActionLoader()}
+}
 function showFlightStatusSettings(){const s=flightStatusSettings(),available=canUseFlightStatusApi(),status=FLIGHTAWARE_ENABLED?(available?'Azure-hosted mode available':'Local prototype mode'):'Live tracking disabled',detail=FLIGHTAWARE_ENABLED?(available?'Use Sync Arrivals to query the configured Azure endpoint.':'Open this version locally for UI testing. Live API calls begin after Azure deployment; use manual In Block timestamps in the meantime.'):'Existing arrival data and manual In Block remain available. No FlightAware requests will be made.';modal(`${modalHead('Flight Arrival Integration')}<p>CargoRun calls an Azure Function at <strong>${esc(s.endpoint)}</strong>. The Azure Function keeps the FlightAware API key server-side and returns scheduled, estimated, landed and in-block times.</p><div class="integration-card"><strong>${status}</strong><small>${detail}</small></div><div class="field"><label>STANDARD WARNING / LATE (MIN)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><input id="stdWarn" type="number" min="1" value="${s.standardWarnMinutes}"><input id="stdLate" type="number" min="1" value="${s.standardLateMinutes}"></div></div><div class="field"><label>PRIORITY WARNING / LATE (MIN)</label><div style="display:grid;grid-template-columns:1fr 1fr;gap:8px"><input id="priWarn" type="number" min="1" value="${s.priorityWarnMinutes}"><input id="priLate" type="number" min="1" value="${s.priorityLateMinutes}"></div></div><div class="field"><label>LANDING-TO-IN-BLOCK FALLBACK GRACE (MIN)</label><input id="landGrace" type="number" min="0" value="${s.landingGraceMinutes}"></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveFlightStatusSettings()">Save</button></div>`)}
 function saveFlightStatusSettings(){const s=flightStatusSettings();s.standardWarnMinutes=Math.max(1,Number(document.getElementById('stdWarn').value)||20);s.standardLateMinutes=Math.max(s.standardWarnMinutes,Number(document.getElementById('stdLate').value)||30);s.priorityWarnMinutes=Math.max(1,Number(document.getElementById('priWarn').value)||10);s.priorityLateMinutes=Math.max(s.priorityWarnMinutes,Number(document.getElementById('priLate').value)||20);s.landingGraceMinutes=Math.max(0,Number(document.getElementById('landGrace').value)||0);state.settings.flightStatus=s;save();closeModal();toast('Arrival warning settings saved');render()}
 
@@ -1830,33 +1961,43 @@ function supervisorHeadline(){
 function supervisorOtherAlerts(){
   return supervisorAlerts().filter(a=>a.level==='red'&&!/\bMAIL\b/i.test(`${a.title} ${a.detail}`)).slice(0,6);
 }
-function localDateTimeParts(ms){
-  const d=new Date(ms||Date.now());
-  return {date:localDateKey(d.getTime()),time:`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`};
-}
-function showSetExportEtd(id){
+function showSetExportEtd(id,entry=null,issue=null,request=null){
  if(!canUseStationAction('setEtd'))return false;
-  const f=state.exports.find(x=>x.id===id);if(!f)return;
-  const existing=exportDepartureMs(f),parts=existing?localDateTimeParts(existing):{date:flightOperatingDateKey(f)||todayDateKey(),time:'23:00'};
-  modal(`${modalHead(`Set ETD • ${esc(f.flight)}`)}<p>The supervisor wallboard uses ETD to enforce the Melbourne aircraft-delivery SLA. Cargo must be <strong>At Aircraft 60 minutes before ETD</strong>.</p><div class="field"><label>DEPARTURE DATE</label><input id="exportEtdDate" type="date" value="${esc(parts.date)}"></div><div class="field"><label>ETD (MEL LOCAL TIME)</label><input id="exportEtdTime" type="time" value="${esc(parts.time)}"></div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button><button class="primary" onclick="saveExportEtd('${id}')">Save ETD</button></div>`);
+ const f=state.exports.find(x=>x.id===id);if(!f)return false;
+ const station=exactFlightStation(f);if(!station){toast('Flight station metadata is unavailable. Refresh station operations and try again.');return false}
+ const existing=exportDepartureMs(f),defaults=entry||(existing?stationLocalInputParts(existing,station.timeZoneId):null)||{localDate:validHistoryDateKey(f.operatingDate)?f.operatingDate:stationDateKeyForTimeZone(Date.now(),station.timeZoneId),localTime:'23:00'},code=String(issue?.code||''),candidates=Array.isArray(issue?.candidates)?issue.candidates:[];
+ const editor=request?settleTimingRequest(request,issue):beginTimingEditor('ETD',id,f.azureFlightId,defaults);if(!editor)return false;
+ const issueHtml=code?`<div class="${code==='LOCAL_TIME_AMBIGUOUS'?'accept-note':'report-exception'}" role="alert"><strong>${esc(stationLocalErrorMessage(code))}</strong></div>`:'';
+ const actions=code==='LOCAL_TIME_AMBIGUOUS'?`<button class="secondary" onclick="saveExportEtd('${esc(id)}','EARLIER',${editor.editorGeneration})">${esc(stationLocalCandidateLabel(candidates.find(candidate=>candidate?.disambiguation==='EARLIER'),'EARLIER'))}</button><button class="primary" onclick="saveExportEtd('${esc(id)}','LATER',${editor.editorGeneration})">${esc(stationLocalCandidateLabel(candidates.find(candidate=>candidate?.disambiguation==='LATER'),'LATER'))}</button>`:`<button class="primary" onclick="saveExportEtd('${esc(id)}')">Save ETD</button>`;
+ modal(`${modalHead(`Set ETD • ${esc(f.flight)}`)}<p>The supervisor wallboard uses ETD to enforce the aircraft-delivery SLA. Cargo must be <strong>At Aircraft 60 minutes before ETD</strong>.</p>${issueHtml}<div class="field"><label>DEPARTURE LOCAL DATE</label><input id="exportEtdDate" type="date" value="${esc(defaults.localDate)}" onchange="timingEditorInputChanged('ETD','${esc(id)}')"></div><div class="field"><label>ETD LOCAL TIME</label><input id="exportEtdTime" type="time" step="60" value="${esc(defaults.localTime)}" onchange="timingEditorInputChanged('ETD','${esc(id)}')"></div><div class="accept-note">CargoRun will verify this exact FlightId on the server and use its stored station timezone. Flight station: <strong>${esc(station.stationCode)}</strong> • ${esc(station.timeZoneId)}.</div><div class="modal-actions"><button class="secondary" onclick="closeModal()">Cancel</button>${actions}</div>`,'normal',true);
+ return true;
 }
-async function saveExportEtd(id){
-  const generation=operationalSessionGeneration,f=state.exports.find(x=>x.id===id);if(!f||!f.azureFlightId||!operationalSessionIsCurrent(generation))return;
-  const date=document.getElementById('exportEtdDate')?.value,time=document.getElementById('exportEtdTime')?.value;
-  if(!date||!time){toast('Enter the departure date and ETD');return}
-  const local=new Date(`${date}T${time}:00`);
-  if(Number.isNaN(local.getTime())){toast('ETD is invalid');return}
-  showActionLoader('Saving ETD…',`${f.flight} • supervisor SLA`);
-  try{
-    const res=await fetch('/api/flights',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,estimatedDepartureUtc:local.toISOString()})});
-    const data=await res.json().catch(()=>({}));
-    if(!operationalSessionIsCurrent(generation))return;
-    if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Flights API ${res.status}`);
-    f.flightStatus={...(f.flightStatus||{}),estimatedDeparture:local.toISOString(),provider:f.flightStatus?.provider||'CargoRun Supervisor'};
-    logEvent('Flight','Export ETD set',{flight:f.flight,detail:`ETD ${local.toLocaleString()}`});
-    save();closeModal();render();toast(`${f.flight} ETD set to ${fmtTime(local.getTime())}`);
-  }catch(err){if(!operationalSessionIsCurrent(generation))return;console.error(err);toast(err?.message||'ETD could not be saved')}
-  finally{if(operationalSessionIsCurrent(generation))hideActionLoader()}
+async function saveExportEtd(id,disambiguation=null,editorGeneration=null){
+ const generation=operationalSessionGeneration,f=state.exports.find(x=>x.id===id);if(!f||!f.azureFlightId||!operationalSessionIsCurrent(generation))return false;
+ const localDate=String(document.getElementById('exportEtdDate')?.value||''),localTime=String(document.getElementById('exportEtdTime')?.value||''),input=stationLocalInput(localDate,localTime);
+ if(!timingEditorOwns('ETD',id,f.azureFlightId,{localDate,localTime},disambiguation?editorGeneration:null)){showSetExportEtd(id,{localDate,localTime},input.ok?null:{code:input.code});return false}
+ if(!input.ok){showSetExportEtd(id,{localDate,localTime},{code:input.code});return false}
+ const request=beginTimingRequest('ETD',id,f.azureFlightId,input,disambiguation,disambiguation?editorGeneration:null);if(!request)return false;
+ const estimatedDepartureLocal={localDate:input.localDate,localTime:input.localTime,...(disambiguation?{disambiguation}:{})};
+ showActionLoader('Saving ETD…',`${f.flight} • supervisor SLA`);
+ try{
+  const res=await fetch('/api/flights',{method:'PATCH',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({flightId:f.azureFlightId,estimatedDepartureLocal})}),data=await res.json().catch(()=>({}));
+  if(!timingRequestIsCurrent(request))return false;
+  const code=stationLocalErrorCode(data);
+  if(code==='LOCAL_TIME_NONEXISTENT'||code==='LOCAL_TIME_AMBIGUOUS'||code==='LOCAL_DATE_INVALID'||code==='LOCAL_TIME_INVALID'||code==='LOCAL_TIME_DISAMBIGUATION_INVALID'){
+   hideActionLoader();
+   showSetExportEtd(id,input,{code,candidates:data.candidates},request);return false;
+  }
+  if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`Flights API ${res.status}`);
+  const estimatedDepartureUtc=data?.flight?.EstimatedDepartureUtc,instant=stationInstantDate(estimatedDepartureUtc),station=serverResolvedFlightStation(data,f);
+  if(!instant||!station)throw new Error('CargoRun did not return the saved ETD station-time result');
+  hideActionLoader();
+  Object.assign(f,station);
+  f.flightStatus={...(f.flightStatus||{}),estimatedDeparture:estimatedDepartureUtc,provider:f.flightStatus?.provider||'CargoRun Supervisor'};
+  logEvent('Flight','Export ETD set',{flight:f.flight,detail:`ETD ${formatStationDateTime(estimatedDepartureUtc,station.timeZoneId)}`});
+  save();closeModal();render();toast(`${f.flight} ETD set to ${formatStationTime(estimatedDepartureUtc,station.timeZoneId)}`);return true;
+ }catch(err){if(!timingRequestIsCurrent(request))return false;console.error(err);toast(err?.message||'ETD could not be saved');return false}
+ finally{if(timingRequestIsCurrent(request))hideActionLoader()}
 }
 function showConfirmBulkMailScan(flightId,uldNumber,uldId=null){
  if(!canUseStationAction('scanUld'))return false;
@@ -2206,8 +2347,8 @@ async function setHistoryOperatingDate(value){if(!validHistoryDateKey(value)){to
 function historyCsvCell(value){const text=String(value??''),safe=/^[=+\-@]/.test(text)?`'${text}`:text;return `"${safe.replace(/"/g,'""')}"`}
 function downloadHistory(){if(!canUseStationAction('exportHistory'))return false;const stationCode=selectedStationCode()||'Station',operatingDate=historyOperatingDate,rows=[['OccurredAtUtc','Station','OperatingDate','Type','Action','Flight','ULD','From','To','Detail','User'],...historyEventsForSelectedDate().slice().sort((a,b)=>b.ts-a.ts).map(e=>[new Date(e.ts).toISOString(),stationCode,operatingDate,e.type,e.action,e.flight||'',e.uld||'',e.from||'',e.to||'',e.detail||'',e.user||''])];const csv=rows.map(r=>r.map(historyCsvCell).join(',')).join('\n');const blob=new Blob([csv],{type:'text/csv'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download=`CargoRun_${stationCode}_${operatingDate}_History.csv`;a.click();URL.revokeObjectURL(a.href);toast('History CSV exported')}
 
-function modal(html,size='normal'){const m=document.getElementById('modal');m.innerHTML=`<div class="modal ${size==='wide'?'wide':''}" onclick="event.stopPropagation()">${html}</div>`;applyStationCapabilityVisibility(m);m.classList.add('show');m.onclick=closeModal}
-function closeModal(){document.getElementById('modal').classList.remove('show')}
+function modal(html,size='normal',preserveTimingEditor=false){if(!preserveTimingEditor)invalidateTimingEditor();const m=document.getElementById('modal');m.innerHTML=`<div class="modal ${size==='wide'?'wide':''}" onclick="event.stopPropagation()">${html}</div>`;applyStationCapabilityVisibility(m);m.classList.add('show');m.onclick=closeModal}
+function closeModal(){invalidateTimingEditor();document.getElementById('modal').classList.remove('show')}
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._timer);t._timer=setTimeout(()=>t.classList.remove('show'),2600)}
 function showConfirmULD(type,flightId,uldId){
  if(!canUseStationAction('moveUld'))return false;

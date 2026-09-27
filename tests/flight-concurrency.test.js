@@ -10,6 +10,7 @@ const { normalizeUldNumber } = require('../api/shared/uld');
 const { insertAuditEvent } = require('../api/shared/audit');
 const documentCorIdHelpers = require('../api/shared/document-cor-id');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
+const stationLocalInput = require('../api/shared/station-local-input');
 
 const root = path.resolve(__dirname, '..');
 const principal = Buffer.from(JSON.stringify({
@@ -395,6 +396,8 @@ function harness(initialFlights = []) {
                 ? operationalAuthorization
               : name === '../shared/station'
                 ? require('./helpers/station-stub')
+              : name === '../shared/station-local-input'
+                ? stationLocalInput
               : require(name)
       },
       { filename: endpoint + '/index.js' }

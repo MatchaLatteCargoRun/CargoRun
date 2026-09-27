@@ -232,6 +232,9 @@ function resolveStationLocalDateTime(localDate, localTime, timeZoneId, disambigu
     return { status: 'NONEXISTENT', candidates: [], timeZoneId: zone, localDate, localTime: time.value };
   }
   if (candidates.length === 1) {
+    if (choice) {
+      fail('DISAMBIGUATION_INVALID', 'DST disambiguation is only valid for an ambiguous local time');
+    }
     return resolvedResult('UNIQUE', candidates[0], zone, localDate, time.value, null);
   }
   if (candidates.length !== 2) {

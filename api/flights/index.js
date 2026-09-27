@@ -11,6 +11,10 @@ const {
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 const { resolveAuthorizedStation, routeMatchesStation } = require('../shared/station');
+const {
+  resolveStationLocalInput,
+  sendStationLocalInputError
+} = require('../shared/station-local-input');
 
 function getHeader(req, name) {
   const headers = req?.headers || {};
@@ -129,32 +133,16 @@ module.exports = async function (context, req) {
       }
 
       const hasScheduledDeparture = Object.prototype.hasOwnProperty.call(body, 'scheduledDepartureUtc');
-      const hasEstimatedDeparture = Object.prototype.hasOwnProperty.call(body, 'estimatedDepartureUtc');
-      const hasInBlock = Object.prototype.hasOwnProperty.call(body, 'inBlockAtUtc');
-      if (hasScheduledDeparture || hasEstimatedDeparture || hasInBlock) {
-        const scheduledRaw = body.scheduledDepartureUtc;
-        const estimatedRaw = body.estimatedDepartureUtc;
-        const inBlockRaw = body.inBlockAtUtc;
-        const scheduled = scheduledRaw ? new Date(scheduledRaw) : null;
-        const estimated = estimatedRaw ? new Date(estimatedRaw) : null;
-        const inBlock = inBlockRaw ? new Date(inBlockRaw) : null;
-        if (scheduledRaw && Number.isNaN(scheduled.getTime())) {
-          sendJson(context, 400, { ok: false, error: 'scheduledDepartureUtc is invalid' });
-          return;
-        }
-        if (estimatedRaw && Number.isNaN(estimated.getTime())) {
-          sendJson(context, 400, { ok: false, error: 'estimatedDepartureUtc is invalid' });
-          return;
-        }
-        if (inBlockRaw && Number.isNaN(inBlock.getTime())) {
-          sendJson(context, 400, { ok: false, error: 'inBlockAtUtc is invalid' });
-          return;
-        }
-
-        if (hasInBlock) {
+      const hasEstimatedDeparture = Object.prototype.hasOwnProperty.call(body, 'estimatedDepartureLocal');
+      const hasInBlock = Object.prototype.hasOwnProperty.call(body, 'inBlockLocal');
+      const hasLegacyEstimatedDeparture = Object.prototype.hasOwnProperty.call(body, 'estimatedDepartureUtc');
+      const hasLegacyInBlock = Object.prototype.hasOwnProperty.call(body, 'inBlockAtUtc');
+      if (hasScheduledDeparture || hasEstimatedDeparture || hasInBlock
+          || hasLegacyEstimatedDeparture || hasLegacyInBlock) {
+        if (hasInBlock || hasLegacyInBlock) {
           await requireOperationalStations(pool, sql, identity, 'SET_IN_BLOCK');
         }
-        if (hasScheduledDeparture || hasEstimatedDeparture) {
+        if (hasScheduledDeparture || hasEstimatedDeparture || hasLegacyEstimatedDeparture) {
           await requireOperationalStations(pool, sql, identity, 'SET_ETD');
         }
 
@@ -162,11 +150,12 @@ module.exports = async function (context, req) {
         await transaction.begin();
         const selected = await new sql.Request(transaction)
           .input('AuthorizationFlightId', sql.BigInt, flightId)
-          .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport
+          .query(`SELECT FlightId,StationId,FlightNumber,Direction,OriginAirport,DestinationAirport,FlightStatus
             FROM dbo.Flights WITH (UPDLOCK,HOLDLOCK) WHERE FlightId=@AuthorizationFlightId;`);
         const authorizationFlight = selected.recordset[0] || null;
-        if (hasInBlock) {
-          await requireOperationalEntityCapability(
+        let owningStation = null;
+        if (hasInBlock || hasLegacyInBlock) {
+          owningStation = await requireOperationalEntityCapability(
             transaction,
             sql,
             identity,
@@ -174,8 +163,8 @@ module.exports = async function (context, req) {
             'SET_IN_BLOCK'
           );
         }
-        if (hasScheduledDeparture || hasEstimatedDeparture) {
-          await requireOperationalEntityCapability(
+        if (hasScheduledDeparture || hasEstimatedDeparture || hasLegacyEstimatedDeparture) {
+          owningStation = await requireOperationalEntityCapability(
             transaction,
             sql,
             identity,
@@ -183,12 +172,84 @@ module.exports = async function (context, req) {
             'SET_ETD'
           );
         }
+
+        const storedStationId = String(authorizationFlight?.StationId ?? '').trim();
+        if (!storedStationId || storedStationId !== String(owningStation?.stationId ?? '')) {
+          await transaction.rollback();
+          transaction = null;
+          sendJson(context, 409, {
+            ok: false,
+            code: 'FLIGHT_TIMING_NOT_ALLOWED',
+            error: 'This Flight cannot accept the requested timing change'
+          });
+          return;
+        }
+
+        const timingKinds = [
+          hasScheduledDeparture,
+          hasEstimatedDeparture || hasLegacyEstimatedDeparture,
+          hasInBlock || hasLegacyInBlock
+        ].filter(Boolean).length;
+        if (timingKinds !== 1) {
+          await transaction.rollback();
+          transaction = null;
+          sendJson(context, 400, {
+            ok: false,
+            code: 'FLIGHT_TIMING_INPUT_INVALID',
+            error: 'Submit exactly one Flight timing change at a time'
+          });
+          return;
+        }
+
+        const directionKey = clean(authorizationFlight.Direction);
+        const statusKey = clean(authorizationFlight.FlightStatus);
+        const eventAllowed = hasInBlock || hasLegacyInBlock
+          ? directionKey === 'IMPORT' && statusKey === 'ACTIVE'
+          : directionKey === 'EXPORT' && statusKey === 'ACTIVE';
+        if (!eventAllowed) {
+          await transaction.rollback();
+          transaction = null;
+          sendJson(context, 409, {
+            ok: false,
+            code: 'FLIGHT_TIMING_NOT_ALLOWED',
+            error: 'This Flight cannot accept the requested timing change'
+          });
+          return;
+        }
+
+        if (hasScheduledDeparture || hasLegacyEstimatedDeparture || hasLegacyInBlock) {
+          await transaction.rollback();
+          transaction = null;
+          sendJson(context, 400, {
+            ok: false,
+            code: 'LOCAL_TIME_INPUT_REQUIRED',
+            error: 'Operator ETD and In Block changes require a station-local date and time'
+          });
+          return;
+        }
+
+        let estimatedResolution = null;
+        let inBlockResolution = null;
+        try {
+          if (hasEstimatedDeparture) {
+            estimatedResolution = resolveStationLocalInput(body.estimatedDepartureLocal, owningStation.timeZoneId);
+          }
+          if (hasInBlock) {
+            inBlockResolution = resolveStationLocalInput(body.inBlockLocal, owningStation.timeZoneId);
+          }
+        } catch (error) {
+          await transaction.rollback();
+          transaction = null;
+          if (sendStationLocalInputError(context, error, sendJson)) return;
+          throw error;
+        }
+        const estimated = estimatedResolution?.instant || null;
+        const inBlock = inBlockResolution?.instant || null;
         const result = await new sql.Request(transaction)
           .input('FlightId', sql.BigInt, flightId)
-          .input('ScheduledDepartureUtc', sql.DateTime2, scheduled)
           .input('EstimatedDepartureUtc', sql.DateTime2, estimated)
           .input('InBlockAtUtc', sql.DateTime2, inBlock)
-          .query(`UPDATE dbo.Flights SET ScheduledDepartureUtc=COALESCE(@ScheduledDepartureUtc,ScheduledDepartureUtc),EstimatedDepartureUtc=COALESCE(@EstimatedDepartureUtc,EstimatedDepartureUtc),InBlockAtUtc=COALESCE(@InBlockAtUtc,InBlockAtUtc) OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.ScheduledDepartureUtc,INSERTED.EstimatedDepartureUtc,INSERTED.InBlockAtUtc WHERE FlightId=@FlightId;`);
+          .query(`UPDATE dbo.Flights SET EstimatedDepartureUtc=COALESCE(@EstimatedDepartureUtc,EstimatedDepartureUtc),InBlockAtUtc=COALESCE(@InBlockAtUtc,InBlockAtUtc) OUTPUT INSERTED.FlightId,INSERTED.FlightNumber,INSERTED.ScheduledDepartureUtc,INSERTED.EstimatedDepartureUtc,INSERTED.InBlockAtUtc WHERE FlightId=@FlightId;`);
         if (!result.recordset.length) {
           await transaction.rollback();
           transaction = null;
@@ -196,12 +257,8 @@ module.exports = async function (context, req) {
           return;
         }
         const flight = result.recordset[0];
-        const action = inBlockRaw
-          ? 'In block set manually'
-          : estimatedRaw
-            ? 'Export ETD set'
-            : 'Flight timing updated';
-        const timestamp = inBlockRaw || estimatedRaw || scheduledRaw;
+        const action = inBlockResolution ? 'In block set manually' : 'Export ETD set';
+        const timestamp = inBlockResolution?.instantUtc || estimatedResolution?.instantUtc;
         await insertAuditEvent(transaction, sql, {
           type: 'Flight',
           action,
@@ -215,7 +272,17 @@ module.exports = async function (context, req) {
         });
         await transaction.commit();
         transaction = null;
-        sendJson(context, 200, { ok: true, flight: result.recordset[0] });
+        sendJson(context, 200, {
+          ok: true,
+          flight: result.recordset[0],
+          stationTimeResolution: {
+            stationId: owningStation?.stationId || null,
+            stationCode: owningStation?.stationCode || null,
+            timeZoneId: owningStation?.timeZoneId || null,
+            estimatedDepartureUtc: estimatedResolution?.instantUtc || null,
+            inBlockAtUtc: inBlockResolution?.instantUtc || null
+          }
+        });
         return;
       }
 

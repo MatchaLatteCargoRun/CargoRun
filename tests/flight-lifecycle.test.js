@@ -11,6 +11,7 @@ const { insertAuditEvent } = require('../api/shared/audit');
 const completionSnapshot = require('../api/shared/completion-snapshot');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
 const stationHelpers = require('./helpers/station-stub');
+const stationLocalInput = require('../api/shared/station-local-input');
 
 const root = path.resolve(__dirname, '..');
 const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
@@ -57,6 +58,7 @@ function loadHandler(file, sql, replacements = {}) {
         if (name === '../shared/completion-snapshot') return completionSnapshot;
         if (name === '../shared/operational-authorization') return operationalAuthorization;
         if (name === '../shared/station') return stationHelpers;
+        if (name === '../shared/station-local-input') return stationLocalInput;
         return require(name);
       }
     },

@@ -760,8 +760,8 @@ test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine to
 test('every operational mutation has an explicit capability check before its write statement', () => {
   const source = relative => fs.readFileSync(path.join(root, relative), 'utf8');
   const checks = [
-    ['api/flights/index.js', "'SET_IN_BLOCK'", 'UPDATE dbo.Flights SET ScheduledDepartureUtc'],
-    ['api/flights/index.js', "'SET_ETD'", 'UPDATE dbo.Flights SET ScheduledDepartureUtc'],
+    ['api/flights/index.js', "'SET_IN_BLOCK'", 'UPDATE dbo.Flights SET EstimatedDepartureUtc'],
+    ['api/flights/index.js', "'SET_ETD'", 'UPDATE dbo.Flights SET EstimatedDepartureUtc'],
     ['api/flights/index.js', "'FINALISE_FLIGHT'", "UPDATE dbo.Flights SET FlightStatus='CLOSED'"],
     ['api/flights/index.js', "'UPLOAD_FLIGHT_DATA'", 'INSERT INTO dbo.Flights'],
     ['api/ulds/index.js', "'MOVE_ULD'", 'INSERT INTO dbo.ULDs'],
