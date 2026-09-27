@@ -17,13 +17,5 @@ function record(code) {
 module.exports = {
   ...actual,
   resolveAuthorizedStation: async (_executor, _sql, access, requested) => record(requested || access?.stations?.[0]),
-  resolveStationByCode: async (_executor, _sql, code) => record(code),
-  resolveStationById: async (_executor, _sql, stationId) => {
-    const id = String(stationId);
-    const index = Number(id) - 1;
-    if (!Number.isInteger(index) || index < 0 || index >= codes.length) {
-      throw new actual.StationResolutionError('STATION_UNAVAILABLE', 'The operational station is unavailable');
-    }
-    return record(codes[index]);
-  }
+  resolveStationByCode: async (_executor, _sql, code) => record(code)
 };

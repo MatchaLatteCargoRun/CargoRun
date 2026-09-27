@@ -7,8 +7,8 @@ const { operationalId, acquireOffloadFlightLock, evaluateOffloadEligibility } = 
 const {
   authenticatedActor,
   requireOperationalStations,
-  resolveActorAccess,
-  authorizeRequestedStation,
+  bindStationParameters,
+  flightStationPredicate,
   operationalEntityUnavailable,
   requireOperationalEntityCapability,
   sendOperationalAuthorizationError
@@ -67,11 +67,14 @@ function canonical(value) {
 
 // Historical export flights remain eligible without changing their lifecycle.
 const offloadFlightStatuses = ['ACTIVE', 'CLOSED', 'FINALISED', 'FINALIZED'];
-async function selectOffloadFlights(request, flightId = null, lockForUpdate = false, selectedStationId = null) {
-  request.input('SelectedFlightId', sql.BigInt, flightId);
-  if (!flightId && selectedStationId) request.input('SelectedStationId', sql.BigInt, selectedStationId);
-  const stationFilter = !flightId && selectedStationId ? ' AND f.StationId=@SelectedStationId' : '';
-  return request.query(`
+async function selectOffloadFlights(request, flightId = null, lockForUpdate = false, authorizedStations = null) {
+  const stationParameters = !flightId && authorizedStations
+    ? bindStationParameters(request, sql, authorizedStations, 'OffloadFlightStation')
+    : null;
+  const stationFilter = stationParameters
+    ? ` AND ${flightStationPredicate('f', stationParameters)}`
+    : '';
+  return request.input('SelectedFlightId', sql.BigInt, flightId).query(`
     SELECT CONVERT(varchar(20), f.FlightId) AS FlightId, f.StationId, f.FlightNumber,
       CONVERT(char(10), f.OperatingDate, 23) AS OperatingDate,
       f.CreatedAtUtc, f.Direction,f.OriginAirport,f.DestinationAirport, f.FlightStatus
@@ -234,21 +237,7 @@ module.exports = async function (context, req) {
     const body = req.body || {};
     let broadAccess = null;
     if (method === 'GET') {
-      const broadCollectionRead = req.query?.eligibleFlights === 'true' ||
-        (req.query?.eligibleUlds !== 'true' && req.query?.flightId === undefined);
-      if (broadCollectionRead) {
-        const access = await resolveActorAccess(pool, sql, identity);
-        broadAccess = {
-          ...access,
-          requestedStation: authorizeRequestedStation({
-            userAccess: access,
-            stationId: req.query?.stationId,
-            requiredCapability: 'VIEW_FLIGHTS'
-          })
-        };
-      } else {
-        broadAccess = await requireOperationalStations(pool, sql, identity, 'VIEW_FLIGHTS');
-      }
+      broadAccess = await requireOperationalStations(pool, sql, identity, 'VIEW_FLIGHTS');
     } else if (method === 'POST') {
       broadAccess = await requireOperationalStations(pool, sql, identity, 'REQUEST_OFFLOAD');
     } else if (method === 'PATCH') {
@@ -302,7 +291,7 @@ module.exports = async function (context, req) {
     if (method === 'GET') {
       const access = broadAccess;
       if (req.query?.eligibleFlights === 'true') {
-        const result = await selectOffloadFlights(pool.request(), null, false, access.requestedStation.stationId);
+        const result = await selectOffloadFlights(pool.request(), null, false, access.stations);
         const flights = result.recordset.map(f => ({
           flightId: String(f.FlightId), flightNumber: f.FlightNumber,
           operatingDate: f.OperatingDate, createdAtUtc: f.CreatedAtUtc,
@@ -323,9 +312,7 @@ module.exports = async function (context, req) {
         }
         const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
         const selectedFlight = flightResult.recordset?.[0] || null;
-        const owningStation = await requireOperationalEntityCapability(
-          pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS'
-        );
+        await requireOperationalEntityCapability(pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS');
         const flightStatus = canonical(selectedFlight?.FlightStatus);
         if (selectedFlight.Direction !== 'EXPORT' || !offloadFlightStatuses.includes(flightStatus)) {
           sendJson(context, 409, { ok: false, code: 'FLIGHT_NOT_ELIGIBLE', error: 'Select an ACTIVE, CLOSED or FINALISED export flight' });
@@ -346,8 +333,6 @@ module.exports = async function (context, req) {
           ok: true,
           flight: {
             flightId: String(selectedFlight.FlightId), flightNumber: selectedFlight.FlightNumber,
-            stationId: String(owningStation.stationId), stationCode: owningStation.stationCode,
-            displayName: owningStation.displayName, timeZoneId: owningStation.timeZoneId,
             operatingDate: selectedFlight.OperatingDate, direction: selectedFlight.Direction,
             flightStatus: selectedFlight.FlightStatus
           },
@@ -370,9 +355,7 @@ module.exports = async function (context, req) {
 
         const flightResult = await selectOffloadFlights(pool.request(), requestedFlightId, false);
         const selectedFlight = flightResult.recordset.length === 1 ? flightResult.recordset[0] : null;
-        const owningStation = await requireOperationalEntityCapability(
-          pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS'
-        );
+        await requireOperationalEntityCapability(pool, sql, identity, selectedFlight, 'VIEW_FLIGHTS');
 
         const uldIdCol = pick(columns, ['UldId']);
         const requestedAtCol = pick(columns, ['RequestedAtUtc', 'RequestedAt', 'CreatedAtUtc']);
@@ -396,10 +379,6 @@ module.exports = async function (context, req) {
           ok: true,
           flight: {
             flightId: String(selectedFlight.FlightId),
-            stationId: String(owningStation.stationId),
-            stationCode: owningStation.stationCode,
-            displayName: owningStation.displayName,
-            timeZoneId: owningStation.timeZoneId,
             flightNumber: selectedFlight.FlightNumber,
             operatingDate: selectedFlight.OperatingDate,
             direction: selectedFlight.Direction,
@@ -414,13 +393,13 @@ module.exports = async function (context, req) {
         sendJson(context, 503, { ok: false, code: 'OFFLOAD_SCHEMA_NOT_READY', error: 'Operational data is unavailable' });
         return;
       }
-      const listRequest = pool.request()
-        .input('StationId', sql.BigInt, access.requestedStation.stationId);
+      const listRequest = pool.request();
+      const stationParameters = bindStationParameters(listRequest, sql, access.stations, 'OffloadReadStation');
       const result = await listRequest.query(`
             SELECT o.*, CONVERT(char(10), f.OperatingDate, 23) AS __FlightOperatingDate
             FROM dbo.Offloads AS o
             INNER JOIN dbo.Flights AS f ON f.FlightId = o.${q(flightIdCol)}
-            WHERE f.StationId=@StationId
+            WHERE ${flightStationPredicate('f', stationParameters)}
             ORDER BY o.${q(idCol)} DESC;
           `);
       const offloads = result.recordset.map(r => normalize(r, columns));

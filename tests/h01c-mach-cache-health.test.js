@@ -127,13 +127,13 @@ function machHarness({ candidates = [], duplicate = null, allowedStations = ['ME
   };
 
   const station = {
+    MACHINE_STATION_CODE: 'MEL',
     resolveStationByCode: async (_executor, _sql, stationCode) => ({
       stationId: stationCode === 'MEL' ? '1' : '2',
       stationCode,
       displayName: stationCode,
       timeZoneId: stationCode === 'AKL' ? 'Pacific/Auckland' : 'Australia/Melbourne'
     }),
-    resolveStationById: async () => { throw new Error('not used'); },
     resolveAuthorizedStation: async (_executor, _sql, _access, requestedStation) => {
       const stationCode = String(requestedStation || '').trim().toUpperCase();
       events.push(`authorize:${stationCode || 'UNKNOWN'}`);
@@ -242,22 +242,23 @@ function machGetHarness(storedMessages) {
 
   const authorization = {
     authenticatedActor: () => ({ displayName: 'MEL Supervisor', reference: 'stable-mel-supervisor' }),
-    resolveActorAccess: async () => ({
-      stationMetadata: [{ stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne' }],
-      capabilitiesByStation: { MEL: ['VIEW_SUPERVISOR'] }
-    }),
-    authorizeRequestedStation: ({ stationId, requiredCapability }) => {
-      authorizationCalls.push(requiredCapability);
-      if (stationId !== '1') throw authorizationError('STATION_ACCESS_DENIED');
-      return { stationId: '1', stationCode: 'MEL', requiredCapability };
+    requireOperationalStations: async (_executor, _sql, _actor, capability) => {
+      authorizationCalls.push(capability);
+      return { stations: ['MEL'], requiredCapability: capability };
     },
+    bindStationParameters: (request, _sql, stations, prefix) => stations.map((stationCode, index) => {
+      const parameter = `${prefix}${index}`;
+      request.input(parameter, 'nvarchar', stationCode);
+      return parameter;
+    }),
+    flightStationPredicate: (_alias, parameters) => parameters.length ? '1=1' : '1=0',
     requireOperationalCapability: async () => { throw new Error('not used'); },
     sendOperationalAuthorizationError: () => false
   };
 
   const station = {
+    MACHINE_STATION_CODE: 'MEL',
     resolveStationByCode: async () => { throw new Error('not used'); },
-    resolveStationById: async () => { throw new Error('not used'); },
     resolveAuthorizedStation: async () => { throw new Error('not used'); }
   };
 
@@ -271,9 +272,7 @@ function machGetHarness(storedMessages) {
     process: {
       env: {
         DATABASE_CONNECTION_STRING: 'test-only',
-        MACH_FOW_MACHINE_BINDINGS: JSON.stringify([
-          { integrationId: 'mel-health-test', stationId: '1', credential: 'machine-secret-value', enabled: true }
-        ])
+        MACH_FOW_INGEST_TOKEN: 'machine-secret'
       }
     },
     require(name) {
@@ -289,7 +288,7 @@ function machGetHarness(storedMessages) {
     const context = { log: Object.assign(() => {}, { error() {}, warn() {} }) };
     await module.exports(context, {
       method: 'GET',
-      query: { stationId: '1' },
+      query: {},
       headers: { 'x-ms-client-principal': principal }
     });
     return {
@@ -335,10 +334,6 @@ test('MACH supervisor GET keeps local event evidence offset-free for live and si
   assert.equal(response.headers['Cache-Control'], 'no-store');
   assert.deepEqual(harness.authorizationCalls, ['VIEW_SUPERVISOR']);
   assert.equal(response.body.receiver.configured, true);
-  assert.deepEqual(Object.keys(response.body.receiver).sort(), [
-    'configured', 'endpoint', 'lastLiveReceivedAtUtc', 'liveMessageCount', 'preferredAuthentication'
-  ]);
-  assert.doesNotMatch(JSON.stringify(response.body.receiver), /machine-secret-value|mel-health-test|stationId/i);
   assert.deepEqual(response.body.messages.map(row => row.SourceType), [
     'MACH_FOW_LIVE',
     'MACH_FOW_SIMULATOR',

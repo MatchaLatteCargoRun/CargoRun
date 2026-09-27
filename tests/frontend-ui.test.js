@@ -150,9 +150,6 @@ test('duplicate-number desktop flights retain exact FlightId through route and d
     route: {},
     stableOperationalId: value => /^[1-9]\d*$/.test(String(value || '')) ? String(value) : '',
     window: { scrollTo() {} },
-    canOpenCargoRunScreen: () => true,
-    centralSyncScheduler: { reschedule() {} },
-    refreshHistoryOnEntry() {},
     render() {},
     toast() {},
     activeFlights: type => state[type].filter(flight => !flight.closed),
@@ -190,7 +187,7 @@ test('mobile route renderers and bottom navigation remain in place', () => {
   assert.match(html, /isMobileUI\(\)\?mobileBottomNav\(\):''/);
 });
 
-test('desktop lookup normalizes zero-padded flight numbers and limits default results to three selected-station dates', () => {
+test('desktop lookup normalizes zero-padded flight numbers and limits default results to three Melbourne dates', () => {
   const start = html.indexOf('function normalizeFlightLookup(');
   const end = html.indexOf('function flightLookupResultRow(', start);
   const context = vm.createContext({
@@ -206,10 +203,7 @@ test('desktop lookup normalizes zero-padded flight numbers and limits default re
     Intl,
     Date,
     stableOperationalId: value => /^[1-9]\d*$/.test(String(value || '')) ? String(value) : '',
-    flightDateISO: () => '',
-    selectedStationDateKey: () => '2026-09-19',
-    selectedStationCode: () => 'MEL',
-    validHistoryDateKey: value => /^\d{4}-\d{2}-\d{2}$/.test(String(value || ''))
+    flightDateISO: () => ''
   });
   vm.runInContext(html.slice(start, end), context);
   const now = Date.parse('2026-09-19T02:00:00Z');
@@ -244,9 +238,7 @@ test('lookup result actions and shift report retain stable identity and statemen
   assert.match(html, /openUldLookupResult\('\$\{esc\(flightId\)\}','\$\{esc\(match\.uldId\)\}'\)/);
   assert.match(html, /rows\.find\(row=>stableOperationalId\(row\.UldId\)===uid\)/);
   assert.match(html, /class="shift-document"/);
-  assert.match(html, /CargoRun Shift Report/);
-  assert.doesNotMatch(html, /CargoRun MEL Shift Report/);
-  assert.match(html, /selected-station operating date/);
+  assert.match(html, /CargoRun MEL Shift Report/);
   assert.match(html, /Print \/ Save PDF/);
 });
 
@@ -277,10 +269,7 @@ test('History exposes completed-flight and stable actor filters', () => {
     ] },
     historySearch: '',
     historyFilter: 'All',
-    historyUserFilter: 'All',
-    historyOperatingDate: '1970-01-01',
-    validHistoryDateKey: value => value === '1970-01-01',
-    historyDateKey: () => '1970-01-01'
+    historyUserFilter: 'All'
   });
   vm.runInContext(html.slice(start, end), context);
   assert.deepEqual(Array.from(context.historyUsers(), user => user.key), ['id:actor-1', 'id:actor-2']);

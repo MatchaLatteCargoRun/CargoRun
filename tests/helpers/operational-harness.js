@@ -7,19 +7,15 @@ const vm = require('node:vm');
 const { normalizeUldNumber } = require('../../api/shared/uld');
 const flightHelpers = require('../../api/shared/flight');
 const documentCorIdHelpers = require('../../api/shared/document-cor-id');
-const machineStationBinding = require('../../api/shared/machine-station-binding');
 const { normalizeFlightNumber } = flightHelpers;
 const { insertAuditEvent } = require('../../api/shared/audit');
 const completionAmendments = require('../../api/shared/completion-amendments');
-const completionSnapshot = require('../../api/shared/completion-snapshot');
 const flightStatementEvidence = require('../../api/shared/flight-statement-evidence');
 const offloadEligibility = require('../../api/shared/offload-eligibility');
 const exportManifestFinal = require('../../api/shared/export-manifest-final');
 const exportUws = require('../../api/shared/export-uws');
 const operationalAuthorization = require('./operational-authorization-stub');
 const station = require('../../api/shared/station');
-const stationTime = require('../../api/shared/station-time');
-const stationLocalInput = require('../../api/shared/station-local-input');
 
 const root = path.resolve(__dirname, '..', '..');
 const principal = Buffer.from(JSON.stringify({
@@ -39,17 +35,13 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
       if (name === '../shared/uld') return { normalizeUldNumber };
       if (name === '../shared/flight') return flightHelpers;
       if (name === '../shared/document-cor-id') return documentCorIdHelpers;
-      if (name === '../shared/machine-station-binding') return machineStationBinding;
       if (name === '../shared/flight-statement-evidence') return flightStatementEvidence;
       if (name === '../shared/audit') return { insertAuditEvent };
       if (name === '../shared/completion-amendments') return completionAmendments;
-      if (name === '../shared/completion-snapshot') return completionSnapshot;
       if (name === '../shared/offload-eligibility') return offloadEligibility;
       if (name === '../shared/export-manifest-final') return exportManifestFinal;
       if (name === '../shared/export-uws') return exportUws;
       if (name === '../shared/operational-authorization') return operationalAuthorizationOverride;
-      if (name === '../shared/station-time') return stationTime;
-      if (name === '../shared/station-local-input') return stationLocalInput;
       if (name === '../shared/station') return {
         ...station,
         resolveAuthorizedStation: async (_executor, _sql, access, requested) => {
@@ -57,10 +49,8 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
           const index = Math.max(0, ['MEL', 'SYD', 'BNE', 'HKG', 'SIN', 'DXB', 'KUL'].indexOf(code));
           return { stationId: String(index + 1), stationCode: code, displayName: code, timeZoneId: 'Australia/Melbourne' };
         },
-        resolveStationByCode: async (_executor, _sql, code) => ({ stationId: '1', stationCode: code, displayName: code, timeZoneId: 'Australia/Melbourne' }),
-        resolveStationById: async (_executor, _sql, stationId) => ({ stationId: String(stationId), stationCode: 'MEL', displayName: 'MEL', timeZoneId: 'Australia/Melbourne' })
+        resolveStationByCode: async (_executor, _sql, code) => ({ stationId: '1', stationCode: code, displayName: code, timeZoneId: 'Australia/Melbourne' })
       };
-      if (name === 'crypto') return require('crypto');
       throw new Error(`Unexpected require: ${name}`);
     }
   });

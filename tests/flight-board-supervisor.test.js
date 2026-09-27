@@ -47,7 +47,6 @@ function boardHarness() {
     String,
     activeFlights: type => state[type].filter(f => !f.closed),
     stableOperationalId,
-    selectedStationCode: () => 'MEL',
     catalogFlightById: id => catalog.get(String(id)) || null,
     azureDisplayDate: value => String(value || ''),
     toMs: value => Number(value) || null,
@@ -102,14 +101,6 @@ function supervisorHarness() {
     Math,
     String,
     Date,
-    selectedStation: () => ({
-      stationId: '1',
-      stationCode: 'MEL',
-      displayName: 'Melbourne',
-      timeZoneId: 'Australia/Melbourne'
-    }),
-    selectedStationTimeZone: () => 'Australia/Melbourne',
-    selectedStationDateKey: () => '2026-09-15',
     allOperationalOffloads: () => [activeOffload],
     todayDateKey: () => '2026-09-15',
     localDateKey: () => '2026-09-15',
