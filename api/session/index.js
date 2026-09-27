@@ -3,6 +3,7 @@
 const sql = require('mssql');
 const {
   authenticatedActor,
+  capabilitiesForStation,
   resolveActorAccess,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
@@ -34,6 +35,10 @@ module.exports = async function session(context, req) {
     }
     pool = await new sql.ConnectionPool(connectionString).connect();
     const access = await resolveActorAccess(pool, sql, actor);
+    const stationMetadata = access.stationMetadata.map(station => ({
+      ...station,
+      capabilities: capabilitiesForStation(access, station.stationId)
+    }));
     sendJson(context, 200, {
       ok: true,
       authenticated: true,
@@ -41,7 +46,7 @@ module.exports = async function session(context, req) {
       userId: actor.reference,
       displayName: actor.displayName,
       stations: access.stations,
-      stationMetadata: access.stationMetadata,
+      stationMetadata,
       capabilities: access.capabilities
     });
   } catch (error) {

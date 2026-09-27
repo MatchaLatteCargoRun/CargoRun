@@ -33,6 +33,11 @@ function harness() {
     slug: value => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
     azureStatusToUi: value => ({REQUESTED:'Requested',TRANSIT:'Transit',COMPLETE:'Complete'}[String(value).toUpperCase()] || String(value)),
     fmtDateTime: value => new Date(value).toISOString(),
+    selectedStationTimeZone: () => 'Australia/Melbourne',
+    formatStationDateTime: value => new Date(value).toISOString(),
+    exactFlightStation: flight => flight?.stationId && flight?.stationCode && flight?.displayName && flight?.timeZoneId ? {
+      stationId:String(flight.stationId),stationCode:String(flight.stationCode),displayName:String(flight.displayName),timeZoneId:String(flight.timeZoneId)
+    } : null,
     azureDisplayDate: value => String(value || ''),
     azureOffloadToUi: value => ({
       azureOffloadId: String(value.offloadId), flightId: String(value.flightId), uldId: value.uldId == null ? null : String(value.uldId),
@@ -42,7 +47,7 @@ function harness() {
       completedAt: value.deliveredAtUtc ? Date.parse(value.deliveredAtUtc) : null, deliveredBy: value.deliveredByDisplayName || '',
       location: value.deliveredLocation || '', requestInstruction: value.requestInstruction || '', completionNote: value.completionNote || ''
     }),
-    fetch: async (url, options) => { requests.push({url, options}); return {ok:true,status:200,json:async()=>({ok:true,flight:{flightId:'25',flightNumber:'CX163',operatingDate:'2026-09-18',flightStatus:'CLOSED'},offloads:[]})}; },
+    fetch: async (url, options) => { requests.push({url, options}); return {ok:true,status:200,json:async()=>({ok:true,flight:{flightId:'25',flightNumber:'CX163',operatingDate:'2026-09-18',flightStatus:'CLOSED',stationId:'1',stationCode:'MEL',displayName:'Melbourne',timeZoneId:'Australia/Melbourne'},offloads:[]})}; },
     encodeURIComponent,
     showActionLoader() {}, hideActionLoader() {}, modal() {}, modalHead: value => value, toast() {}, closeModal() {},
     window: {open: () => null}, document: {}, setTimeout() {}, console
@@ -105,7 +110,7 @@ test('live summary load is an exact read-only FlightId request',async()=>{
 test('ACTIVE, CLOSED and FINALISED lifecycle labels render without changing data',()=>{
   const h=harness();
   for(const flightStatus of ['ACTIVE','CLOSED','FINALISED','FINALIZED']){
-    const summary={flight:{flightId:'25',flightNumber:'CX163',operatingDate:'2026-09-18',flightStatus},offloads:[offload()]};
+    const summary={flight:{flightId:'25',flightNumber:'CX163',operatingDate:'2026-09-18',flightStatus,stationId:'1',stationCode:'MEL',displayName:'Melbourne',timeZoneId:'Australia/Melbourne'},offloads:[offload()]};
     const before=structuredClone(summary);
     assert.match(h.context.currentFlightSummaryBody(summary),new RegExp(flightStatus));
     assert.deepEqual(summary,before);
@@ -114,7 +119,7 @@ test('ACTIVE, CLOSED and FINALISED lifecycle labels render without changing data
 
 test('active print summary contains live OFFLOADS while finalised statements use immutable snapshots',()=>{
   const h=harness();
-  const printed=h.context.flightSummaryHtml({flight:{flightId:'25',flightNumber:'CX163',operatingDate:'2026-09-18',flightStatus:'FINALISED'},offloads:[offload()]});
+  const printed=h.context.flightSummaryHtml({flight:{flightId:'25',flightNumber:'CX163',operatingDate:'2026-09-18',flightStatus:'FINALISED',stationId:'1',stationCode:'MEL',displayName:'Melbourne',timeZoneId:'Australia/Melbourne'},offloads:[offload()]});
   assert.match(printed,/OFFLOADS/);assert.match(printed,/AKE12345CX/);assert.match(printed,/current operational summary/i);
   const statementSource=sourceBetween('function flightStatementBody(', 'function remoteAuditToUi(');
   assert.doesNotMatch(statementSource,/state\.offloads|state\.completedOffloads|loadFlightSummary/);

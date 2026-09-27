@@ -8,20 +8,22 @@ const {
   canonicalizeDocumentCorId,
   DocumentCorIdValidationError
 } = require('../shared/document-cor-id');
-const crypto = require('crypto');
 const { insertAuditEvent } = require('../shared/audit');
+const {
+  machineAuth,
+  readMachineBindingConfiguration
+} = require('../shared/machine-station-binding');
 const {
   authenticatedActor,
   requireOperationalStations,
-  bindStationParameters,
-  flightStationPredicate,
+  resolveActorAccess,
+  authorizeRequestedStation,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 const {
-  MACHINE_STATION_CODE,
   resolveAuthorizedStation,
-  resolveStationByCode
+  resolveStationById
 } = require('../shared/station');
 
 /* ============================================================
@@ -73,82 +75,6 @@ function getHeader(req, name) {
     h[name.toUpperCase()] ||
     null
   );
-}
-
-
-function secureEqual(a, b) {
-  const aa = Buffer.from(String(a || ''));
-  const bb = Buffer.from(String(b || ''));
-
-  if (!aa.length || aa.length !== bb.length) {
-    return false;
-  }
-
-  try {
-    return crypto.timingSafeEqual(aa, bb);
-  } catch {
-    return false;
-  }
-}
-
-
-function machineAuth(req) {
-  const expected = String(
-    process.env.MACH_FOW_INGEST_TOKEN || ''
-  ).trim();
-
-  if (!expected) {
-    return {
-      configured: false,
-      ok: false,
-      mode: null
-    };
-  }
-
-  let supplied = '';
-  let mode = null;
-
-  const direct = String(
-    getHeader(req, 'x-cargorun-mach-key') || ''
-  ).trim();
-
-  if (direct) {
-    supplied = direct;
-    mode = 'header';
-  }
-
-  if (!supplied) {
-    const auth = String(
-      getHeader(req, 'authorization') || ''
-    ).trim();
-
-    const m = auth.match(/^Bearer\s+(.+)$/i);
-
-    if (m) {
-      supplied = m[1].trim();
-      mode = 'bearer';
-    }
-  }
-
-  if (
-    !supplied &&
-    String(
-      process.env.MACH_FOW_ALLOW_QUERY_TOKEN || ''
-    ).toLowerCase() === 'true'
-  ) {
-    const q = String(req?.query?.key || '').trim();
-
-    if (q) {
-      supplied = q;
-      mode = 'query';
-    }
-  }
-
-  return {
-    configured: true,
-    ok: secureEqual(expected, supplied),
-    mode: mode || null
-  };
 }
 
 
@@ -631,15 +557,35 @@ module.exports = async function(
 
 
     const machine =
-      machineAuth(req);
+      machineAuth(req, process.env);
 
-    if (req.method === 'GET' || (req.method === 'POST' && !machine.ok)) {
+    if (req.method === 'GET' || (req.method === 'POST' && !machine.credentialPresented)) {
       try {
         actor = authenticatedActor(req);
       } catch (error) {
         if (sendOperationalAuthorizationError(context, error, sendJson)) return;
         throw error;
       }
+    }
+
+
+    if (req.method === 'POST' && machine.credentialPresented && machine.configurationStatus !== 'ready') {
+      sendJson(context, 503, {
+        ok: false,
+        code: 'MACHINE_CONFIGURATION_UNAVAILABLE',
+        error: 'MACH receiver configuration is unavailable'
+      });
+      return;
+    }
+
+
+    if (req.method === 'POST' && machine.credentialPresented && !machine.ok) {
+      sendJson(context, 403, {
+        ok: false,
+        code: 'MACHINE_AUTHENTICATION_FAILED',
+        error: 'MACH receiver authentication failed'
+      });
+      return;
     }
 
 
@@ -668,17 +614,14 @@ module.exports = async function(
     if (
       req.method === 'POST' &&
       !actor &&
-      !machine.ok
+      !machine.credentialPresented
     ) {
       sendJson(
         context,
         403,
         {
           ok: false,
-          error:
-            machine.configured
-              ? 'MACH receiver authentication failed'
-              : 'MACH live receiver is not configured'
+          error: 'Microsoft Entra sign-in or a machine credential is required'
         }
       );
 
@@ -699,23 +642,21 @@ module.exports = async function(
     if (req.method === 'GET') {
 
       const access =
-        await requireOperationalStations(
+        await resolveActorAccess(
           pool,
           sql,
-          actor,
-          'VIEW_SUPERVISOR'
+          actor
         );
+
+      const requestedStation = authorizeRequestedStation({
+        userAccess: access,
+        stationId: req.query?.stationId,
+        requiredCapability: 'VIEW_SUPERVISOR'
+      });
 
       const messageRequest =
-        pool.request();
-
-      const messageStations =
-        bindStationParameters(
-          messageRequest,
-          sql,
-          access.stations,
-          'MachReadStation'
-        );
+        pool.request()
+          .input('StationId', sql.BigInt, requestedStation.stationId);
 
       const r =
         await messageRequest
@@ -759,6 +700,8 @@ module.exports = async function(
                 WHERE
                   x.MachMessageId =
                   m.MachMessageId
+                  AND x.FlightId =
+                  f.FlightId
 
               ) AS UldCount,
 
@@ -773,6 +716,8 @@ module.exports = async function(
                 WHERE
                   x.MachMessageId =
                   m.MachMessageId
+                  AND x.FlightId =
+                  f.FlightId
 
               ) AS UldNumbers
 
@@ -783,7 +728,8 @@ module.exports = async function(
                  m.MatchedFlightId
 
             WHERE
-              ${flightStationPredicate('f', messageStations)}
+              m.StationId=@StationId
+              AND f.StationId=@StationId
 
             ORDER BY
               m.ReceivedAtUtc DESC,
@@ -794,12 +740,7 @@ module.exports = async function(
       const stats =
         await (() => {
           const statsRequest = pool.request();
-          const statsStations = bindStationParameters(
-            statsRequest,
-            sql,
-            access.stations,
-            'MachStatsStation'
-          );
+          statsRequest.input('StationId', sql.BigInt, requestedStation.stationId);
           return statsRequest
           .query(`
             SELECT
@@ -825,7 +766,7 @@ module.exports = async function(
 
             FROM dbo.IncomingMachMessages m
             INNER JOIN dbo.Flights f ON f.FlightId=m.MatchedFlightId
-            WHERE ${flightStationPredicate('f', statsStations)};
+            WHERE m.StationId=@StationId AND f.StationId=@StationId;
           `);
         })();
 
@@ -838,24 +779,13 @@ module.exports = async function(
 
           receiver: {
             configured:
-              Boolean(
-                process.env
-                  .MACH_FOW_INGEST_TOKEN
-              ),
+              readMachineBindingConfiguration(process.env).bindings.some(binding => binding.enabled),
 
             endpoint:
               '/api/mach-fow',
 
             preferredAuthentication:
-              'X-CargoRun-MACH-Key header or Bearer token',
-
-            queryTokenEnabled:
-              String(
-                process.env
-                  .MACH_FOW_ALLOW_QUERY_TOKEN ||
-                ''
-              ).toLowerCase() ===
-              'true',
+              'Station-bound X-CargoRun-MACH-Key header or Bearer token',
 
             liveMessageCount:
               Number(
@@ -882,6 +812,19 @@ module.exports = async function(
     /* ========================================================
        POST
        ======================================================== */
+
+    if (machine.ok) {
+      try {
+        operationalStation = await resolveStationById(pool, sql, machine.stationId);
+      } catch {
+        sendJson(context, 403, {
+          ok: false,
+          code: 'MACHINE_STATION_UNAVAILABLE',
+          error: 'MACH receiver station is unavailable'
+        });
+        return;
+      }
+    }
 
     const xml =
       extractRawXml(req);
@@ -1128,13 +1071,10 @@ module.exports = async function(
       live
         ? {
             displayName:
-              'MACH HTTP Feed',
+              'MACH Machine Integration',
 
             reference:
-              `machine:${
-                machine.mode ||
-                'token'
-              }`
+              `machine:${machine.integrationId}`
           }
         : actor;
 
@@ -1188,29 +1128,27 @@ module.exports = async function(
     const access = live
       ? null
       : await requireOperationalStations(pool, sql, actor, 'UPLOAD_FLIGHT_DATA');
-    operationalStation = live
-      ? await resolveStationByCode(pool, sql, MACHINE_STATION_CODE)
-      : await resolveAuthorizedStation(pool, sql, access, station || origin);
+    if (!live) {
+      operationalStation = await resolveAuthorizedStation(pool, sql, access, station || origin);
+    }
 
     if (
       (eventStation && eventStation !== operationalStation.stationCode) ||
       (segmentDeparture && segmentDeparture !== operationalStation.stationCode) ||
       (!eventStation && origin && origin !== operationalStation.stationCode)
     ) {
-      sendJson(
-        context,
-        422,
-        {
-          ok: false,
-          error:
-            `The message station does not match the authorized handling station. ` +
-            `Message station is ${
-              station ||
-              origin ||
-              'unknown'
-            }`
-        }
-      );
+      sendJson(context, 422, live
+        ? {
+            ok: false,
+            code: 'MACHINE_STATION_MISMATCH',
+            error: 'MACH message station evidence does not match the authenticated machine integration'
+          }
+        : {
+            ok: false,
+            error:
+              `The message station does not match the authorized handling station. ` +
+              `Message station is ${station || origin || 'unknown'}`
+          });
 
       return;
     }

@@ -16,6 +16,7 @@ const offloadEligibility = require('../api/shared/offload-eligibility');
 const exportManifestFinal = require('../api/shared/export-manifest-final');
 const exportUws = require('../api/shared/export-uws');
 const stationHelpers = require('./helpers/station-stub');
+const stationLocalInput = require('../api/shared/station-local-input');
 const { sqlHarness, loadHandler: loadOperationalHandler, call } = require('./helpers/operational-harness');
 
 const root = path.resolve(__dirname, '..');
@@ -95,6 +96,7 @@ function loadHandler(relativePath, sqlMock, authorization) {
       if (name === '../shared/export-manifest-final') return exportManifestFinal;
       if (name === '../shared/export-uws') return exportUws;
       if (name === '../shared/station') return stationHelpers;
+      if (name === '../shared/station-local-input') return stationLocalInput;
       return require(name);
     }
   }, { filename });
@@ -342,4 +344,33 @@ test('completion and export FINAL handlers authorize loaded flights before direc
     assert.equal(response.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE', route);
     assert.doesNotMatch(JSON.stringify(response.body), /TRANSFER|FINALISED|Only import|Only export|active/i, route);
   }
+});
+
+test('station-local timing denial preserves exact-entity H-01 masking before validation or write', async () => {
+  const hidden = flight({
+    StationId: '8',
+    Direction: 'EXPORT',
+    OriginAirport: 'MEL',
+    DestinationAirport: 'HKG',
+    FlightStatus: 'CLOSED'
+  });
+  const harness = identitySql([hidden]);
+  const denied = stationAuthorization(['MEL'], { denyExact: true });
+  const response = await invoke(
+    loadHandler('api/flights/index.js', harness.sql, denied.module),
+    'PATCH',
+    {
+      flightId: '71',
+      stationId: '1',
+      estimatedDepartureLocal: { localDate: '2026-10-04', localTime: '02:30' }
+    }
+  );
+
+  assert.equal(response.status, 404);
+  assert.equal(response.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
+  assert.doesNotMatch(JSON.stringify(response.body), /AKL|Auckland|Pacific\/Auckland|CLOSED|daylight|02:30/);
+  assert.equal(harness.state.queries.some(entry => /\b(INSERT|UPDATE|DELETE)\b/i.test(entry.text)), false);
+  assert.equal(harness.state.commits, 0);
+  assert.deepEqual(denied.state.stationChecks, ['SET_ETD']);
+  assert.equal(denied.state.capabilityChecks[0].capability, 'SET_ETD');
 });

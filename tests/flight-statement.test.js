@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const { sqlHarness, loadHandler, call } = require('./helpers/operational-harness');
+const operationalAuthorization = require('./helpers/operational-authorization-stub');
 const { canonicalJson, sha256, amendmentEnvelope } = require('../api/shared/completion-amendments');
 
 const html = fs.readFileSync(path.resolve(__dirname, '..', 'index.html'), 'utf8');
@@ -55,12 +56,12 @@ function chain() {
   return { base, amendments: [v2, v3, v4] };
 }
 
-function apiSetup(options = {}) {
+function apiSetup(options = {}, authorization = operationalAuthorization) {
   const h = sqlHarness({
     flights: [{ FlightId: '1', FlightNumber: 'CX0998', OperatingDate: '2026-09-18', Direction: 'EXPORT', FlightStatus: 'FINALISED' }],
     ...options
   });
-  return { ...h, handler: loadHandler('api/flight-statement/index.js', h.sql) };
+  return { ...h, handler: loadHandler('api/flight-statement/index.js', h.sql, authorization) };
 }
 
 test('finalised flight with only V1 returns one immutable Flight Statement version', async () => {
@@ -72,10 +73,64 @@ test('finalised flight with only V1 returns one immutable Flight Statement versi
   assert.equal(response.body.completionId, '30');
   assert.equal(response.body.latestVersion, 1);
   assert.equal(response.body.selectedVersion.versionNumber, 1);
+  assert.deepEqual(
+    {
+      stationId: response.body.flight.stationId,
+      stationCode: response.body.flight.stationCode,
+      displayName: response.body.flight.displayName,
+      timeZoneId: response.body.flight.timeZoneId
+    },
+    { stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne' }
+  );
   assert.deepEqual(response.body.selectedVersion.snapshot, JSON.parse(base.SnapshotJson));
   assert.equal(response.body.selectedVersion.snapshot.offloads, undefined);
   assert.deepEqual(h.state.completions, before.completions);
   assert.equal(h.state.queries.some(entry => /\b(?:INSERT|UPDATE|DELETE|MERGE)\b/i.test(entry.q)), false);
+});
+
+test('exact Flight Statement response carries its authoritative owning-station timezone', async () => {
+  const base = baseCompletion();
+  const h = apiSetup({
+    flights: [{
+      FlightId: '1', StationId: '8', FlightNumber: 'CX0998', OperatingDate: '2026-09-18',
+      Direction: 'EXPORT', OriginAirport: 'AKL', DestinationAirport: 'HKG', FlightStatus: 'FINALISED'
+    }],
+    completions: [base]
+  });
+  const response = await call(h.handler, 'GET', null, { flightId: '1' });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(
+    {
+      stationId: response.body.flight.stationId,
+      stationCode: response.body.flight.stationCode,
+      displayName: response.body.flight.displayName,
+      timeZoneId: response.body.flight.timeZoneId
+    },
+    { stationId: '8', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland' }
+  );
+});
+
+test('exact Flight Statement masks denied owning-station records before reading completion evidence', async () => {
+  const deniedAuthorization = {
+    ...operationalAuthorization,
+    requireOperationalEntityCapability: async () => {
+      throw operationalAuthorization.operationalEntityUnavailable();
+    }
+  };
+  const h = apiSetup({
+    flights: [{
+      FlightId: '1', StationId: '8', FlightNumber: 'CX0998', OperatingDate: '2026-09-18',
+      Direction: 'EXPORT', OriginAirport: 'AKL', DestinationAirport: 'HKG', FlightStatus: 'FINALISED'
+    }],
+    completions: [baseCompletion()]
+  }, deniedAuthorization);
+
+  const response = await call(h.handler, 'GET', null, { flightId: '1' });
+  assert.equal(response.status, 404);
+  assert.equal(response.body.code, 'OPERATIONAL_ENTITY_NOT_AVAILABLE');
+  assert.equal(h.state.queries.some(entry => entry.q.includes('FROM dbo.ExportCompletionRecords')), false);
+  assert.equal(Object.hasOwn(response.body, 'flight'), false);
 });
 
 test('V2-V4 defaults to latest and exact version selection returns each immutable snapshot', async () => {
@@ -135,13 +190,32 @@ function sourceBetween(start, end) {
 
 function frontendHarness() {
   const requests = [];
+  const exactFlightStation = flight => {
+    const stationId = String(flight?.stationId ?? '').trim();
+    const stationCode = String(flight?.stationCode || '').trim().toUpperCase();
+    const displayName = String(flight?.displayName || '').trim();
+    const timeZoneId = String(flight?.timeZoneId || '').trim();
+    try { new Intl.DateTimeFormat('en-AU', { timeZone: timeZoneId }).format(0); } catch { return null; }
+    return /^[1-9]\d*$/.test(stationId) && /^[A-Z]{3}$/.test(stationCode) && displayName
+      ? { stationId, stationCode, displayName, timeZoneId }
+      : null;
+  };
+  const formatStationDateTime = (value, timeZoneId) => {
+    const instant = new Date(value);
+    if (!Number.isFinite(instant.getTime()) || !timeZoneId) return '—';
+    return new Intl.DateTimeFormat('en-AU', {
+      timeZone: timeZoneId, day: '2-digit', month: 'short', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short'
+    }).format(instant);
+  };
   const context = vm.createContext({
     state: { offloads: [{ uld: 'LIVE-OFFLOAD-SHOULD-NOT-APPEAR' }], completedOffloads: [] },
     stableOperationalId: value => /^[1-9]\d*$/.test(String(value ?? '')) ? String(value) : '',
     toMs: value => { const parsed = typeof value === 'number' ? value : Date.parse(value); return Number.isFinite(parsed) ? parsed : null; },
     esc: value => String(value ?? ''), slug: value => String(value ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-'),
     azureStatusToUi: value => ({ REQUESTED: 'Requested', TRANSIT: 'Transit', COMPLETE: 'Complete' })[String(value).toUpperCase()] || String(value),
-    fmtDateTime: value => value ? new Date(value).toISOString() : '—', azureDisplayDate: value => String(value || ''),
+    fmtDateTime: value => value ? new Date(value).toISOString() : '—', formatStationDateTime,
+    exactFlightStation, azureDisplayDate: value => String(value || ''),
     airlineMeta: () => ({ code: 'CX', name: 'Cathay Pacific', color: '#0d557b' }),
     fetch: async (url, options) => { requests.push({ url, options }); throw new Error('not configured'); },
     encodeURIComponent, URL, Blob, Date, console, setTimeout() {}, document: {}, window: { open: () => null },
@@ -155,7 +229,11 @@ function statementModel(version = 4) {
   const evidence = chain();
   const snapshots = [JSON.parse(evidence.base.SnapshotJson), ...evidence.amendments.map(row => JSON.parse(row.SnapshotJson))];
   return {
-    flight: { flightId: '1', flightNumber: 'CX0998', operatingDate: '2026-09-18', direction: 'EXPORT', flightStatus: 'FINALISED' },
+    flight: {
+      flightId: '1', stationId: '1', stationCode: 'MEL', displayName: 'Melbourne',
+      timeZoneId: 'Australia/Melbourne', flightNumber: 'CX0998', operatingDate: '2026-09-18',
+      direction: 'EXPORT', flightStatus: 'FINALISED'
+    },
     completionId: '30', latestVersion: 4,
     originalFinalisation: { finalizedAtUtc: evidence.base.FinalisedAtIso, finalizedByDisplayName: 'Finaliser', verificationId: 'v1-verification' },
     versions: [1, 2, 3, 4].map(v => ({ versionNumber: v, amendmentId: v === 1 ? null : String(v - 1), action: v === 1 ? 'ORIGINAL_FINALISATION' : evidence.amendments[v - 2].Action, label: v === 1 ? 'Original finalisation' : ({2:'Offload requested',3:'Offload collected',4:'Offload completed'})[v], occurredAtUtc: v === 1 ? evidence.base.FinalisedAtIso : evidence.amendments[v - 2].OccurredAtIso })),
@@ -257,6 +335,27 @@ test('screen, print, and downloaded HTML path use the same selected immutable FI
     assert.match(screen, new RegExp(evidence));
     assert.match(printable, new RegExp(evidence));
   }
+});
+
+test('exact AKL Flight Statement uses its owning timezone while the selected station remains MEL', () => {
+  const h = frontendHarness(), model = statementWithFinalEvidence(4);
+  const instant = '2026-01-01T11:30:00.000Z';
+  model.flight = {
+    ...model.flight,
+    stationId: '8', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland'
+  };
+  model.originalFinalisation.finalizedAtUtc = instant;
+  model.selectedVersion.occurredAtUtc = instant;
+  model.selectedVersion.snapshot.exportManifestFinal.confirmedAtUtc = instant;
+  model.selectedVersion.snapshot.fowTimeline.events[0].occurredAtUtc = instant;
+  h.context.selectedStationTimeZone = () => 'Australia/Melbourne';
+  h.context.fmtDateTime = () => { throw new Error('selected MEL formatter must not render an exact Flight Statement'); };
+
+  const rendered = h.context.flightStatementBody(model, true);
+  assert.match(rendered, /AKL — Auckland/);
+  assert.match(rendered, /Pacific\/Auckland/);
+  assert.match(rendered, /02 Jan 2026,? 00:30 NZDT/);
+  assert.doesNotMatch(rendered, /01 Jan 2026,? 22:30 AEDT/);
 });
 
 test('historical snapshot without FINAL or FOW evidence omits both sections cleanly', () => {

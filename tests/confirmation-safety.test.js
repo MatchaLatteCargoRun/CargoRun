@@ -43,6 +43,7 @@ function harness() {
     modal() {}, modalHead: value => value, esc: value => String(value),
     isIdentityVerified: (type, u) => !!u.identityVerified,
     isMachFowExpected: () => false,
+    canUseStationAction: () => true,
     canUseCargoRunApi: () => true,
     currentUser: () => ({ name: 'Tester', employeeId: 'test-id' }),
     uiStatusToAzure: value => String(value).toUpperCase().replaceAll(' ', '_'),

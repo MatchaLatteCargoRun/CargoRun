@@ -1,7 +1,8 @@
 'use strict';
 
+const { normalizeTimeZone } = require('./station-time');
+
 const LEGACY_NULL_STATION_COMPATIBILITY_ENABLED = true;
-const MACHINE_STATION_CODE = 'MEL';
 const STATION_TIME_ZONE_FIXTURES = Object.freeze({
   MEL: 'Australia/Melbourne',
   AKL: 'Pacific/Auckland'
@@ -24,8 +25,11 @@ function normalizeStationCode(value) {
 }
 
 function normalizeStationId(value) {
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    throw new StationResolutionError('STATION_INVALID', 'The operational station is invalid');
+  }
   const id = String(value ?? '').trim();
-  if (!/^[1-9]\d*$/.test(id)) {
+  if (!/^[1-9]\d*$/.test(id) || id.length > 19 || BigInt(id) > 9223372036854775807n) {
     throw new StationResolutionError('STATION_INVALID', 'The operational station is invalid');
   }
   return id;
@@ -38,8 +42,14 @@ function normalizeStationRecord(row) {
   const stationId = normalizeStationId(row.StationId);
   const stationCode = normalizeStationCode(row.StationCode);
   const displayName = String(row.DisplayName || '').trim();
-  const timeZoneId = String(row.TimeZoneId || '').trim();
-  if (!displayName || !timeZoneId) {
+  const rawTimeZoneId = String(row.TimeZoneId || '').trim();
+  if (!displayName || !rawTimeZoneId) {
+    throw new StationResolutionError('STATION_INVALID', 'The operational station is not configured correctly');
+  }
+  let timeZoneId;
+  try {
+    timeZoneId = normalizeTimeZone(rawTimeZoneId);
+  } catch {
     throw new StationResolutionError('STATION_INVALID', 'The operational station is not configured correctly');
   }
   return { stationId, stationCode, displayName, timeZoneId };
@@ -136,7 +146,6 @@ function stationLocalDate(instant, timeZoneId) {
 
 module.exports = {
   LEGACY_NULL_STATION_COMPATIBILITY_ENABLED,
-  MACHINE_STATION_CODE,
   STATION_TIME_ZONE_FIXTURES,
   StationResolutionError,
   normalizeStationCode,

@@ -166,11 +166,67 @@ test('session access resolution distinguishes unprovisioned, provisioned, and un
   }]);
   assert.deepEqual(granted.capabilities, ['MOVE_ULD', 'VIEW_ADMIN_AUDIT', 'VIEW_FLIGHTS']);
   assert.deepEqual(granted.globalCapabilities, ['VIEW_ADMIN_AUDIT']);
+  assert.deepEqual(actualAuthorization.capabilitiesForStation(granted, '1'), ['MOVE_ULD', 'VIEW_FLIGHTS']);
+  assert.throws(
+    () => actualAuthorization.capabilitiesForStation(granted, '2'),
+    error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+  );
 
   await assert.rejects(
     actualAuthorization.resolveActorAccess({}, authorizationSql({ accessFailure: new Error('schema missing') }).sql, actor),
     error => error.status === 503 && error.code === 'AUTHORIZATION_CONFIGURATION_UNAVAILABLE'
   );
+});
+
+test('selected station authorization uses stable StationId and station-specific capabilities', () => {
+  const userAccess = {
+    stationMetadata: [
+      { stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne' },
+      { stationId: '2', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland' }
+    ],
+    capabilities: ['VIEW_FLIGHTS', 'VIEW_HISTORY'],
+    globalCapabilities: [],
+    capabilitiesByStation: {
+      MEL: ['VIEW_FLIGHTS', 'VIEW_HISTORY'],
+      AKL: ['VIEW_FLIGHTS']
+    }
+  };
+  assert.equal(actualAuthorization.authorizeRequestedStation({
+    userAccess, stationId: '2', requiredCapability: 'VIEW_FLIGHTS'
+  }).stationCode, 'AKL');
+  assert.equal(actualAuthorization.authorizeRequestedStation({
+    userAccess, stationId: '1', requiredCapability: 'VIEW_HISTORY'
+  }).stationCode, 'MEL');
+
+  for (const stationId of [undefined, '', '0', '-1', 'abc', '9'.repeat(1000), '9007199254740993', '9223372036854775808', '3']) {
+    assert.throws(
+      () => actualAuthorization.authorizeRequestedStation({ userAccess, stationId, requiredCapability: 'VIEW_FLIGHTS' }),
+      error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+    );
+  }
+  assert.throws(
+    () => actualAuthorization.authorizeRequestedStation({ userAccess, stationId: '2', requiredCapability: 'VIEW_HISTORY' }),
+    error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+  );
+  assert.throws(
+    () => actualAuthorization.authorizeRequestedStation({
+      userAccess, stationId: Number.MAX_SAFE_INTEGER + 1, requiredCapability: 'VIEW_FLIGHTS'
+    }),
+    error => error.status === 403 && error.code === 'STATION_ACCESS_DENIED'
+  );
+});
+
+test('authorization rejects malformed, unknown, and fixed-offset station timezones', async () => {
+  const actor = actualAuthorization.authenticatedActor(requestWithPrincipal(authenticatedPrincipal));
+  for (const TimeZoneId of ['', 'Mars/Olympus', '+10:00', 'Etc/GMT-10']) {
+    await assert.rejects(
+      actualAuthorization.resolveActorAccess({}, authorizationSql({ accessRows: [
+        { StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId, CapabilityCode: 'VIEW_FLIGHTS' }
+      ] }).sql, actor),
+      error => error.status === 503 && error.code === 'AUTHORIZATION_CONFIGURATION_INVALID',
+      TimeZoneId
+    );
+  }
 });
 
 test('GET session returns safe unprovisioned metadata and keeps configuration failures distinct', async () => {
@@ -190,6 +246,19 @@ test('GET session returns safe unprovisioned metadata and keeps configuration fa
   });
   assert.equal(JSON.stringify(emptyResponse.body).includes('connection'), false);
   assert.equal(JSON.stringify(emptyResponse.body).includes('sql'), false);
+
+  const grantedHarness = readSqlHarness({ accessRows: [
+    { StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId: 'Australia/Melbourne', CapabilityCode: 'MOVE_ULD' },
+    { StationId: 2, StationCode: 'AKL', DisplayName: 'Auckland', TimeZoneId: 'Pacific/Auckland', CapabilityCode: 'VIEW_FLIGHTS' },
+    { StationCode: null, CapabilityCode: 'VIEW_ADMIN_AUDIT' }
+  ] });
+  const grantedResponse = await invoke(loadHandler('api/session/index.js', grantedHarness.sql, actualAuthorization), 'GET');
+  assert.equal(grantedResponse.status, 200);
+  assert.deepEqual(grantedResponse.body.stationMetadata, [
+    { stationId: '2', stationCode: 'AKL', displayName: 'Auckland', timeZoneId: 'Pacific/Auckland', capabilities: ['VIEW_FLIGHTS'] },
+    { stationId: '1', stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne', capabilities: ['MOVE_ULD'] }
+  ]);
+  assert.deepEqual(grantedResponse.body.capabilities, ['MOVE_ULD', 'VIEW_ADMIN_AUDIT', 'VIEW_FLIGHTS']);
 
   const failedHarness = readSqlHarness({ accessFailure: new Error('schema missing') });
   const failedResponse = await invoke(loadHandler('api/session/index.js', failedHarness.sql, actualAuthorization), 'GET');
@@ -229,24 +298,23 @@ test('unprovisioned identities receive no flight, ULD, offload, history, complet
 
 test('MEL flight lists are filtered in SQL and cannot be broadened by browser station or capability fields', async () => {
   const flights = [
-    { FlightId: '1', FlightNumber: 'CX134', Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL' },
-    { FlightId: '2', FlightNumber: 'CX178', Direction: 'EXPORT', OriginAirport: 'MEL', DestinationAirport: 'HKG' },
-    { FlightId: '3', FlightNumber: 'QF11', Direction: 'EXPORT', OriginAirport: 'SYD', DestinationAirport: 'LAX' }
+    { FlightId: '1', StationId: '1', FlightNumber: 'CX134', Direction: 'IMPORT', OriginAirport: 'HKG', DestinationAirport: 'MEL' },
+    { FlightId: '2', StationId: '1', FlightNumber: 'CX178', Direction: 'EXPORT', OriginAirport: 'MEL', DestinationAirport: 'HKG' },
+    { FlightId: '3', StationId: '2', FlightNumber: 'QF11', Direction: 'EXPORT', OriginAirport: 'MEL', DestinationAirport: 'HKG' }
   ];
   const harness = readSqlHarness({ flights });
   const response = await invoke(
     loadHandler('api/flights/index.js', harness.sql, stationAuthorization(['MEL'])),
     'GET',
     { station: 'SYD', role: 'ADMIN', capabilities: ['VIEW_FLIGHTS'] },
-    { station: 'SYD', capability: 'VIEW_FLIGHTS' }
+    { stationId: '1', station: 'SYD', capability: 'VIEW_FLIGHTS' }
   );
   assert.equal(response.status, 200);
   assert.deepEqual(response.body.flights.map(row => String(row.FlightId)), ['1', '2']);
   const select = harness.state.queries.find(entry => entry.text.includes('LEFT JOIN dbo.ExportManifestFinals'));
   assert.ok(select);
-  assert.deepEqual(Object.values(select.values), ['MEL']);
-  assert.match(select.text, /DestinationAirport.*IN.*FlightReadStation0/);
-  assert.match(select.text, /OriginAirport.*IN.*FlightReadStation0/);
+  assert.equal(select.values.StationId, '1');
+  assert.match(select.text, /WHERE f\.StationId=@StationId/);
 });
 
 test('wrong-station exact FlightId is masked before ULD or Flight Statement child data is read', async () => {
@@ -307,12 +375,14 @@ test('wrong-station UldId and OffloadId resolve their owning FlightId and cannot
 test('frontend session gate precedes every operational sync and blocks scheduler startup when unprovisioned', () => {
   const html = fs.readFileSync(path.join(root, 'index.html'), 'utf8');
   const boot = html.slice(html.indexOf('async function bootCargoRun()'), html.indexOf('bootCargoRun();') + 'bootCargoRun();'.length);
-  assert.ok(boot.indexOf('await loadCargoRunSession()') < boot.indexOf('syncCentralData('));
+  assert.ok(boot.indexOf('await loadCargoRunSession()') < boot.indexOf('switchCargoRunStation('));
   assert.match(boot, /if\(!provisioned\)return;/);
-  assert.ok(boot.indexOf('if(!provisioned)return;') < boot.indexOf('centralSyncScheduler.start()'));
-  assert.match(html, /canRun:\(\)=>canUseCargoRunApi\(\)&&cargoRunAccess\.status==='provisioned'/);
+  assert.match(boot, /if\(!stationId\)\{render\(\);return\}/);
+  const stationSwitch = html.slice(html.indexOf('async function switchCargoRunStation('), html.indexOf('function refreshHistoryOnEntry('));
+  assert.ok(stationSwitch.indexOf('syncCentralData(') < stationSwitch.indexOf('centralSyncScheduler.start()'));
+  assert.match(html, /canRun:\(\)=>canUseCargoRunApi\(\)&&cargoRunAccess\.status==='provisioned'&&!!selectedStation\(\)/);
   assert.match(html, /if\(cargoRunAccess\.status!=='provisioned'\).*accessGateScreen\(\).*return/);
-  assert.match(html, /status:data\.provisioned\?'provisioned':'unprovisioned'/);
+  assert.match(html, /status:operationallyProvisioned\?'provisioned':'unprovisioned'/);
   assert.match(html, /cargoRunAccess=\{status:'error'/);
   assert.doesNotMatch(html, /status:\s*'unprovisioned'.*catch/s);
 });
@@ -326,9 +396,10 @@ test('read endpoint inventory uses server authorization and leaves only generic 
   ];
   for (const [file, capability] of listGates) {
     const text = source(file);
-    assert.match(text, /requireOperationalStations/);
+    assert.match(text, /resolveActorAccess/);
+    assert.match(text, /authorizeRequestedStation/);
     assert.match(text, new RegExp(`['"]${capability}['"]`));
-    assert.match(text, /flightStationPredicate/);
+    assert.match(text, /StationId=@(?:Selected)?StationId/);
   }
   for (const file of [
     'api/flights/index.js', 'api/ulds/index.js', 'api/uld-status/index.js',
@@ -341,7 +412,7 @@ test('read endpoint inventory uses server authorization and leaves only generic 
     assert.match(text, /requireOperationalStations/, `${file} lacks a broad capability preflight`);
     assert.match(text, /requireOperationalEntityCapability/, `${file} lacks exact-entity masking`);
   }
-  assert.match(source('api/mach-fow/index.js'), /machineAuth\(req\)/);
+  assert.match(source('api/mach-fow/index.js'), /machineAuth\(req, process\.env\)/);
   assert.match(source('api/mach-fow/index.js'), /req\.method === 'GET'[\s\S]*VIEW_SUPERVISOR/);
   assert.doesNotMatch(source('api/db-health/index.js'), /DB_NAME\(|COUNT_BIG\(/);
   assert.match(source('api/session/index.js'), /provisioned: access\.provisioned/);
@@ -383,6 +454,7 @@ function authorizationDenial(code = 'CAPABILITY_REQUIRED') {
 
 const unprovisionedReadAuthorization = {
   ...actualAuthorization,
+  resolveActorAccess: authorizationDenial(),
   requireOperationalStations: authorizationDenial(),
   requireOperationalCapability: authorizationDenial(),
   requireAnyOperationalCapability: authorizationDenial()
@@ -390,6 +462,18 @@ const unprovisionedReadAuthorization = {
 
 function stationAuthorization(stations = ['MEL']) {
   const stationSet = new Set(stations);
+  const stationMetadata = [...stationSet].map((stationCode, index) => ({
+    stationId: String(index + 1), stationCode, displayName: stationCode,
+    timeZoneId: stationCode === 'AKL' ? 'Pacific/Auckland' : 'Australia/Melbourne'
+  }));
+  const access = capabilities => ({
+    provisioned: true,
+    stations: [...stationSet],
+    stationMetadata,
+    capabilities,
+    capabilitiesByStation: Object.fromEntries(stationMetadata.map(station => [station.stationCode, capabilities])),
+    globalCapabilities: []
+  });
   const requireOperationalCapability = async (_executor, _sql, actor, flight, requiredCapability) => {
     const stationCode = actualAuthorization.stationForFlight(flight);
     if (!stationSet.has(stationCode)) return authorizationDenial('STATION_ACCESS_DENIED')();
@@ -397,12 +481,9 @@ function stationAuthorization(stations = ['MEL']) {
   };
   return {
     ...actualAuthorization,
+    resolveActorAccess: async () => access(['VIEW_FLIGHTS', 'VIEW_HISTORY', 'VIEW_FLIGHT_STATEMENT', 'VIEW_SUPERVISOR']),
     requireOperationalStations: async (_executor, _sql, _actor, requiredCapability) => ({
-      provisioned: true,
-      stations: [...stationSet],
-      capabilities: [requiredCapability],
-      capabilitiesByStation: Object.fromEntries([...stationSet].map(station => [station, [requiredCapability]])),
-      globalCapabilities: [],
+      ...access([requiredCapability]),
       requiredCapability
     }),
     requireOperationalCapability,
@@ -456,12 +537,7 @@ function readSqlHarness({ flights = [], accessRows = [], accessFailure = null } 
         return { recordset: flights.filter(flight => String(flight.FlightId) === String(exactId)) };
       }
       if (text.includes('FROM dbo.Flights f') && text.includes('LEFT JOIN dbo.ExportManifestFinals')) {
-        const allowed = Object.entries(this.values)
-          .filter(([name]) => name.startsWith('FlightReadStation'))
-          .map(([, value]) => value);
-        return { recordset: flights.filter(flight => allowed.includes(
-          String(flight.Direction).toUpperCase() === 'IMPORT' ? flight.DestinationAirport : flight.OriginAirport
-        )) };
+        return { recordset: flights.filter(flight => String(flight.StationId) === String(this.values.StationId)) };
       }
       throw new Error(`Unexpected read SQL: ${text.slice(0, 180)}`);
     }
@@ -667,7 +743,7 @@ test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine to
     `${fs.readFileSync(filename, 'utf8')}\nmodule.exports.__machineAuth = machineAuth;`,
     {
       module, exports: module.exports, Buffer, console,
-      process: { env: { MACH_FOW_INGEST_TOKEN: 'machine-secret' } },
+      process: { env: {} },
       require(name) {
         if (name === 'mssql') return {};
         if (name.startsWith('../shared/')) return require(path.resolve(path.dirname(filename), name));
@@ -676,16 +752,27 @@ test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine to
     },
     { filename }
   );
-  assert.equal(module.exports.__machineAuth({ headers: { 'x-cargorun-mach-key': 'machine-secret' } }).ok, true);
-  assert.equal(module.exports.__machineAuth({ headers: { authorization: 'Bearer machine-secret' } }).ok, true);
-  assert.equal(module.exports.__machineAuth({ headers: { 'x-cargorun-mach-key': 'wrong' } }).ok, false);
+  const machineEnvironment = {
+    MACH_FOW_MACHINE_BINDINGS: JSON.stringify([
+      { integrationId: 'mel-auth-test', stationId: '1', credential: 'machine-secret-value', enabled: true }
+    ])
+  };
+  assert.equal(module.exports.__machineAuth(
+    { headers: { 'x-cargorun-mach-key': 'machine-secret-value' } }, machineEnvironment
+  ).ok, true);
+  assert.equal(module.exports.__machineAuth(
+    { headers: { authorization: 'Bearer machine-secret-value' } }, machineEnvironment
+  ).ok, true);
+  assert.equal(module.exports.__machineAuth(
+    { headers: { 'x-cargorun-mach-key': 'wrong' } }, machineEnvironment
+  ).ok, false);
 });
 
 test('every operational mutation has an explicit capability check before its write statement', () => {
   const source = relative => fs.readFileSync(path.join(root, relative), 'utf8');
   const checks = [
-    ['api/flights/index.js', "'SET_IN_BLOCK'", 'UPDATE dbo.Flights SET ScheduledDepartureUtc'],
-    ['api/flights/index.js', "'SET_ETD'", 'UPDATE dbo.Flights SET ScheduledDepartureUtc'],
+    ['api/flights/index.js', "'SET_IN_BLOCK'", 'UPDATE dbo.Flights SET EstimatedDepartureUtc'],
+    ['api/flights/index.js', "'SET_ETD'", 'UPDATE dbo.Flights SET EstimatedDepartureUtc'],
     ['api/flights/index.js', "'FINALISE_FLIGHT'", "UPDATE dbo.Flights SET FlightStatus='CLOSED'"],
     ['api/flights/index.js', "'UPLOAD_FLIGHT_DATA'", 'INSERT INTO dbo.Flights'],
     ['api/ulds/index.js', "'MOVE_ULD'", 'INSERT INTO dbo.ULDs'],
@@ -719,8 +806,11 @@ test('exact entity identity and machine-versus-human FOW authorization remain ex
   assert.match(offloads, /amendmentFlightId = operationalId\(current\.flightId\)/);
   assert.match(mach, /if \(!live\)[\s\S]*requireOperationalCapability[\s\S]*'UPLOAD_FLIGHT_DATA'/);
   assert.match(mach, /const live\s*=\s*Boolean\(machine\.ok\)/);
-  assert.match(mach, /secureEqual\(expected, supplied\)/);
-  assert.match(mach, /MACH_FOW_INGEST_TOKEN/);
+  assert.match(mach, /machineAuth\(req, process\.env\)/);
+  assert.match(mach, /resolveStationById\(pool, sql, machine\.stationId\)/);
+  const binding = fs.readFileSync(path.join(root, 'api/shared/machine-station-binding.js'), 'utf8');
+  assert.match(binding, /timingSafeEqual/);
+  assert.match(binding, /MACH_FOW_MACHINE_BINDINGS/);
 });
 
 test('browser PIN is no longer security and audit wording describes server capability', () => {

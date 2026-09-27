@@ -210,7 +210,7 @@ test('index uses screen-aware service plans and refreshes History only on entry'
   const end = html.indexOf('function centralActiveFlightCount()', start);
   assert.ok(start >= 0 && end > start);
   const capabilities = new Set(['VIEW_FLIGHTS', 'VIEW_HISTORY', 'VIEW_FLIGHT_STATEMENT']);
-  const context = vm.createContext({ route: { screen: 'flights' }, Set, hasCargoRunCapability: capability => capabilities.has(capability) });
+  const context = vm.createContext({ route: { screen: 'flights' }, Set, selectedStationHasCapability: capability => capabilities.has(capability) });
   vm.runInContext(html.slice(start, end), context);
   assert.deepEqual([...context.centralSyncServices({ screen: 'home' })], ['flights', 'offloads']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'flightboard' })], ['flights', 'offloads']);
@@ -225,7 +225,8 @@ test('index uses screen-aware service plans and refreshes History only on entry'
 
 test('startup, visibility and navigation are wired to the one managed scheduler', () => {
   assert.match(html, /central-sync-scheduler\.js/);
-  assert.match(html, /syncCentralData\(true,\{automatic:true,full:true,screen:'home',reason:'startup'\}\)/);
+  assert.match(html, /syncCentralData\(true,\{automatic:reason==='startup',full:true,screen:'home',reason\}\)/);
+  assert.match(html, /switchCargoRunStation\(stationId,\{reason:'startup'\}\)/);
   assert.match(html, /await centralSyncScheduler\.start\(\)/);
   assert.match(html, /centralSyncScheduler\.reschedule\(\)/);
   assert.match(html, /centralSyncScheduler\.handleVisibilityChange\(\)/);

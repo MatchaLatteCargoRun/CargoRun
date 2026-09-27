@@ -272,10 +272,15 @@ function frontendHarness() {
     azureDisplayDate: value => String(value || ''),
     stableOperationalId: value => /^[1-9]\d*$/.test(String(value ?? '').trim()) ? String(value).trim() : '',
     encodeURIComponent,
+    selectedStationApiUrl: (path, parameters = {}) => {
+      const query = new URLSearchParams({ ...parameters, stationId: '1' });
+      return `${path}?${query.toString()}`;
+    },
     fetch: (url, options) => new Promise(resolve => requests.push({ url, options, resolve })),
     toast: message => notices.push(message),
     showActionLoader: (title, detail) => loaders.push({ title, detail }), hideActionLoader() {},
     closeModal() {}, openScreen() {}, syncAzureOffloads: async () => true,
+    canUseStationAction: () => true,
     cargoRunAccess,
     operationalSessionGeneration,
     operationalSessionIsCurrent: generation =>

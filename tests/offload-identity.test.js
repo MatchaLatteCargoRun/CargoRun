@@ -5,11 +5,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const {sqlHarness, loadHandler, call} = require('./helpers/operational-harness');
+const operationalAuthorization = require('./helpers/operational-authorization-stub');
 const {canonicalJson,sha256,amendmentEnvelope}=require('../api/shared/completion-amendments');
 const root = path.resolve(__dirname, '..');
 const body = {flightId:'1',uldId:'7',uldNumber:'ake-12345-cx',parkingBay:'F25'};
 const flight = (overrides={}) => ({FlightId:'1',FlightNumber:'CX178',Direction:'EXPORT',FlightStatus:'ACTIVE',OperatingDate:'2026-09-16',CreatedAtUtc:'2026-09-16T00:00:00.000Z',...overrides});
-const setup = (options={}) => {const h=sqlHarness({liveSchema:true,flights:[flight()],...options});return {...h,handler:loadHandler('api/offloads/index.js',h.sql)}};
+const setup = (options={}, authorization=operationalAuthorization) => {const h=sqlHarness({liveSchema:true,flights:[flight()],...options});return {...h,handler:loadHandler('api/offloads/index.js',h.sql,authorization)}};
 const baseCompletion=(overrides={})=>{const SnapshotJson=overrides.SnapshotJson||'{"flight":"CX178","ulds":["AKE-12345-CX"]}';return {CompletionId:'30',FlightId:'1',VerificationId:'v1-verify',SnapshotJson,RecordHash:sha256(SnapshotJson),...overrides}}
 
 test('selector includes historical CLOSED/finalised exports and excludes imports/unsupported statuses', async()=>{
@@ -19,7 +20,7 @@ test('selector includes historical CLOSED/finalised exports and excludes imports
   flight({FlightId:'5',FlightStatus:'FINALISED'}),flight({FlightId:'6',FlightStatus:'FINALIZED'}),
   flight({FlightId:'7',FlightStatus:'CANCELLED'})
  ]});
- const r=await call(h.handler,'GET',null,{eligibleFlights:'true'});
+ const r=await call(h.handler,'GET',null,{eligibleFlights:'true',stationId:'1'});
  assert.equal(r.status,200);
  assert.deepEqual(r.body.flights.map(f=>[f.flightId,f.flightStatus]),[['1','ACTIVE'],['2','ACTIVE'],['4','CLOSED'],['5','FINALISED'],['6','FINALIZED']]);
  assert.equal(r.body.flights.find(f=>f.flightId==='4').operatingDate,'2025-01-01');
@@ -29,7 +30,7 @@ test('selector includes historical CLOSED/finalised exports and excludes imports
 });
 
 test('Flight Summary GET returns only exact FlightId offloads in deterministic order without mutation',async()=>{
- const h=setup({flights:[flight({FlightStatus:'CLOSED'}),flight({FlightId:'2',OperatingDate:'2026-09-18',FlightStatus:'FINALISED'})]});
+ const h=setup({flights:[flight({StationId:'8',OriginAirport:'AKL',DestinationAirport:'HKG',FlightStatus:'CLOSED'}),flight({FlightId:'2',OperatingDate:'2026-09-18',FlightStatus:'FINALISED'})]});
  h.state.extraOffloads.push(
   {OffloadId:'12',FlightId:'1',UldId:'7',UldNumber:'AKE12345CX',OffloadStatus:'COMPLETE',RequestedAtUtc:'2026-09-17T02:00:00Z',DeliveredAtUtc:'2026-09-17T03:00:00Z',DeliveredByDisplayName:'Runner Two'},
   {OffloadId:'10',FlightId:'1',UldId:'8',UldNumber:'PMC48921R7',OffloadStatus:'REQUESTED',RequestedAtUtc:'2026-09-17T01:00:00Z',RequestedByDisplayName:'Planner'},
@@ -39,6 +40,10 @@ test('Flight Summary GET returns only exact FlightId offloads in deterministic o
  const before=structuredClone({offload:h.state.offload,extraOffloads:h.state.extraOffloads,flights:h.state.flights,audits:h.state.audits});
  const r=await call(h.handler,'GET',null,{flightId:'1'});
  assert.equal(r.status,200);assert.equal(r.body.flight.flightId,'1');assert.equal(r.body.flight.flightStatus,'CLOSED');
+ assert.deepEqual({
+  stationId:r.body.flight.stationId,stationCode:r.body.flight.stationCode,
+  displayName:r.body.flight.displayName,timeZoneId:r.body.flight.timeZoneId
+ },{stationId:'8',stationCode:'AKL',displayName:'Auckland',timeZoneId:'Pacific/Auckland'});
  assert.deepEqual(r.body.offloads.map(o=>o.offloadId),['10','11','12']);
  assert.deepEqual(r.body.offloads.map(o=>o.flightId),['1','1','1']);
  assert.equal(r.body.offloads.some(o=>o.offloadId==='20'),false);
@@ -46,6 +51,35 @@ test('Flight Summary GET returns only exact FlightId offloads in deterministic o
  const scoped=h.state.queries.find(x=>Object.hasOwn(x.p,'SummaryFlightId'));
  assert.equal(scoped.p.SummaryFlightId,'1');assert.match(scoped.q,/WHERE o\.\[FlightId\] = @SummaryFlightId/);
  assert.match(scoped.q,/ORDER BY CASE WHEN o\.\[RequestedAtUtc\] IS NULL THEN 1 ELSE 0 END, o\.\[RequestedAtUtc\] ASC, o\.\[OffloadId\] ASC/);assert.doesNotMatch(scoped.q,/INSERT|UPDATE|DELETE/);
+});
+
+test('eligible ULD exact GET carries the same authoritative owning-station timezone',async()=>{
+ const h=setup({
+  flights:[flight({StationId:'8',OriginAirport:'AKL',DestinationAirport:'HKG'})],
+  offloadUlds:[{FlightId:'1',UldId:'7',UldNumber:'AKE12345CX',CurrentStatus:'AT_AIRCRAFT'}]
+ });
+ const r=await call(h.handler,'GET',null,{eligibleUlds:'true',flightId:'1'});
+ assert.equal(r.status,200);
+ assert.deepEqual({
+  stationId:r.body.flight.stationId,stationCode:r.body.flight.stationCode,
+  displayName:r.body.flight.displayName,timeZoneId:r.body.flight.timeZoneId
+ },{stationId:'8',stationCode:'AKL',displayName:'Auckland',timeZoneId:'Pacific/Auckland'});
+ assert.deepEqual(r.body.ulds.map(row=>row.UldId),['7']);
+});
+
+test('exact Offloads reads mask denied owning-station records before child evidence is read',async()=>{
+ const deniedAuthorization={
+  ...operationalAuthorization,
+  requireOperationalEntityCapability:async()=>{throw operationalAuthorization.operationalEntityUnavailable();}
+ };
+ for(const query of [{flightId:'1'},{eligibleUlds:'true',flightId:'1'}]){
+  const h=setup({flights:[flight({StationId:'8',OriginAirport:'AKL',DestinationAirport:'HKG'})]},deniedAuthorization);
+  const r=await call(h.handler,'GET',null,query);
+  assert.equal(r.status,404);
+  assert.equal(r.body.code,'OPERATIONAL_ENTITY_NOT_AVAILABLE');
+  assert.equal(Object.hasOwn(r.body,'flight'),false);
+  assert.equal(h.state.queries.some(entry=>Object.hasOwn(entry.p,'SummaryFlightId')||Object.hasOwn(entry.p,'EligibilityFlightId')),false);
+ }
 });
 
 test('Flight Summary GET handles no offloads and rejects invalid or unknown FlightId',async()=>{
@@ -277,7 +311,8 @@ function ui(){
  elements.modal={classList:{contains:()=>true}};const requests=[],notices=[],cargoRunAccess={status:'provisioned'},operationalSessionGeneration=1;
  const context=vm.createContext({document:{getElementById:id=>elements[id]},modal(){},modalHead:()=>'',esc:String,azureDisplayDate:String,
   stableOperationalId:x=>/^[1-9]\d*$/.test(String(x??'').trim())?String(x).trim():'',
-  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},syncAzureOffloads:async()=>true,
+  selectedStationApiUrl:(path,parameters={})=>`${path}?${new URLSearchParams({...parameters,stationId:'1'}).toString()}`,
+  fetch:(url,options)=>new Promise(resolve=>requests.push({url,options,resolve})),toast:x=>notices.push(x),showActionLoader(){},hideActionLoader(){},closeModal(){},openScreen(){},syncAzureOffloads:async()=>true,canUseStationAction:()=>true,
   cargoRunAccess,operationalSessionGeneration,
   operationalSessionIsCurrent:generation=>generation===operationalSessionGeneration&&cargoRunAccess.status==='provisioned'});
  vm.runInContext(html.slice(html.indexOf('let offloadRequestSession='),html.indexOf('function handleOffload(')),context);
