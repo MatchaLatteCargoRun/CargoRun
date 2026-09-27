@@ -924,7 +924,87 @@ DECLARE @FindingBody nvarchar(max)=N'
   UNION ALL
   SELECT N''MACH_STATION_ID_STATE'',1,
     CASE WHEN COL_LENGTH(N''dbo.IncomingMachMessages'',N''StationId'') IS NULL THEN N''INFO'' ELSE N''STOP'' END,
-    CASE WHEN COL_LENGTH(N''dbo.IncomingMachMessages'',N''StationId'') IS NULL THEN N''IncomingMachMessages.StationId is not installed.'' ELSE N''IncomingMachMessages.StationId already exists and requires compatibility review.'' END';
+    CASE WHEN COL_LENGTH(N''dbo.IncomingMachMessages'',N''StationId'') IS NULL THEN N''IncomingMachMessages.StationId is not installed.'' ELSE N''IncomingMachMessages.StationId already exists and requires compatibility review.'' END
+  UNION ALL
+  SELECT N''AUDIT_HISTORY_OWNERSHIP_UNAVAILABLE'',1,N''STOP'',N''Phase 2C History requires nullable native bigint AuditEvents.FlightId without a default and native datetime2 OccurredAtUtc.''
+  WHERE NOT EXISTS (
+    SELECT 1 FROM sys.columns columnObject
+    LEFT JOIN sys.default_constraints defaultObject
+      ON defaultObject.parent_object_id=columnObject.object_id AND defaultObject.parent_column_id=columnObject.column_id
+    WHERE columnObject.object_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'') AND columnObject.name=N''FlightId''
+      AND columnObject.system_type_id=127 AND columnObject.user_type_id=127
+      AND columnObject.max_length=8 AND columnObject.precision=19 AND columnObject.scale=0
+      AND columnObject.is_nullable=1 AND columnObject.is_computed=0 AND defaultObject.object_id IS NULL
+  ) OR NOT EXISTS (
+    SELECT 1 FROM sys.columns columnObject
+    WHERE columnObject.object_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'') AND columnObject.name=N''OccurredAtUtc''
+      AND columnObject.system_type_id=42 AND columnObject.user_type_id=42 AND columnObject.is_computed=0
+  )';
+
+SET @FindingBody+=N'
+  UNION ALL
+  SELECT N''AUDIT_HISTORY_FK_TOPOLOGY'',1,N''STOP'',N''AuditEvents requires exactly one enabled trusted noncascading single-column FlightId -> Flights.FlightId foreign key.''
+  WHERE (SELECT COUNT(DISTINCT fk.object_id) FROM sys.foreign_keys fk
+    JOIN sys.foreign_key_columns link ON link.constraint_object_id=fk.object_id
+    WHERE fk.parent_object_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'')
+      AND COL_NAME(link.parent_object_id,link.parent_column_id)=N''FlightId'')<>1
+    OR (SELECT COUNT(*) FROM sys.foreign_keys fk
+      WHERE fk.parent_object_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'')
+        AND fk.referenced_object_id=OBJECT_ID(N''dbo.Flights'',N''U'')
+        AND fk.is_disabled=0 AND fk.is_not_trusted=0
+        AND fk.delete_referential_action=0 AND fk.update_referential_action=0
+        AND (SELECT COUNT_BIG(*) FROM sys.foreign_key_columns links WHERE links.constraint_object_id=fk.object_id)=1
+        AND EXISTS (SELECT 1 FROM sys.foreign_key_columns link WHERE link.constraint_object_id=fk.object_id
+          AND COL_NAME(link.parent_object_id,link.parent_column_id)=N''FlightId''
+          AND COL_NAME(link.referenced_object_id,link.referenced_column_id)=N''FlightId''))<>1
+    OR (OBJECT_ID(N''dbo.FK_AuditEvents_Flights_FlightId'',N''F'') IS NOT NULL AND NOT EXISTS (
+      SELECT 1 FROM sys.foreign_keys fk
+      WHERE fk.object_id=OBJECT_ID(N''dbo.FK_AuditEvents_Flights_FlightId'',N''F'')
+        AND fk.parent_object_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'')
+        AND fk.referenced_object_id=OBJECT_ID(N''dbo.Flights'',N''U'')
+        AND fk.is_disabled=0 AND fk.is_not_trusted=0
+        AND fk.delete_referential_action=0 AND fk.update_referential_action=0
+        AND (SELECT COUNT_BIG(*) FROM sys.foreign_key_columns links WHERE links.constraint_object_id=fk.object_id)=1
+        AND EXISTS (SELECT 1 FROM sys.foreign_key_columns link WHERE link.constraint_object_id=fk.object_id
+          AND COL_NAME(link.parent_object_id,link.parent_column_id)=N''FlightId''
+          AND COL_NAME(link.referenced_object_id,link.referenced_column_id)=N''FlightId'')))
+  UNION ALL
+  SELECT N''AUDIT_HISTORY_INDEX_UNAVAILABLE'',1,N''STOP'',N''AuditEvents requires an enabled unfiltered index beginning with FlightId, OccurredAtUtc.''
+  WHERE NOT EXISTS (SELECT 1 FROM sys.indexes indexObject
+    WHERE indexObject.object_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'')
+      AND indexObject.is_disabled=0 AND indexObject.is_hypothetical=0 AND indexObject.has_filter=0
+      AND EXISTS (SELECT 1 FROM sys.index_columns keyColumn JOIN sys.columns columnObject
+        ON columnObject.object_id=keyColumn.object_id AND columnObject.column_id=keyColumn.column_id
+        WHERE keyColumn.object_id=indexObject.object_id AND keyColumn.index_id=indexObject.index_id
+          AND keyColumn.key_ordinal=1 AND columnObject.name=N''FlightId'')
+      AND EXISTS (SELECT 1 FROM sys.index_columns keyColumn JOIN sys.columns columnObject
+        ON columnObject.object_id=keyColumn.object_id AND columnObject.column_id=keyColumn.column_id
+        WHERE keyColumn.object_id=indexObject.object_id AND keyColumn.index_id=indexObject.index_id
+          AND keyColumn.key_ordinal=2 AND columnObject.name=N''OccurredAtUtc''))
+  UNION ALL
+  SELECT N''AUDIT_HISTORY_INDEX_NAME_CONFLICT'',1,N''STOP'',N''IX_AuditEvents_Flight_OccurredAtUtc exists with an incompatible definition.''
+  WHERE EXISTS (SELECT 1 FROM sys.indexes indexObject
+    WHERE indexObject.object_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'')
+      AND indexObject.name=N''IX_AuditEvents_Flight_OccurredAtUtc''
+      AND NOT (indexObject.is_disabled=0 AND indexObject.is_hypothetical=0 AND indexObject.has_filter=0
+        AND EXISTS (SELECT 1 FROM sys.index_columns keyColumn JOIN sys.columns columnObject
+          ON columnObject.object_id=keyColumn.object_id AND columnObject.column_id=keyColumn.column_id
+          WHERE keyColumn.object_id=indexObject.object_id AND keyColumn.index_id=indexObject.index_id
+            AND keyColumn.key_ordinal=1 AND columnObject.name=N''FlightId'')
+        AND EXISTS (SELECT 1 FROM sys.index_columns keyColumn JOIN sys.columns columnObject
+          ON columnObject.object_id=keyColumn.object_id AND columnObject.column_id=keyColumn.column_id
+          WHERE keyColumn.object_id=indexObject.object_id AND keyColumn.index_id=indexObject.index_id
+            AND keyColumn.key_ordinal=2 AND columnObject.name=N''OccurredAtUtc'')))
+  UNION ALL
+  SELECT N''AUDIT_INSERT_TRIGGER_REQUIRES_REVIEW'',COUNT_BIG(*),N''STOP'',N''Enabled AuditEvents INSERT triggers require operator review.''
+  FROM sys.triggers triggerObject WHERE triggerObject.parent_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'') AND triggerObject.is_disabled=0
+    AND EXISTS (SELECT 1 FROM sys.trigger_events triggerEvent WHERE triggerEvent.object_id=triggerObject.object_id AND triggerEvent.type_desc=N''INSERT'')
+  HAVING COUNT_BIG(*)>0
+  UNION ALL
+  SELECT N''AUDIT_UPDATE_TRIGGER_REQUIRES_REVIEW'',COUNT_BIG(*),N''STOP'',N''Enabled AuditEvents UPDATE triggers block ownership backfill.''
+  FROM sys.triggers triggerObject WHERE triggerObject.parent_id=OBJECT_ID(N''dbo.AuditEvents'',N''U'') AND triggerObject.is_disabled=0
+    AND EXISTS (SELECT 1 FROM sys.trigger_events triggerEvent WHERE triggerEvent.object_id=triggerObject.object_id AND triggerEvent.type_desc=N''UPDATE'')
+  HAVING COUNT_BIG(*)>0';
 
 IF @StationCoreReady=1
   SET @FindingBody+=N'

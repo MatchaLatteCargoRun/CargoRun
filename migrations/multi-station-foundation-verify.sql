@@ -11,7 +11,7 @@ DECLARE @ExecutableSql nvarchar(max);
 
 DECLARE @RequiredTables table(TableName sysname NOT NULL PRIMARY KEY);
 INSERT @RequiredTables(TableName) VALUES
-  (N'CargoRunStations'),(N'Flights'),(N'IncomingMachMessages'),(N'Offloads'),
+  (N'CargoRunStations'),(N'Flights'),(N'IncomingMachMessages'),(N'AuditEvents'),(N'Offloads'),
   (N'ULDs'),(N'ImportCompletionRecords'),(N'ExportCompletionRecords'),
   (N'ExportCompletionAmendments'),(N'ExportManifestFinals'),
   (N'ExportManifestFinalUlds'),(N'MachFowShipments');
@@ -31,6 +31,7 @@ INSERT @RequiredColumns(TableName,ColumnName) VALUES
   (N'IncomingMachMessages',N'MachMessageId'),(N'IncomingMachMessages',N'StationId'),
   (N'IncomingMachMessages',N'OperatingDate'),(N'IncomingMachMessages',N'DocumentCorID'),
   (N'IncomingMachMessages',N'MatchedFlightId'),
+  (N'AuditEvents',N'AuditEventId'),(N'AuditEvents',N'FlightId'),(N'AuditEvents',N'OccurredAtUtc'),
   (N'Offloads',N'OffloadId'),(N'Offloads',N'FlightId'),
   (N'ULDs',N'FlightId'),(N'ImportCompletionRecords',N'FlightId'),
   (N'ExportCompletionRecords',N'FlightId'),(N'ExportCompletionAmendments',N'FlightId'),
@@ -62,6 +63,17 @@ DECLARE @MessagesReady bit=CASE WHEN OBJECT_ID(N'dbo.IncomingMachMessages',N'U')
 DECLARE @FowReady bit=CASE WHEN OBJECT_ID(N'dbo.MachFowShipments',N'U') IS NOT NULL
   AND COL_LENGTH(N'dbo.MachFowShipments',N'FlightId') IS NOT NULL
   AND COL_LENGTH(N'dbo.MachFowShipments',N'MachMessageId') IS NOT NULL THEN 1 ELSE 0 END;
+DECLARE @AuditHistoryReady bit=CASE WHEN OBJECT_ID(N'dbo.AuditEvents',N'U') IS NOT NULL
+  AND EXISTS (SELECT 1 FROM sys.columns c
+    LEFT JOIN sys.default_constraints d ON d.parent_object_id=c.object_id AND d.parent_column_id=c.column_id
+    WHERE c.object_id=OBJECT_ID(N'dbo.AuditEvents',N'U') AND c.name=N'FlightId'
+      AND c.system_type_id=127 AND c.user_type_id=127 AND c.max_length=8
+      AND c.precision=19 AND c.scale=0 AND c.is_nullable=1 AND c.is_computed=0
+      AND d.object_id IS NULL)
+  AND EXISTS (SELECT 1 FROM sys.columns c
+    WHERE c.object_id=OBJECT_ID(N'dbo.AuditEvents',N'U') AND c.name=N'OccurredAtUtc'
+      AND c.system_type_id=42 AND c.user_type_id=42 AND c.is_computed=0)
+  THEN 1 ELSE 0 END;
 DECLARE @HasOffloadStatus bit=CASE WHEN COL_LENGTH(N'dbo.Offloads',N'OffloadStatus') IS NOT NULL THEN 1 ELSE 0 END;
 DECLARE @HasStatus bit=CASE WHEN COL_LENGTH(N'dbo.Offloads',N'Status') IS NOT NULL THEN 1 ELSE 0 END;
 -- Match api/offloads: Status is authoritative whenever it exists.
@@ -199,6 +211,79 @@ IF @MessagesReady=1 AND NOT EXISTS (
     AND EXISTS (SELECT 1 FROM sys.index_columns ic JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE ic.object_id=i.object_id AND ic.index_id=i.index_id AND ic.key_ordinal=2 AND c.name=N'OperatingDate')
     AND EXISTS (SELECT 1 FROM sys.index_columns ic JOIN sys.columns c ON c.object_id=ic.object_id AND c.column_id=ic.column_id WHERE ic.object_id=i.object_id AND ic.index_id=i.index_id AND ic.key_ordinal=3 AND c.name=N'MachMessageId'))
   INSERT @Findings VALUES('STOP',N'MISSING_MESSAGE_STATION_INDEX',N'IncomingMachMessages requires a real nonfiltered StationId, OperatingDate, MachMessageId lookup index.');
+
+-- Phase 2C History can authorize an audit row only through its exact FlightId.
+IF OBJECT_ID(N'dbo.AuditEvents',N'U') IS NOT NULL AND @AuditHistoryReady=0
+  INSERT @Findings VALUES('STOP',N'INVALID_AUDIT_FLIGHT_OWNERSHIP_SCHEMA',N'AuditEvents requires nullable native bigint FlightId without a default and native datetime2 OccurredAtUtc.');
+DECLARE @AuditFlightFkTouching int=0,@AuditFlightFkCompatible int=0,@AuditFlightFkNameConflict bit=0;
+IF @AuditHistoryReady=1
+BEGIN
+  SELECT @AuditFlightFkTouching=COUNT(DISTINCT fk.object_id)
+  FROM sys.foreign_keys fk JOIN sys.foreign_key_columns link ON link.constraint_object_id=fk.object_id
+  WHERE fk.parent_object_id=OBJECT_ID(N'dbo.AuditEvents',N'U')
+    AND COL_NAME(link.parent_object_id,link.parent_column_id)=N'FlightId';
+  SELECT @AuditFlightFkCompatible=COUNT(*) FROM sys.foreign_keys fk
+  WHERE fk.parent_object_id=OBJECT_ID(N'dbo.AuditEvents',N'U')
+    AND fk.referenced_object_id=OBJECT_ID(N'dbo.Flights',N'U')
+    AND fk.is_disabled=0 AND fk.is_not_trusted=0
+    AND fk.delete_referential_action=0 AND fk.update_referential_action=0
+    AND (SELECT COUNT_BIG(*) FROM sys.foreign_key_columns links WHERE links.constraint_object_id=fk.object_id)=1
+    AND EXISTS (SELECT 1 FROM sys.foreign_key_columns link WHERE link.constraint_object_id=fk.object_id
+      AND COL_NAME(link.parent_object_id,link.parent_column_id)=N'FlightId'
+      AND COL_NAME(link.referenced_object_id,link.referenced_column_id)=N'FlightId');
+  SET @AuditFlightFkNameConflict=CASE WHEN OBJECT_ID(N'dbo.FK_AuditEvents_Flights_FlightId',N'F') IS NOT NULL
+    AND NOT EXISTS (SELECT 1 FROM sys.foreign_keys fk
+      WHERE fk.object_id=OBJECT_ID(N'dbo.FK_AuditEvents_Flights_FlightId',N'F')
+        AND fk.parent_object_id=OBJECT_ID(N'dbo.AuditEvents',N'U')
+        AND fk.referenced_object_id=OBJECT_ID(N'dbo.Flights',N'U')
+        AND fk.is_disabled=0 AND fk.is_not_trusted=0
+        AND fk.delete_referential_action=0 AND fk.update_referential_action=0
+        AND (SELECT COUNT_BIG(*) FROM sys.foreign_key_columns links WHERE links.constraint_object_id=fk.object_id)=1
+        AND EXISTS (SELECT 1 FROM sys.foreign_key_columns link WHERE link.constraint_object_id=fk.object_id
+          AND COL_NAME(link.parent_object_id,link.parent_column_id)=N'FlightId'
+          AND COL_NAME(link.referenced_object_id,link.referenced_column_id)=N'FlightId')) THEN 1 ELSE 0 END;
+END;
+IF @AuditHistoryReady=1 AND (@AuditFlightFkTouching<>1 OR @AuditFlightFkCompatible<>1 OR @AuditFlightFkNameConflict=1)
+  INSERT @Findings VALUES('STOP',N'INVALID_AUDIT_FLIGHT_FK',N'AuditEvents requires exactly one FlightId foreign key: the enabled trusted noncascading single-column relationship to Flights.FlightId.');
+IF @AuditHistoryReady=1 AND NOT EXISTS (
+  SELECT 1 FROM sys.indexes i
+  WHERE i.object_id=OBJECT_ID(N'dbo.AuditEvents',N'U')
+    AND i.is_disabled=0 AND i.is_hypothetical=0 AND i.has_filter=0
+    AND EXISTS (SELECT 1 FROM sys.index_columns k JOIN sys.columns c
+      ON c.object_id=k.object_id AND c.column_id=k.column_id
+      WHERE k.object_id=i.object_id AND k.index_id=i.index_id AND k.key_ordinal=1 AND c.name=N'FlightId')
+    AND EXISTS (SELECT 1 FROM sys.index_columns k JOIN sys.columns c
+      ON c.object_id=k.object_id AND c.column_id=k.column_id
+      WHERE k.object_id=i.object_id AND k.index_id=i.index_id AND k.key_ordinal=2 AND c.name=N'OccurredAtUtc')
+  )
+  INSERT @Findings VALUES('STOP',N'MISSING_AUDIT_HISTORY_INDEX',N'AuditEvents requires a real nonfiltered FlightId, OccurredAtUtc History index.');
+IF @AuditHistoryReady=1 AND EXISTS (
+  SELECT 1 FROM sys.indexes i
+  WHERE i.object_id=OBJECT_ID(N'dbo.AuditEvents',N'U') AND i.name=N'IX_AuditEvents_Flight_OccurredAtUtc'
+    AND NOT (i.is_disabled=0 AND i.is_hypothetical=0 AND i.has_filter=0
+      AND EXISTS (SELECT 1 FROM sys.index_columns k JOIN sys.columns c ON c.object_id=k.object_id AND c.column_id=k.column_id
+        WHERE k.object_id=i.object_id AND k.index_id=i.index_id AND k.key_ordinal=1 AND c.name=N'FlightId')
+      AND EXISTS (SELECT 1 FROM sys.index_columns k JOIN sys.columns c ON c.object_id=k.object_id AND c.column_id=k.column_id
+        WHERE k.object_id=i.object_id AND k.index_id=i.index_id AND k.key_ordinal=2 AND c.name=N'OccurredAtUtc'))
+  )
+  INSERT @Findings VALUES('STOP',N'INVALID_AUDIT_HISTORY_INDEX_NAME',N'IX_AuditEvents_Flight_OccurredAtUtc exists with an incompatible definition.');
+IF OBJECT_ID(N'dbo.AuditEvents',N'U') IS NOT NULL
+BEGIN
+  INSERT @Findings SELECT 'STOP',N'AUDIT_INSERT_TRIGGER_REQUIRES_REVIEW',triggerObject.name
+  FROM sys.triggers triggerObject WHERE triggerObject.parent_id=OBJECT_ID(N'dbo.AuditEvents',N'U') AND triggerObject.is_disabled=0
+    AND EXISTS (SELECT 1 FROM sys.trigger_events triggerEvent WHERE triggerEvent.object_id=triggerObject.object_id AND triggerEvent.type_desc=N'INSERT');
+  INSERT @Findings SELECT 'STOP',N'AUDIT_UPDATE_TRIGGER_REQUIRES_REVIEW',triggerObject.name
+  FROM sys.triggers triggerObject WHERE triggerObject.parent_id=OBJECT_ID(N'dbo.AuditEvents',N'U') AND triggerObject.is_disabled=0
+    AND EXISTS (SELECT 1 FROM sys.trigger_events triggerEvent WHERE triggerEvent.object_id=triggerObject.object_id AND triggerEvent.type_desc=N'UPDATE');
+END;
+IF @AuditHistoryReady=1 AND @FlightsReady=1
+BEGIN
+  SET @ExecutableSql=N'
+    SELECT N''STOP'',N''INVALID_AUDIT_FLIGHT_REFERENCE'',CONCAT(N''AuditEventId '',audit.AuditEventId,N'' -> FlightId '',audit.FlightId)
+    FROM dbo.AuditEvents audit LEFT JOIN dbo.Flights flight ON flight.FlightId=audit.FlightId
+    WHERE audit.FlightId IS NOT NULL AND flight.FlightId IS NULL;';
+  INSERT @Findings(Severity,Finding,Detail) EXEC sys.sp_executesql @ExecutableSql;
+END;
 
 IF @FlightsReady=1 AND @StationMasterReady=1
 BEGIN

@@ -29,7 +29,7 @@ function response(recordset = [], rowsAffected = []) {
 
 function auditColumns() {
   return [
-    'AuditEventId', 'EventType', 'Action', 'EntityType', 'EntityId', 'FlightNumber',
+    'AuditEventId', 'EventType', 'Action', 'EntityType', 'EntityId', 'FlightId', 'FlightNumber',
     'FromStatus', 'ToStatus', 'OccurredAtUtc', 'ActorDisplayName', 'ActorReference',
     'Detail', 'DetailsJson'
   ].map(COLUMN_NAME => ({

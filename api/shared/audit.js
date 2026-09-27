@@ -16,6 +16,19 @@ function quoteName(name) {
   return `[${String(name).replace(/]/g, ']]')}]`;
 }
 
+function normalizeOptionalBigInt(value, fieldName) {
+  if (value === null || value === undefined || value === '') return null;
+  if (typeof value === 'number' && !Number.isSafeInteger(value)) {
+    throw new Error(`${fieldName} must be a safe SQL bigint`);
+  }
+  const normalized = String(value).trim();
+  if (!/^[1-9]\d*$/.test(normalized) || normalized.length > 19 ||
+      BigInt(normalized) > 9223372036854775807n) {
+    throw new Error(`${fieldName} must be a safe SQL bigint`);
+  }
+  return normalized;
+}
+
 async function auditColumns(transaction, sql) {
   const result = await new sql.Request(transaction)
     .input('AuditTableName', sql.NVarChar(128), 'AuditEvents')
@@ -43,6 +56,18 @@ async function insertAuditEvent(transaction, sql, event) {
   const columns = await auditColumns(transaction, sql);
   if (!columns.length) throw new Error('dbo.AuditEvents table was not found');
 
+  const flightId = normalizeOptionalBigInt(event.flightId, 'Audit FlightId');
+  const flightIdColumn = pick(columns, ['FlightId']);
+  const entityType = String(event.entityType || '').trim().toUpperCase();
+  const flightScoped = ['FLIGHT', 'ULD', 'OFFLOAD'].includes(entityType) ||
+    event.uldId != null || event.offloadId != null;
+  if (flightScoped && flightId === null) {
+    throw new Error('Flight-scoped audit events require authoritative FlightId');
+  }
+  if (flightId !== null && !flightIdColumn) {
+    throw new Error('AuditEvents schema cannot store authoritative FlightId');
+  }
+
   const details = {
     type: event.type,
     action: event.action,
@@ -52,10 +77,10 @@ async function insertAuditEvent(transaction, sql, event) {
     from: event.fromStatus || '',
     to: event.toStatus || '',
     detail: event.detail || '',
-    flightId: event.flightId ?? null,
+    ...(event.details || {}),
+    flightId,
     uldId: event.uldId ?? null,
-    offloadId: event.offloadId ?? null,
-    ...(event.details || {})
+    offloadId: event.offloadId ?? null
   };
 
   const request = new sql.Request(transaction)
@@ -70,6 +95,7 @@ async function insertAuditEvent(transaction, sql, event) {
     .input('AuditDetail', sql.NVarChar(1000), event.detail || null)
     .input('AuditEntityType', sql.NVarChar(50), event.entityType || null)
     .input('AuditEntityId', sql.NVarChar(100), event.entityId == null ? null : String(event.entityId))
+    .input('AuditFlightId', sql.BigInt, flightId)
     .input('AuditDetailsJson', sql.NVarChar(sql.MAX), JSON.stringify(details));
 
   const names = [];
@@ -85,6 +111,7 @@ async function insertAuditEvent(transaction, sql, event) {
   add(['Action', 'EventAction'], '@AuditAction');
   add(['EntityType'], '@AuditEntityType');
   add(['EntityId'], '@AuditEntityId');
+  add(['FlightId'], '@AuditFlightId');
   add(['FlightNumber', 'Flight'], '@AuditFlightNumber');
   add(['UldNumber', 'ULDNumber', 'Uld'], '@AuditUldNumber');
   add(['FromStatus'], '@AuditFromStatus');
