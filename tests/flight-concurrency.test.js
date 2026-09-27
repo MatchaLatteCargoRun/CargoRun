@@ -9,6 +9,7 @@ const flightHelpers = require('../api/shared/flight');
 const { normalizeUldNumber } = require('../api/shared/uld');
 const { insertAuditEvent } = require('../api/shared/audit');
 const documentCorIdHelpers = require('../api/shared/document-cor-id');
+const machineStationBinding = require('../api/shared/machine-station-binding');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
 const stationLocalInput = require('../api/shared/station-local-input');
 
@@ -29,7 +30,7 @@ function binaryDocumentCorIdEquals(left, right) {
   return leftBytes.length === rightBytes.length && leftBytes.equals(rightBytes);
 }
 
-function harness(initialFlights = []) {
+function harness(initialFlights = [], harnessOptions = {}) {
   const state = {
     flights: structuredClone(initialFlights),
     ulds: [],
@@ -358,7 +359,10 @@ function harness(initialFlights = []) {
         Buffer,
         process: { env: {
           DATABASE_CONNECTION_STRING: 'test-only',
-          MACH_FOW_INGEST_TOKEN: 'test-machine-token'
+          MACH_FOW_MACHINE_BINDINGS: harnessOptions.machineBindings ?? JSON.stringify([
+            { integrationId: 'mel-test-feed', stationId: '1', credential: 'test-machine-token', enabled: true },
+            { integrationId: 'akl-test-feed', stationId: '8', credential: 'test-akl-machine-token', enabled: true }
+          ])
         } },
         require: name => name === 'mssql'
           ? sql
@@ -366,6 +370,8 @@ function harness(initialFlights = []) {
             ? flightHelpers
             : name === '../shared/document-cor-id'
               ? documentCorIdHelpers
+            : name === '../shared/machine-station-binding'
+              ? machineStationBinding
             : name === '../shared/uld'
               ? { normalizeUldNumber }
               : name === '../shared/audit'
@@ -407,12 +413,20 @@ function harness(initialFlights = []) {
 
   async function call(endpoint, body, options = {}) {
     const context = { log: Object.assign(() => {}, { error() {}, warn() {} }) };
+    const machineCredential = options.machine === 'AKL'
+      ? 'test-akl-machine-token'
+      : options.machine === true
+        ? 'test-machine-token'
+        : typeof options.machine === 'string'
+          ? options.machine
+          : null;
     await load(endpoint)(context, {
       method: 'POST',
       body,
-      headers: options.machine
-        ? { 'x-cargorun-mach-key': 'test-machine-token' }
-        : { 'x-ms-client-principal': principal }
+      query: options.query || {},
+      headers: options.headers || (machineCredential
+        ? { 'x-cargorun-mach-key': machineCredential }
+        : { 'x-ms-client-principal': principal })
     });
     return { status: context.res.status, body: JSON.parse(context.res.body) };
   }
@@ -753,6 +767,170 @@ test('MACH handling station and outbound segment evidence must agree while cargo
     segmentOrigin: null,
     destination: 'BKK'
   }))).status, 201);
+});
+
+test('station-bound machine credentials accept only matching handling-station evidence', async () => {
+  const api = harness();
+  const mel = await api.call('mach-fow', fow('MACHINE-MEL-ACCEPT'), { machine: true });
+  assert.equal(mel.status, 201);
+  assert.equal(String(api.state.messages[0].StationId), '1');
+  assert.equal(api.state.messages[0].ProcessedByReference, 'machine:mel-test-feed');
+
+  const melReject = harness();
+  const contradictoryMel = await melReject.call('mach-fow', fow('MACHINE-MEL-REJECT', ['12345'], '17 SEP 2026', {
+    station: 'AKL', segmentOrigin: 'AKL', destination: 'SYD'
+  }), { machine: true });
+  assert.equal(contradictoryMel.status, 422);
+  assert.equal(contradictoryMel.body.code, 'MACHINE_STATION_MISMATCH');
+  assert.equal(melReject.state.flights.length, 0);
+  assert.equal(melReject.state.messages.length, 0);
+  assert.equal(melReject.state.ulds.length, 0);
+
+  const akl = harness();
+  const acceptedAkl = await akl.call('mach-fow', fow('MACHINE-AKL-ACCEPT', ['12345'], '17 SEP 2026', {
+    station: 'AKL', segmentOrigin: 'AKL', destination: 'SYD'
+  }), { machine: 'AKL' });
+  assert.equal(acceptedAkl.status, 201);
+  assert.equal(String(akl.state.messages[0].StationId), '8');
+  assert.equal(akl.state.messages[0].ProcessedByReference, 'machine:akl-test-feed');
+
+  const aklReject = harness();
+  const contradictoryAkl = await aklReject.call('mach-fow', fow('MACHINE-AKL-REJECT'), { machine: 'AKL' });
+  assert.equal(contradictoryAkl.status, 422);
+  assert.equal(contradictoryAkl.body.code, 'MACHINE_STATION_MISMATCH');
+  assert.equal(aklReject.state.messages.length, 0);
+});
+
+test('request station fields cannot redirect a machine-bound message', async () => {
+  const mel = harness();
+  const melBody = { ...fow('MACHINE-MEL-SPOOF'), stationId: '8', StationId: '8' };
+  const melResponse = await mel.call('mach-fow', melBody, {
+    machine: true,
+    query: { stationId: '8' },
+    headers: { 'x-cargorun-mach-key': 'test-machine-token', 'x-station': 'AKL' }
+  });
+  assert.equal(melResponse.status, 201);
+  assert.equal(String(mel.state.messages[0].StationId), '1');
+
+  const akl = harness();
+  const aklBody = {
+    ...fow('MACHINE-AKL-SPOOF', ['12345'], '17 SEP 2026', {
+      station: 'AKL', segmentOrigin: 'AKL', destination: 'SYD'
+    }),
+    stationId: '1',
+    StationId: '1'
+  };
+  const aklResponse = await akl.call('mach-fow', aklBody, {
+    machine: 'AKL',
+    query: { stationId: '1' },
+    headers: { 'x-cargorun-mach-key': 'test-akl-machine-token', 'x-station': 'MEL' }
+  });
+  assert.equal(aklResponse.status, 201);
+  assert.equal(String(akl.state.messages[0].StationId), '8');
+});
+
+test('machine-bound flight identity and lock remain independent by StationId', async () => {
+  const api = harness();
+  const mel = await api.call('mach-fow', fow('MACHINE-FLIGHT-MEL'), { machine: true });
+  const akl = await api.call('mach-fow', fow('MACHINE-FLIGHT-AKL', ['22345'], '17 SEP 2026', {
+    station: 'AKL', segmentOrigin: 'AKL', destination: 'SYD'
+  }), { machine: 'AKL' });
+  assert.deepEqual([mel.status, akl.status], [201, 201]);
+  assert.notEqual(mel.body.flightId, akl.body.flightId);
+  assert.deepEqual(api.state.flights.map(row => String(row.StationId)).sort(), ['1', '8']);
+  const resources = api.state.calls
+    .map(call => call.p.FlightIdentityLockResource)
+    .filter(Boolean);
+  assert.ok(resources.includes('CargoRun:Flight:v2:1:2026-09-17:CX178'));
+  assert.ok(resources.includes('CargoRun:Flight:v2:8:2026-09-17:CX178'));
+});
+
+test('disabled, unknown, unbound, and ambiguous machine identities fail before mutation', async () => {
+  const disabled = harness([], {
+    machineBindings: JSON.stringify([
+      { integrationId: 'disabled-test-feed', stationId: '1', credential: 'disabled-machine-secret', enabled: false }
+    ])
+  });
+  assert.equal((await disabled.call('mach-fow', fow('MACHINE-DISABLED'), { machine: 'disabled-machine-secret' })).status, 403);
+
+  const unknown = harness();
+  assert.equal((await unknown.call('mach-fow', fow('MACHINE-UNKNOWN'), { machine: 'unknown-machine-secret' })).status, 403);
+
+  const unbound = harness([], {
+    machineBindings: JSON.stringify([
+      { integrationId: 'unbound-test-feed', stationId: null, credential: 'unbound-machine-secret', enabled: true }
+    ])
+  });
+  assert.equal((await unbound.call('mach-fow', fow('MACHINE-UNBOUND'), { machine: 'unbound-machine-secret' })).status, 503);
+
+  const missingStation = harness([], {
+    machineBindings: JSON.stringify([
+      { integrationId: 'missing-station-feed', stationId: '9', credential: 'missing-station-secret', enabled: true }
+    ])
+  });
+  const missingStationResponse = await missingStation.call('mach-fow', fow('MACHINE-MISSING-STATION'), {
+    machine: 'missing-station-secret'
+  });
+  assert.equal(missingStationResponse.status, 403);
+  assert.equal(missingStationResponse.body.code, 'MACHINE_STATION_UNAVAILABLE');
+
+  const ambiguous = harness();
+  const ambiguousResponse = await ambiguous.call('mach-fow', fow('MACHINE-AMBIGUOUS'), {
+    headers: {
+      'x-cargorun-mach-key': 'test-machine-token',
+      authorization: 'Bearer test-machine-token'
+    }
+  });
+  assert.equal(ambiguousResponse.status, 403);
+
+  for (const fixture of [disabled, unknown, unbound, missingStation, ambiguous]) {
+    assert.equal(fixture.state.messages.length, 0);
+    assert.equal(fixture.state.flights.length, 0);
+    assert.equal(fixture.state.ulds.length, 0);
+  }
+});
+
+test('machine duplicate DocumentCorID behavior remains global, idempotent, and confidential', async () => {
+  const sameStation = harness();
+  const first = await sameStation.call('mach-fow', fow('MACHINE-SAME-STATION-DOC'), { machine: true });
+  const retry = await sameStation.call('mach-fow', fow('machine-same-station-doc'), { machine: true });
+  assert.deepEqual([first.status, retry.status], [201, 200]);
+  assert.equal(retry.body.duplicate, true);
+  assert.equal(sameStation.state.messages.length, 1);
+  assert.equal(sameStation.state.flights.length, 1);
+  assert.equal(sameStation.state.ulds.length, 1);
+
+  const crossStation = harness();
+  assert.equal((await crossStation.call('mach-fow', fow('MACHINE-GLOBAL-DOC'), { machine: true })).status, 201);
+  const conflict = await crossStation.call('mach-fow', fow('machine-global-doc', ['22345'], '17 SEP 2026', {
+    station: 'AKL', segmentOrigin: 'AKL', destination: 'SYD'
+  }), { machine: 'AKL' });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.code, 'DOCUMENT_IDENTITY_CONFLICT');
+  assert.deepEqual(Object.keys(conflict.body).sort(), ['code', 'error', 'ok']);
+  assert.equal(crossStation.state.messages.length, 1);
+  assert.equal(String(crossStation.state.messages[0].StationId), '1');
+});
+
+test('machine FOW preserves StsTime and RawXml evidence exactly', async () => {
+  const api = harness();
+  const payload = fow('MACHINE-RAW-TIME', ['12345'], '17 SEP 2026', { time: '2359' });
+  const rawXml = payload.xml;
+  const response = await api.call('mach-fow', payload, { machine: true });
+  assert.equal(response.status, 201);
+  assert.equal(response.body.eventLocalDateTime, '2026-09-17T23:59:00');
+  assert.equal(api.state.messages[0].RawXml, rawXml);
+  assert.match(api.state.messages[0].RawXml, /<StsTime>2359<\/StsTime>/);
+});
+
+test('human MEL and AKL FOW fixtures remain independently station-authorized', async () => {
+  const api = harness();
+  const mel = await api.call('mach-fow', fow('HUMAN-MEL-FIXTURE'));
+  const akl = await api.call('mach-fow', fow('HUMAN-AKL-FIXTURE', ['22345'], '17 SEP 2026', {
+    station: 'AKL', segmentOrigin: 'AKL', destination: 'SYD'
+  }));
+  assert.deepEqual([mel.status, akl.status], [201, 201]);
+  assert.deepEqual(api.state.messages.map(row => String(row.StationId)).sort(), ['1', '8']);
 });
 
 test('manual/manual and upload/upload races create one operational flight', async () => {

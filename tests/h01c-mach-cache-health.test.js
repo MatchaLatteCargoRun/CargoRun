@@ -127,13 +127,13 @@ function machHarness({ candidates = [], duplicate = null, allowedStations = ['ME
   };
 
   const station = {
-    MACHINE_STATION_CODE: 'MEL',
     resolveStationByCode: async (_executor, _sql, stationCode) => ({
       stationId: stationCode === 'MEL' ? '1' : '2',
       stationCode,
       displayName: stationCode,
       timeZoneId: stationCode === 'AKL' ? 'Pacific/Auckland' : 'Australia/Melbourne'
     }),
+    resolveStationById: async () => { throw new Error('not used'); },
     resolveAuthorizedStation: async (_executor, _sql, _access, requestedStation) => {
       const stationCode = String(requestedStation || '').trim().toUpperCase();
       events.push(`authorize:${stationCode || 'UNKNOWN'}`);
@@ -256,8 +256,8 @@ function machGetHarness(storedMessages) {
   };
 
   const station = {
-    MACHINE_STATION_CODE: 'MEL',
     resolveStationByCode: async () => { throw new Error('not used'); },
+    resolveStationById: async () => { throw new Error('not used'); },
     resolveAuthorizedStation: async () => { throw new Error('not used'); }
   };
 
@@ -271,7 +271,9 @@ function machGetHarness(storedMessages) {
     process: {
       env: {
         DATABASE_CONNECTION_STRING: 'test-only',
-        MACH_FOW_INGEST_TOKEN: 'machine-secret'
+        MACH_FOW_MACHINE_BINDINGS: JSON.stringify([
+          { integrationId: 'mel-health-test', stationId: '1', credential: 'machine-secret-value', enabled: true }
+        ])
       }
     },
     require(name) {
@@ -333,6 +335,10 @@ test('MACH supervisor GET keeps local event evidence offset-free for live and si
   assert.equal(response.headers['Cache-Control'], 'no-store');
   assert.deepEqual(harness.authorizationCalls, ['VIEW_SUPERVISOR']);
   assert.equal(response.body.receiver.configured, true);
+  assert.deepEqual(Object.keys(response.body.receiver).sort(), [
+    'configured', 'endpoint', 'lastLiveReceivedAtUtc', 'liveMessageCount', 'preferredAuthentication'
+  ]);
+  assert.doesNotMatch(JSON.stringify(response.body.receiver), /machine-secret-value|mel-health-test|stationId/i);
   assert.deepEqual(response.body.messages.map(row => row.SourceType), [
     'MACH_FOW_LIVE',
     'MACH_FOW_SIMULATOR',

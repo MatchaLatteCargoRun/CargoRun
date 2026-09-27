@@ -236,6 +236,6 @@ test('production sources apply exact StationId predicates and preserve exact-ent
   assert.match(read('api/offloads/index.js'), /requireOperationalEntityCapability/);
   assert.match(read('api/flights/index.js'), /requireOperationalEntityCapability/);
   const mach = read('api/mach-fow/index.js');
-  assert.match(mach, /machineAuth\(req\)/);
+  assert.match(mach, /machineAuth\(req, process\.env\)/);
   assert.equal((mach.match(/x\.FlightId\s*=\s*f\.FlightId/g) || []).length, 2);
 });

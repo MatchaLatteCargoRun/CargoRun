@@ -412,7 +412,7 @@ test('read endpoint inventory uses server authorization and leaves only generic 
     assert.match(text, /requireOperationalStations/, `${file} lacks a broad capability preflight`);
     assert.match(text, /requireOperationalEntityCapability/, `${file} lacks exact-entity masking`);
   }
-  assert.match(source('api/mach-fow/index.js'), /machineAuth\(req\)/);
+  assert.match(source('api/mach-fow/index.js'), /machineAuth\(req, process\.env\)/);
   assert.match(source('api/mach-fow/index.js'), /req\.method === 'GET'[\s\S]*VIEW_SUPERVISOR/);
   assert.doesNotMatch(source('api/db-health/index.js'), /DB_NAME\(|COUNT_BIG\(/);
   assert.match(source('api/session/index.js'), /provisioned: access\.provisioned/);
@@ -743,7 +743,7 @@ test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine to
     `${fs.readFileSync(filename, 'utf8')}\nmodule.exports.__machineAuth = machineAuth;`,
     {
       module, exports: module.exports, Buffer, console,
-      process: { env: { MACH_FOW_INGEST_TOKEN: 'machine-secret' } },
+      process: { env: {} },
       require(name) {
         if (name === 'mssql') return {};
         if (name.startsWith('../shared/')) return require(path.resolve(path.dirname(filename), name));
@@ -752,9 +752,20 @@ test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine to
     },
     { filename }
   );
-  assert.equal(module.exports.__machineAuth({ headers: { 'x-cargorun-mach-key': 'machine-secret' } }).ok, true);
-  assert.equal(module.exports.__machineAuth({ headers: { authorization: 'Bearer machine-secret' } }).ok, true);
-  assert.equal(module.exports.__machineAuth({ headers: { 'x-cargorun-mach-key': 'wrong' } }).ok, false);
+  const machineEnvironment = {
+    MACH_FOW_MACHINE_BINDINGS: JSON.stringify([
+      { integrationId: 'mel-auth-test', stationId: '1', credential: 'machine-secret-value', enabled: true }
+    ])
+  };
+  assert.equal(module.exports.__machineAuth(
+    { headers: { 'x-cargorun-mach-key': 'machine-secret-value' } }, machineEnvironment
+  ).ok, true);
+  assert.equal(module.exports.__machineAuth(
+    { headers: { authorization: 'Bearer machine-secret-value' } }, machineEnvironment
+  ).ok, true);
+  assert.equal(module.exports.__machineAuth(
+    { headers: { 'x-cargorun-mach-key': 'wrong' } }, machineEnvironment
+  ).ok, false);
 });
 
 test('every operational mutation has an explicit capability check before its write statement', () => {
@@ -795,8 +806,11 @@ test('exact entity identity and machine-versus-human FOW authorization remain ex
   assert.match(offloads, /amendmentFlightId = operationalId\(current\.flightId\)/);
   assert.match(mach, /if \(!live\)[\s\S]*requireOperationalCapability[\s\S]*'UPLOAD_FLIGHT_DATA'/);
   assert.match(mach, /const live\s*=\s*Boolean\(machine\.ok\)/);
-  assert.match(mach, /secureEqual\(expected, supplied\)/);
-  assert.match(mach, /MACH_FOW_INGEST_TOKEN/);
+  assert.match(mach, /machineAuth\(req, process\.env\)/);
+  assert.match(mach, /resolveStationById\(pool, sql, machine\.stationId\)/);
+  const binding = fs.readFileSync(path.join(root, 'api/shared/machine-station-binding.js'), 'utf8');
+  assert.match(binding, /timingSafeEqual/);
+  assert.match(binding, /MACH_FOW_MACHINE_BINDINGS/);
 });
 
 test('browser PIN is no longer security and audit wording describes server capability', () => {

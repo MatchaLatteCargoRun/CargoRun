@@ -3,7 +3,6 @@
 const { normalizeTimeZone } = require('./station-time');
 
 const LEGACY_NULL_STATION_COMPATIBILITY_ENABLED = true;
-const MACHINE_STATION_CODE = 'MEL';
 const STATION_TIME_ZONE_FIXTURES = Object.freeze({
   MEL: 'Australia/Melbourne',
   AKL: 'Pacific/Auckland'
@@ -147,7 +146,6 @@ function stationLocalDate(instant, timeZoneId) {
 
 module.exports = {
   LEGACY_NULL_STATION_COMPATIBILITY_ENABLED,
-  MACHINE_STATION_CODE,
   STATION_TIME_ZONE_FIXTURES,
   StationResolutionError,
   normalizeStationCode,

@@ -259,6 +259,8 @@ function apiHarness(initialRows = []) {
             ? flightHelpers
             : name === '../shared/document-cor-id'
               ? documentCorIdHelpers
+            : name === '../shared/machine-station-binding'
+              ? require('../api/shared/machine-station-binding')
             : name === '../shared/audit'
               ? { insertAuditEvent }
             : name === '../shared/completion-amendments'
