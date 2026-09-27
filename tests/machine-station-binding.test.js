@@ -12,11 +12,31 @@ function environment(bindings) {
 }
 
 const mel = {
-  integrationId: 'mel-machine-test',
+  integrationId: 'mel-mach-primary',
   stationId: '1',
   credential: 'mel-machine-secret-value',
   enabled: true
 };
+
+function clientPrincipal(overrides = {}) {
+  return Buffer.from(JSON.stringify({
+    identityProvider: 'aad',
+    userId: 'human-user-id',
+    userDetails: 'Human Operator',
+    userRoles: ['anonymous', 'authenticated'],
+    ...overrides
+  })).toString('base64');
+}
+
+function fetchHeaders(values) {
+  const normalized = Object.fromEntries(
+    Object.entries(values).map(([name, value]) => [name.toLowerCase(), value])
+  );
+  return {
+    get: name => normalized[name.toLowerCase()] ?? null,
+    has: name => Object.hasOwn(normalized, name.toLowerCase())
+  };
+}
 
 test('machine binding configuration resolves one enabled identity to one StationId', () => {
   const env = environment([mel, {
@@ -38,16 +58,55 @@ test('machine binding configuration resolves one enabled identity to one Station
       status: 'ready',
       presented: true,
       ok: true,
-      integrationId: 'mel-machine-test',
+      integrationId: 'mel-mach-primary',
       stationId: '1'
     }
   );
 });
 
+test('dedicated machine header remains authoritative when SWA supplies Authorization', () => {
+  const auth = machineAuth({
+    headers: {
+      'x-cargorun-mach-key': mel.credential,
+      authorization: 'Bearer azure-static-web-apps-platform-token'
+    }
+  }, environment([mel]));
+  assert.equal(auth.credentialPresented, true);
+  assert.equal(auth.ambiguous, false);
+  assert.equal(auth.ok, true);
+  assert.equal(auth.mode, 'header');
+  assert.equal(auth.integrationId, 'mel-mach-primary');
+  assert.equal(auth.stationId, '1');
+});
+
+test('Headers.get shape resolves the dedicated machine header', () => {
+  const auth = machineAuth({
+    headers: fetchHeaders({ 'X-CargoRun-MACH-Key': mel.credential })
+  }, environment([mel]));
+  assert.equal(auth.ok, true);
+  assert.equal(auth.integrationId, 'mel-mach-primary');
+  assert.equal(auth.stationId, '1');
+});
+
+test('Authorization, body credentials, and cookies never become machine identity', () => {
+  for (const req of [
+    { headers: { authorization: `Bearer ${mel.credential}` } },
+    { headers: { cookie: `machKey=${mel.credential}` } },
+    { headers: {}, body: { key: mel.credential, credential: mel.credential } }
+  ]) {
+    const auth = machineAuth(req, environment([mel]));
+    assert.equal(auth.credentialPresented, false);
+    assert.equal(auth.ok, false);
+    assert.equal(auth.mode, null);
+    assert.equal(auth.integrationId, null);
+    assert.equal(auth.stationId, null);
+  }
+});
+
 test('unknown, disabled, and unbound machine credentials fail closed', () => {
   const disabled = { ...mel, enabled: false };
   assert.equal(machineAuth(
-    { headers: { authorization: `Bearer ${disabled.credential}` } },
+    { headers: { 'x-cargorun-mach-key': disabled.credential } },
     environment([disabled])
   ).ok, false);
   assert.equal(machineAuth(
@@ -73,35 +132,68 @@ test('malformed and ambiguous binding registries fail closed as one unit', () =>
   assert.equal(readMachineBindingConfiguration({ MACH_FOW_INGEST_TOKEN: mel.credential }).status, 'missing');
 });
 
-test('multiple credential mechanisms and machine plus human identity are rejected', () => {
+test('dedicated machine credential conflicts only with a genuine authenticated human principal', () => {
   const env = environment([mel]);
-  const bothMachine = machineAuth({
+  const machineAndPlatformAuthorization = machineAuth({
     headers: {
       'x-cargorun-mach-key': mel.credential,
-      authorization: `Bearer ${mel.credential}`
+      authorization: 'Bearer unrelated-platform-value'
     }
   }, env);
-  assert.equal(bothMachine.credentialPresented, true);
-  assert.equal(bothMachine.ambiguous, true);
-  assert.equal(bothMachine.ok, false);
+  assert.equal(machineAndPlatformAuthorization.ambiguous, false);
+  assert.equal(machineAndPlatformAuthorization.ok, true);
 
   const machineAndHuman = machineAuth({
     headers: {
       'x-cargorun-mach-key': mel.credential,
-      'x-ms-client-principal': 'human-principal'
+      'x-ms-client-principal': clientPrincipal()
     }
   }, env);
   assert.equal(machineAndHuman.ambiguous, true);
   assert.equal(machineAndHuman.ok, false);
+
+  const machineAndAnonymousPrincipal = machineAuth({
+    headers: {
+      'x-cargorun-mach-key': mel.credential,
+      'x-ms-client-principal': clientPrincipal({ userId: '', userRoles: ['anonymous'] })
+    }
+  }, env);
+  assert.equal(machineAndAnonymousPrincipal.ambiguous, false);
+  assert.equal(machineAndAnonymousPrincipal.ok, true);
 });
 
 test('query credentials are rejected and cannot combine with headers', () => {
   const env = environment([mel]);
-  assert.equal(machineAuth({ query: { key: mel.credential }, headers: {} }, env).ok, false);
-  assert.equal(machineAuth({
+  const queryOnly = machineAuth({ query: { key: mel.credential }, headers: {} }, env);
+  assert.equal(queryOnly.credentialPresented, true);
+  assert.equal(queryOnly.ambiguous, true);
+  assert.equal(queryOnly.ok, false);
+  const combined = machineAuth({
     query: { key: mel.credential },
     headers: { 'x-cargorun-mach-key': mel.credential }
-  }, env).ok, false);
+  }, env);
+  assert.equal(combined.ambiguous, true);
+  assert.equal(combined.ok, false);
+});
+
+test('wrong, duplicate, comma-combined, blank, and malformed custom headers are rejected', () => {
+  const env = environment([mel]);
+  for (const headers of [
+    {
+      'x-cargorun-mach-key': 'wrong-machine-secret-value',
+      authorization: 'Bearer azure-static-web-apps-platform-token'
+    },
+    { 'x-cargorun-mach-key': [mel.credential, mel.credential] },
+    { 'x-cargorun-mach-key': `${mel.credential},${mel.credential}` },
+    { 'x-cargorun-mach-key': '' },
+    { 'x-cargorun-mach-key': ' malformed machine secret ' }
+  ]) {
+    const auth = machineAuth({ headers }, env);
+    assert.equal(auth.credentialPresented, true);
+    assert.equal(auth.ok, false);
+    assert.equal(auth.integrationId, null);
+    assert.equal(auth.stationId, null);
+  }
 });
 
 test('machine authentication results never return credentials or binding lists', () => {

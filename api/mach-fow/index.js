@@ -785,7 +785,7 @@ module.exports = async function(
               '/api/mach-fow',
 
             preferredAuthentication:
-              'Station-bound X-CargoRun-MACH-Key header or Bearer token',
+              'Station-bound X-CargoRun-MACH-Key header',
 
             liveMessageCount:
               Number(

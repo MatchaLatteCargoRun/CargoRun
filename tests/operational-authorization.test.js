@@ -724,7 +724,7 @@ test('manifest create direct call requires UPLOAD_FLIGHT_DATA before inserting f
   assert.equal(harness.state.queries.some(entry => /\b(INSERT|UPDATE|DELETE)\b/i.test(entry.text)), false);
 });
 
-test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine token remains accepted', async () => {
+test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while only the dedicated machine header is accepted', async () => {
   const humanHarness = earlyDenialSql({ direction: 'EXPORT' });
   const humanResponse = await invoke(loadHandler('api/mach-fow/index.js', humanHarness.sql, unprovisionedReadAuthorization), 'POST', {
     xml: '<FSUMessage><DocumentCorID>AUTH-TEST</DocumentCorID><MessageType>FSU</MessageType>' +
@@ -757,12 +757,17 @@ test('human MACH/FOW direct call needs UPLOAD_FLIGHT_DATA while valid machine to
       { integrationId: 'mel-auth-test', stationId: '1', credential: 'machine-secret-value', enabled: true }
     ])
   };
-  assert.equal(module.exports.__machineAuth(
-    { headers: { 'x-cargorun-mach-key': 'machine-secret-value' } }, machineEnvironment
-  ).ok, true);
-  assert.equal(module.exports.__machineAuth(
+  assert.equal(module.exports.__machineAuth({
+    headers: {
+      'x-cargorun-mach-key': 'machine-secret-value',
+      authorization: 'Bearer azure-static-web-apps-platform-token'
+    }
+  }, machineEnvironment).ok, true);
+  const bearerOnly = module.exports.__machineAuth(
     { headers: { authorization: 'Bearer machine-secret-value' } }, machineEnvironment
-  ).ok, true);
+  );
+  assert.equal(bearerOnly.credentialPresented, false);
+  assert.equal(bearerOnly.ok, false);
   assert.equal(module.exports.__machineAuth(
     { headers: { 'x-cargorun-mach-key': 'wrong' } }, machineEnvironment
   ).ok, false);

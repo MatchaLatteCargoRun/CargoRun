@@ -845,7 +845,7 @@ test('machine-bound flight identity and lock remain independent by StationId', a
   assert.ok(resources.includes('CargoRun:Flight:v2:8:2026-09-17:CX178'));
 });
 
-test('disabled, unknown, unbound, and ambiguous machine identities fail before mutation', async () => {
+test('disabled, unknown, and unbound machine identities fail before mutation', async () => {
   const disabled = harness([], {
     machineBindings: JSON.stringify([
       { integrationId: 'disabled-test-feed', stationId: '1', credential: 'disabled-machine-secret', enabled: false }
@@ -874,20 +874,25 @@ test('disabled, unknown, unbound, and ambiguous machine identities fail before m
   assert.equal(missingStationResponse.status, 403);
   assert.equal(missingStationResponse.body.code, 'MACHINE_STATION_UNAVAILABLE');
 
-  const ambiguous = harness();
-  const ambiguousResponse = await ambiguous.call('mach-fow', fow('MACHINE-AMBIGUOUS'), {
-    headers: {
-      'x-cargorun-mach-key': 'test-machine-token',
-      authorization: 'Bearer test-machine-token'
-    }
-  });
-  assert.equal(ambiguousResponse.status, 403);
-
-  for (const fixture of [disabled, unknown, unbound, missingStation, ambiguous]) {
+  for (const fixture of [disabled, unknown, unbound, missingStation]) {
     assert.equal(fixture.state.messages.length, 0);
     assert.equal(fixture.state.flights.length, 0);
     assert.equal(fixture.state.ulds.length, 0);
   }
+});
+
+test('SWA Authorization does not compete with the dedicated machine header', async () => {
+  const api = harness();
+  const response = await api.call('mach-fow', fow('MACHINE-SWA-AUTHORIZATION'), {
+    headers: {
+      'x-cargorun-mach-key': 'test-machine-token',
+      authorization: 'Bearer azure-static-web-apps-platform-token'
+    }
+  });
+  assert.equal(response.status, 201);
+  assert.equal(api.state.messages.length, 1);
+  assert.equal(String(api.state.messages[0].StationId), '1');
+  assert.equal(api.state.messages[0].ProcessedByReference, 'machine:mel-test-feed');
 });
 
 test('machine duplicate DocumentCorID behavior remains global, idempotent, and confidential', async () => {

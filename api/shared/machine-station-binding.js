@@ -2,6 +2,7 @@
 
 const crypto = require('crypto');
 const { normalizeStationId } = require('./station');
+const { authenticatedActor } = require('./operational-authorization');
 
 const MACHINE_BINDINGS_SETTING = 'MACH_FOW_MACHINE_BINDINGS';
 const MACHINE_HEADER = 'x-cargorun-mach-key';
@@ -19,20 +20,43 @@ function secureEqual(left, right) {
 function headerInput(req, name) {
   const headers = req?.headers || {};
   let raw;
-  if (typeof headers.get === 'function') raw = headers.get(name);
-  else raw = headers[name] ?? headers[name.toLowerCase()] ?? headers[name.toUpperCase()];
-  if (raw === null || raw === undefined || raw === '') {
+  let present = false;
+  if (typeof headers.get === 'function') {
+    raw = headers.get(name);
+    present = typeof headers.has === 'function'
+      ? headers.has(name)
+      : raw !== null && raw !== undefined;
+  } else {
+    for (const candidate of [name, name.toLowerCase(), name.toUpperCase()]) {
+      if (Object.prototype.hasOwnProperty.call(headers, candidate)) {
+        raw = headers[candidate];
+        present = true;
+        break;
+      }
+    }
+  }
+  if (!present) {
     return { present: false, ambiguous: false, value: '' };
   }
   if (Array.isArray(raw)) {
+    const value = raw.length === 1 ? String(raw[0]) : '';
     return {
-      present: raw.length > 0,
-      ambiguous: raw.length !== 1,
-      value: raw.length === 1 ? String(raw[0]) : ''
+      present: true,
+      ambiguous: raw.length !== 1 || value.includes(','),
+      value
     };
   }
-  const value = String(raw);
+  const value = raw === null || raw === undefined ? '' : String(raw);
   return { present: true, ambiguous: value.includes(','), value };
+}
+
+function hasAuthenticatedHumanPrincipal(req) {
+  try {
+    authenticatedActor(req);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function readMachineBindingConfiguration(env = process.env) {
@@ -94,30 +118,16 @@ function readMachineBindingConfiguration(env = process.env) {
 function machineAuth(req, env = process.env) {
   const configuration = readMachineBindingConfiguration(env);
   const direct = headerInput(req, MACHINE_HEADER);
-  const authorization = headerInput(req, 'authorization');
-  const principal = headerInput(req, 'x-ms-client-principal');
-  const queryPresent = Object.prototype.hasOwnProperty.call(req?.query || {}, 'key') &&
-    req.query.key !== null && req.query.key !== undefined && String(req.query.key) !== '';
-
-  const mechanisms = Number(direct.present) + Number(authorization.present) + Number(queryPresent);
-  const credentialPresented = mechanisms > 0;
-  let ambiguous = direct.ambiguous || authorization.ambiguous || mechanisms > 1 ||
-    (credentialPresented && principal.present);
+  const queryPresent = Object.prototype.hasOwnProperty.call(req?.query || {}, 'key');
+  const credentialPresented = direct.present || queryPresent;
+  const ambiguous = direct.ambiguous || queryPresent ||
+    (direct.present && hasAuthenticatedHumanPrincipal(req));
   let supplied = '';
   let mode = null;
 
   if (!ambiguous && direct.present) {
     supplied = direct.value;
     mode = 'header';
-  } else if (!ambiguous && authorization.present) {
-    const match = authorization.value.trim().match(/^Bearer\s+([^\s,]+)$/i);
-    if (!match) ambiguous = true;
-    else {
-      supplied = match[1];
-      mode = 'bearer';
-    }
-  } else if (!ambiguous && queryPresent) {
-    ambiguous = true;
   }
 
   if (!credentialPresented) {

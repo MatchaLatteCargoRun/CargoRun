@@ -338,6 +338,8 @@ test('MACH supervisor GET keeps local event evidence offset-free for live and si
   assert.deepEqual(Object.keys(response.body.receiver).sort(), [
     'configured', 'endpoint', 'lastLiveReceivedAtUtc', 'liveMessageCount', 'preferredAuthentication'
   ]);
+  assert.equal(response.body.receiver.preferredAuthentication, 'Station-bound X-CargoRun-MACH-Key header');
+  assert.doesNotMatch(response.body.receiver.preferredAuthentication, /Bearer|Authorization/i);
   assert.doesNotMatch(JSON.stringify(response.body.receiver), /machine-secret-value|mel-health-test|stationId/i);
   assert.deepEqual(response.body.messages.map(row => row.SourceType), [
     'MACH_FOW_LIVE',
