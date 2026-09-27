@@ -106,8 +106,9 @@ test('History derives normal, DST-short, and DST-long UTC bounds from authoritat
 test('the same UTC instant belongs to different selected-station History dates without crossing station ownership', async () => {
   const instant = '2026-01-01T11:30:00.000Z';
   const events = [
-    { AuditEventId: 1, FlightId: 101, EntityId: '101', FlightNumber: 'MEL101', EventType: 'Flight', Action: 'MEL event', OccurredAtUtc: instant, StationId: 1 },
-    { AuditEventId: 2, FlightId: 202, EntityId: '202', FlightNumber: 'AKL202', EventType: 'Flight', Action: 'AKL event', OccurredAtUtc: instant, StationId: 2 }
+    { AuditEventId: 1, FlightId: 101, EntityId: '101', FlightNumber: 'CX123', EventType: 'Flight', Action: 'MEL event', OccurredAtUtc: instant, StationId: 1 },
+    { AuditEventId: 2, FlightId: 202, EntityId: '202', FlightNumber: 'CX123', EventType: 'Flight', Action: 'AKL event', OccurredAtUtc: instant, StationId: 2 },
+    { AuditEventId: 3, FlightId: null, EntityId: 'global', FlightNumber: null, EventType: 'Admin', Action: 'Global event', OccurredAtUtc: instant, StationId: null }
   ];
 
   const melHarness = historyHarness(events);

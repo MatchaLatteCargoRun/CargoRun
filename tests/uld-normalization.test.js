@@ -196,7 +196,7 @@ function apiHarness(initialRows = []) {
       const result = recordset => ({ recordset });
       if (q.includes('sys.sp_getapplock')) return result([{ LockResult: 0 }]);
       if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS')) {
-        if (p.AuditTableName === 'AuditEvents') return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
+        if (p.AuditTableName === 'AuditEvents') return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
         return result(['OffloadId', 'FlightId', 'UldId', 'FlightNumber', 'UldNumber', 'ParkingBay', 'Status'].map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
       if (q.includes('FROM dbo.IncomingMachMessages')) {

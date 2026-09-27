@@ -95,7 +95,7 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
       'CollectedAtUtc', 'CollectedByDisplayName', 'CollectedByObjectId',
       'DeliveredAtUtc', 'DeliveredByDisplayName', 'DeliveredByObjectId', 'DeliveredLocation', 'CompletionNote'
     ],
-    AuditEvents: ['AuditEventId', 'EventType', 'Action', 'EntityType', 'EntityId', 'FlightNumber', 'UldNumber', 'FromStatus', 'ToStatus', 'OccurredAtUtc', 'ActorDisplayName', 'ActorReference', 'Detail', 'DetailsJson']
+    AuditEvents: ['AuditEventId', 'EventType', 'Action', 'EntityType', 'EntityId', 'FlightId', 'FlightNumber', 'UldNumber', 'FromStatus', 'ToStatus', 'OccurredAtUtc', 'ActorDisplayName', 'ActorReference', 'Detail', 'DetailsJson']
   };
 
   if(liveSchema) columns.Offloads = columns.Offloads.map(c => c === 'Status' ? 'OffloadStatus' : c === 'ParkingBay' ? 'Bay' : c);
@@ -180,7 +180,7 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
           throw error;
         }
         if (state.failAudit) throw new Error('forced audit failure');
-        const row = { Action: p.AuditAction, ActorDisplayName: p.AuditActorDisplayName, FromStatus: p.AuditFromStatus, ToStatus: p.AuditToStatus, Detail: p.AuditDetail, DetailsJson: p.AuditDetailsJson, OccurredAtUtc: '2026-09-17T00:00:00.000Z' };
+        const row = { Action: p.AuditAction, ActorDisplayName: p.AuditActorDisplayName, FlightId: p.AuditFlightId, FromStatus: p.AuditFromStatus, ToStatus: p.AuditToStatus, Detail: p.AuditDetail, DetailsJson: p.AuditDetailsJson, OccurredAtUtc: '2026-09-17T00:00:00.000Z' };
         state.audits.push(row); return result([row], [1]);
       }
       if (q.includes('SELECT CurrentStatus FROM dbo.ULDs')) return result(state.uld ? [{ CurrentStatus: state.uld.CurrentStatus }] : []);

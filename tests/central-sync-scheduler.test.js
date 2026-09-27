@@ -214,13 +214,33 @@ test('index uses screen-aware service plans and refreshes History only on entry'
   vm.runInContext(html.slice(start, end), context);
   assert.deepEqual([...context.centralSyncServices({ screen: 'home' })], ['flights', 'offloads']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'flightboard' })], ['flights', 'offloads']);
-  assert.deepEqual([...context.centralSyncServices({ screen: 'supervisor' })], ['flights', 'offloads', 'history', 'exportCompletions', 'importCompletions']);
+  assert.deepEqual([...context.centralSyncServices({ screen: 'supervisor' })], ['flights', 'offloads', 'exportCompletions', 'importCompletions']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'history' })], ['history', 'exportCompletions', 'importCompletions']);
   assert.deepEqual([...context.centralSyncServices({ screen: 'admin' })], []);
+  assert.deepEqual([...context.centralSyncServices({ full: true })], ['flights', 'offloads', 'exportCompletions', 'importCompletions']);
   capabilities.delete('VIEW_HISTORY');
   assert.deepEqual([...context.centralSyncServices({ full: true })], ['flights', 'offloads', 'exportCompletions', 'importCompletions']);
   assert.match(html, /if\(screen==='history'\)void refreshHistoryOnEntry\(\)/);
   assert.match(html, /if\(screen==='admin'\)void loadAdminConfiguration\(\)/);
+});
+
+test('a History-only 500 cannot fail selected-station startup and leaves a retryable empty History state', async () => {
+  const start = html.indexOf('const CENTRAL_SYNC_SERVICE_NAMES=');
+  const end = html.indexOf('function centralActiveFlightCount()', start);
+  const capabilities = new Set(['VIEW_FLIGHTS', 'VIEW_HISTORY', 'VIEW_FLIGHT_STATEMENT']);
+  const context = vm.createContext({ route: { screen: 'home' }, Set, selectedStationHasCapability: capability => capabilities.has(capability) });
+  vm.runInContext(html.slice(start, end), context);
+  const outcomes = { flights: true, offloads: true, history: false, exportCompletions: true, importCompletions: true };
+  const startupServices = [...context.centralSyncServices({ full: true, screen: 'home' })];
+  assert.equal(startupServices.includes('history'), false);
+  assert.equal((await Promise.all(startupServices.map(name => outcomes[name]))).every(Boolean), true);
+  const selectedStationSync = { status: 'READY', stationId: '1', error: '' };
+  const historyServices = [...context.centralSyncServices({ screen: 'history' })];
+  assert.equal((await Promise.all(historyServices.map(name => outcomes[name]))).every(Boolean), false);
+  assert.equal(selectedStationSync.status, 'READY');
+  assert.match(html, /state\.history=\[\];historySyncState=\{status:'ERROR',error:'History could not be loaded/);
+  assert.match(html, /onclick="retryHistorySync\(\)"/);
+  assert.match(html, /async function historyEventsForDate[\s\S]*catch\(err\)[\s\S]*return\[\]/);
 });
 
 test('startup, visibility and navigation are wired to the one managed scheduler', () => {

@@ -192,7 +192,7 @@ function harness(initialFlights = [], harnessOptions = {}) {
         return result();
       }
       if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS') && p.AuditTableName === 'AuditEvents') {
-        return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson']
+        return result(['AuditEventId','EventType','Action','EntityType','EntityId','FlightId','FlightNumber','UldNumber','FromStatus','ToStatus','OccurredAtUtc','ActorDisplayName','ActorReference','Detail','DetailsJson']
           .map(COLUMN_NAME => ({ COLUMN_NAME, IS_NULLABLE: 'YES' })));
       }
       if (q.startsWith('INSERT INTO dbo.AuditEvents')) {
