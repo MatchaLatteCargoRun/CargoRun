@@ -265,16 +265,26 @@ END;
   IF @InvalidCandidateReference>0 THROW 51612,'An exact ownership candidate references a missing Flight.',1;
   IF @Ambiguous>0 THROW 51613,'AuditEvents contains contradictory exact Flight ownership evidence; no ownership was changed.',1;
 
-  DECLARE @Total bigint=(SELECT COUNT_BIG(*) FROM dbo.AuditEvents);
-  DECLARE @AlreadyOwned bigint=(SELECT COUNT_BIG(*) FROM dbo.AuditEvents WHERE FlightId IS NOT NULL);
+  DECLARE @Total bigint=0,@AlreadyOwned bigint=0;
+  SET @Sql=N'SELECT @Total=COUNT_BIG(*),
+      @AlreadyOwned=COALESCE(SUM(CASE WHEN FlightId IS NOT NULL THEN CONVERT(bigint,1) ELSE CONVERT(bigint,0) END),0)
+    FROM dbo.AuditEvents;';
+  EXEC sys.sp_executesql @Sql,N'@Total bigint OUTPUT,@AlreadyOwned bigint OUTPUT',
+    @Total=@Total OUTPUT,@AlreadyOwned=@AlreadyOwned OUTPUT;
   CREATE TABLE #Backfilled(AuditEventId bigint NOT NULL,FlightId bigint NOT NULL,EvidenceType varchar(40) NOT NULL);
-  UPDATE audit SET FlightId=resolved.FlightId
+  SET @Sql=N'UPDATE audit SET FlightId=resolved.FlightId
     OUTPUT inserted.AuditEventId,inserted.FlightId,resolved.EvidenceType INTO #Backfilled
-  FROM dbo.AuditEvents audit JOIN #Resolved resolved ON resolved.AuditEventId=audit.AuditEventId
-  WHERE audit.FlightId IS NULL;
+    FROM dbo.AuditEvents audit JOIN #Resolved resolved ON resolved.AuditEventId=audit.AuditEventId
+    WHERE audit.FlightId IS NULL;';
+  EXEC sys.sp_executesql @Sql;
 
-  IF EXISTS (SELECT 1 FROM dbo.AuditEvents audit LEFT JOIN dbo.Flights flight ON flight.FlightId=audit.FlightId
-    WHERE audit.FlightId IS NOT NULL AND flight.FlightId IS NULL)
+  DECLARE @InvalidPostBackfill bigint=0;
+  SET @Sql=N'SELECT @InvalidPostBackfill=COUNT_BIG(*)
+    FROM dbo.AuditEvents audit LEFT JOIN dbo.Flights flight ON flight.FlightId=audit.FlightId
+    WHERE audit.FlightId IS NOT NULL AND flight.FlightId IS NULL;';
+  EXEC sys.sp_executesql @Sql,N'@InvalidPostBackfill bigint OUTPUT',
+    @InvalidPostBackfill=@InvalidPostBackfill OUTPUT;
+  IF @InvalidPostBackfill>0
     THROW 51614,'AuditEvents Flight ownership validation failed after backfill.',1;
 
   DECLARE @TouchingFkCount int=0,@CompatibleFkCount int=0,@IntendedFkNameConflict bit=0;
@@ -296,9 +306,10 @@ END;
     THROW 51615,'AuditEvents has a conflicting, disabled, untrusted, composite, cascading, or duplicate FlightId foreign key.',1;
   IF @CompatibleFkCount=0
   BEGIN
-    ALTER TABLE dbo.AuditEvents WITH CHECK ADD CONSTRAINT FK_AuditEvents_Flights_FlightId
+    SET @Sql=N'ALTER TABLE dbo.AuditEvents WITH CHECK ADD CONSTRAINT FK_AuditEvents_Flights_FlightId
       FOREIGN KEY(FlightId) REFERENCES dbo.Flights(FlightId);
-    ALTER TABLE dbo.AuditEvents CHECK CONSTRAINT FK_AuditEvents_Flights_FlightId;
+      ALTER TABLE dbo.AuditEvents CHECK CONSTRAINT FK_AuditEvents_Flights_FlightId;';
+    EXEC sys.sp_executesql @Sql;
   END;
 
   DECLARE @IndexReady bit=CASE WHEN EXISTS (
@@ -317,15 +328,22 @@ END;
           WHERE k.object_id=i.object_id AND k.index_id=i.index_id AND k.key_ordinal=2 AND c.name=N'OccurredAtUtc'))
   ) THEN 1 ELSE 0 END;
   IF @NamedIndexConflict=1 THROW 51616,'IX_AuditEvents_Flight_OccurredAtUtc exists with an incompatible definition.',1;
-  IF @IndexReady=0 CREATE INDEX IX_AuditEvents_Flight_OccurredAtUtc ON dbo.AuditEvents(FlightId,OccurredAtUtc DESC);
+  IF @IndexReady=0
+  BEGIN
+    SET @Sql=N'CREATE INDEX IX_AuditEvents_Flight_OccurredAtUtc
+      ON dbo.AuditEvents(FlightId,OccurredAtUtc DESC);';
+    EXEC sys.sp_executesql @Sql;
+  END;
 
   DECLARE @RemainingGlobal bigint=0,@RemainingUnprovable bigint=0,@LegacyOrphanOffloadCount bigint=0;
-  SELECT @RemainingGlobal=SUM(CASE WHEN audit.FlightId IS NULL AND scoped.AuditEventId IS NULL THEN CONVERT(bigint,1) ELSE CONVERT(bigint,0) END),
-    @RemainingUnprovable=SUM(CASE WHEN audit.FlightId IS NULL AND scoped.AuditEventId IS NOT NULL THEN CONVERT(bigint,1) ELSE CONVERT(bigint,0) END)
-  FROM dbo.AuditEvents audit LEFT JOIN #FlightScopedEvents scoped ON scoped.AuditEventId=audit.AuditEventId;
+  SET @Sql=N'SELECT
+      @RemainingGlobal=COALESCE(SUM(CASE WHEN audit.FlightId IS NULL AND scoped.AuditEventId IS NULL THEN CONVERT(bigint,1) ELSE CONVERT(bigint,0) END),0),
+      @RemainingUnprovable=COALESCE(SUM(CASE WHEN audit.FlightId IS NULL AND scoped.AuditEventId IS NOT NULL THEN CONVERT(bigint,1) ELSE CONVERT(bigint,0) END),0)
+    FROM dbo.AuditEvents audit LEFT JOIN #FlightScopedEvents scoped ON scoped.AuditEventId=audit.AuditEventId;';
+  EXEC sys.sp_executesql @Sql,N'@RemainingGlobal bigint OUTPUT,@RemainingUnprovable bigint OUTPUT',
+    @RemainingGlobal=@RemainingGlobal OUTPUT,@RemainingUnprovable=@RemainingUnprovable OUTPUT;
   SELECT @LegacyOrphanOffloadCount=COUNT_BIG(*) FROM (SELECT DISTINCT claim.AuditEventId FROM #OffloadIdentityClaims claim
     JOIN dbo.Offloads offload ON offload.OffloadId=claim.OffloadId WHERE offload.FlightId IS NULL) orphanClaim;
-  SET @RemainingGlobal=COALESCE(@RemainingGlobal,0); SET @RemainingUnprovable=COALESCE(@RemainingUnprovable,0);
 
   COMMIT TRANSACTION;
 

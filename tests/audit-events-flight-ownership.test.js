@@ -21,6 +21,27 @@ const canonicalCandidateBlock = source => {
   return source.slice(start, finish + end.length).replace(/\r\n/g, '\n');
 };
 
+function stripSqlStringLiterals(source) {
+  let result = '';
+  for (let index = 0; index < source.length; index += 1) {
+    if (source[index] !== "'") {
+      result += source[index];
+      continue;
+    }
+    result += ' ';
+    while (++index < source.length) {
+      if (source[index] === "'" && source[index + 1] === "'") {
+        result += '  ';
+        index += 1;
+        continue;
+      }
+      result += source[index] === '\n' || source[index] === '\r' ? source[index] : ' ';
+      if (source[index] === "'") break;
+    }
+  }
+  return result;
+}
+
 function auditHarness(columns) {
   const state = { statements: [], inserts: [] };
   class Request {
@@ -109,6 +130,44 @@ test('migration is additive, transactional, idempotent, and changes only FlightI
   assert.doesNotMatch(migration, /ON DELETE CASCADE|ON UPDATE CASCADE/i);
   assert.doesNotMatch(migration, /UPDATE\s+dbo\.AuditEvents\s+SET\s+(?!FlightId)/i);
   assert.doesNotMatch(migration, /DELETE\s+FROM\s+dbo\.AuditEvents|DROP\s+COLUMN|ALTER\s+COLUMN/i);
+});
+
+test('absent AuditEvents.FlightId path defers every post-ALTER column binding', () => {
+  const staticSql = stripSqlStringLiterals(migration);
+  const addPosition = staticSql.indexOf('ALTER TABLE dbo.AuditEvents ADD FlightId bigint NULL');
+  const afterAdd = staticSql.slice(staticSql.indexOf(';', addPosition) + 1);
+  assert.ok(addPosition > staticSql.indexOf('BEGIN TRANSACTION'));
+  assert.match(staticSql, /IF @FlightColumnPresent=0\s+BEGIN\s+ALTER TABLE dbo\.AuditEvents ADD FlightId bigint NULL/);
+  assert.doesNotMatch(afterAdd, /\b(?:FROM|JOIN|UPDATE|INTO|ON)\s+dbo\.AuditEvents\b[^;]*\bFlightId\b/i);
+  assert.doesNotMatch(afterAdd, /\bALTER\s+TABLE\s+dbo\.AuditEvents\b[^;]*\bFlightId\b/i);
+  assert.doesNotMatch(staticSql, /\baudit\.FlightId\b|\binserted\.FlightId\b/i);
+  assert.doesNotMatch(staticSql, /\bUPDATE\s+audit\s+SET\s+FlightId\b/i);
+  assert.doesNotMatch(staticSql, /\bFOREIGN\s+KEY\s*\(\s*FlightId\s*\)/i);
+  assert.doesNotMatch(staticSql, /\bON\s+dbo\.AuditEvents\s*\(\s*FlightId\b/i);
+  assert.doesNotMatch(staticSql, /^\s*GO\s*$/im);
+
+  for (const deferredStatement of [
+    'AlreadyOwned=COALESCE(SUM(CASE WHEN FlightId IS NOT NULL',
+    'UPDATE audit SET FlightId=resolved.FlightId',
+    'flight.FlightId=audit.FlightId',
+    'FOREIGN KEY(FlightId) REFERENCES dbo.Flights(FlightId)',
+    'ON dbo.AuditEvents(FlightId,OccurredAtUtc DESC)',
+    'audit.FlightId IS NULL AND scoped.AuditEventId'
+  ]) assert.match(migration, new RegExp(deferredStatement.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+  assert.doesNotMatch(stripSqlStringLiterals(canonicalCandidateBlock(migration)), /\bFROM\s+dbo\.AuditEvents\b/i);
+  assert.match(migration, /SET @Sql=N'UPDATE audit SET FlightId[\s\S]*EXEC sys\.sp_executesql @Sql/);
+  assert.match(migration, /SET @Sql=N'ALTER TABLE dbo\.AuditEvents WITH CHECK[\s\S]*EXEC sys\.sp_executesql @Sql/);
+  assert.match(migration, /SET @Sql=N'CREATE INDEX IX_AuditEvents_Flight_OccurredAtUtc[\s\S]*EXEC sys\.sp_executesql @Sql/);
+});
+
+test('already-migrated AuditEvents.FlightId path remains metadata-gated and idempotent', () => {
+  assert.match(migration, /DECLARE @FlightColumnPresent bit=CASE WHEN COL_LENGTH\(N'dbo\.AuditEvents',N'FlightId'\) IS NOT NULL THEN 1 ELSE 0 END/);
+  assert.match(migration, /IF @FlightColumnPresent=0\s+BEGIN\s+ALTER TABLE dbo\.AuditEvents ADD FlightId bigint NULL;\s+SET @FlightColumnPresent=1;\s+SET @FlightColumnReady=1;/);
+  assert.match(migration, /IF @FlightColumnPresent=1 AND @FlightColumnReady=0 THROW 51605/);
+  assert.match(migration, /WHERE audit\.FlightId IS NULL;'/);
+  assert.match(migration, /IF @CompatibleFkCount=0[\s\S]*sp_executesql @Sql/);
+  assert.match(migration, /IF @IndexReady=0[\s\S]*sp_executesql @Sql/);
+  assert.match(migration, /BEGIN CATCH\s+IF XACT_STATE\(\)<>0 ROLLBACK TRANSACTION;\s+THROW;/);
 });
 
 test('backfill SQL uses only stable exact identifiers and preserves legacy orphan Offloads', () => {
