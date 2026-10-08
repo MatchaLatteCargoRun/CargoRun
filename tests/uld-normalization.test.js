@@ -26,6 +26,7 @@ function frontend() {
     state: { history: [] },
     cargoRunAccess: { status: 'provisioned' },
     operationalSessionGeneration: 0,
+    selectedStationCode: () => 'MEL',
     operationalSessionIsCurrent: generation => generation === 0,
     deferOperational() {},
     azureDateOnly: value => String(value || '').slice(0, 10)

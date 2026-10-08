@@ -1,12 +1,11 @@
 {
   "schemaVersion": 3,
-  "capturedUtc": "2026-10-08T04:41:58.921Z",
+  "capturedUtc": "2026-10-08T08:50:35.261Z",
   "baseCommit": "cbb579c27d4c1b20d91429abd66d6b6a1963c476",
-  "worktree": "C:\\Users\\Maxwell\\Documents\\CargoRun-AKL-Runtime",
-  "purpose": "Isolated runtime release candidate. No production deployment or AKL activation authorized.",
-  "status": "APPROVED_LIVE_TESTING_EXCEPTION_VALIDATED_NO_DEPLOYMENT_AUTHORIZED",
-  "hashMeaning": "files[].sha256/bytes describe Windows worktree bytes; gitBlobSha256/gitBlobBytes describe exact proposed Git blobs read as binary from a temporary index. The ordinary index is unchanged. The manifest excludes its own hash. Package hashes describe a local Windows package, not an Azure artifact.",
-  "scope": "Existing isolated runtime candidate plus the explicitly accepted, time-limited cargorun-dev advisory exception. This pass changes only policy/gates, their tests, the deployment gate target argument and this manifest.",
+  "purpose": "Validate the existing MEL/AKL import/export upload station-context fix; no deployment authorized.",
+  "status": "WINDOWS_VALIDATED_LINUX_PENDING",
+  "scope": "Three-file correction plus refreshed release manifest.",
+  "hashMeaning": "sha256/bytes describe worktree bytes; gitBlobSha256/gitBlobBytes describe exact staged Git blob bytes read as Buffers. Only documented CRLF-to-LF conversion is accepted. Manifest self-hash is excluded; report its Git blob ID separately.",
   "files": [
     {
       "path": ".github/workflows/deploy-cargorun.yml",
@@ -100,13 +99,13 @@
     },
     {
       "path": "index.html",
-      "bytes": 815777,
-      "sha256": "64C0ECC78E921BA4F29C47ECE73637F2BB56A3AED7B78D644585E41507636AEF",
+      "bytes": 815883,
+      "sha256": "119A018B31FB8394A8894D92375221D415DD9D99BC1C6E3A5A38A9890A893819",
       "role": "runtime: ship together",
       "lineEndingNormalization": "CRLF_TO_LF",
-      "normalizedCrLfCount": 4258,
-      "gitBlobSha256": "693C869C736B8834844F7DE1C614C90B0155E8833EB18EAF29B695325FA85C57",
-      "gitBlobBytes": 811519
+      "normalizedCrLfCount": 4259,
+      "gitBlobSha256": "FB2C4AF7BC0B7E24DD0C2FEC58CFDA9B6732326ACDED037B85B937B165FA88CE",
+      "gitBlobBytes": 811624
     },
     {
       "path": "scripts/build-deployment-package.js",
@@ -239,6 +238,16 @@
       "gitBlobBytes": 2439
     },
     {
+      "path": "tests/manifest-upload-station.test.js",
+      "role": "Synthetic two-station browser/API authorization regression",
+      "bytes": 11246,
+      "sha256": "65E535D26F5306E52015AF791836FA6CA140747888734BF6DD069B8F8AEFFC81",
+      "gitBlobBytes": 11246,
+      "gitBlobSha256": "65E535D26F5306E52015AF791836FA6CA140747888734BF6DD069B8F8AEFFC81",
+      "lineEndingNormalization": "NONE",
+      "normalizedCrLfCount": 0
+    },
+    {
       "path": "tests/operational-authorization.test.js",
       "bytes": 44275,
       "sha256": "BBC4EA83258C70D076F2EDB787987B315887928E6F98F72B49DC0204D1BC5065",
@@ -257,434 +266,34 @@
       "normalizedCrLfCount": 491,
       "gitBlobSha256": "BE3AB147BBF8EE5963BD15DC7490809D6E5FBA45B5F51392D360ECA523BC71CD",
       "gitBlobBytes": 24907
+    },
+    {
+      "path": "tests/uld-normalization.test.js",
+      "role": "Existing ULD harness initializes selected station",
+      "bytes": 24891,
+      "sha256": "E384F3213F35F7206AA86F0C3D2F62C337273076E1D2E570CF5C0EED7751C54A",
+      "gitBlobBytes": 24497,
+      "gitBlobSha256": "5FB65D5D4EA2E25532ADDD9321848FFF9A64BC37F4D33AB7E3D28872D5077F13",
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 394
     }
   ],
-  "baselineDependencies": [
-    {
-      "path": "api/package.json",
-      "sha256": "745572366407C2A7F346850FF32D8B182679DB8B75E51807DDFE5415C4A1A52A",
-      "status": "unchanged from base commit"
-    },
-    {
-      "path": "staticwebapp.config.json",
-      "sha256": "FF7937A07AE4914210B7ADBA18A20C4B614879519AB43CAF7E60165DF1184ED8",
-      "status": "unchanged from base commit"
-    }
-  ],
-  "dependencies": {
-    "node": "22.23.3",
-    "npm": "11.11.0",
-    "declaredMssql": "^11.0.1",
-    "resolvedMssql": "11.0.2",
-    "resolvedTedious": "18.6.2",
-    "resolvedSprintfJs": "1.1.3",
-    "packages": 74,
-    "versionChangesFromPreviouslyTestedInstall": 0,
-    "lockfileVersion": 3,
-    "lockfileSha256": "2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6",
-    "registry": "https://registry.npmjs.org/",
-    "integrity": "Every dependency has sha512 tarball integrity, validated by fresh-cache npm ci; installed versions/resolved URLs/integrities verified against lock.",
-    "cleanInstall": {
-      "status": "PASS",
-      "directory": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/clean-source/api",
-      "command": "Node 22.23.3 / npm 11.11.0 ci --ignore-scripts --omit=dev --engine-strict --no-audit --no-fund",
-      "initialNodeModules": "absent",
-      "source": "Exact proposed Git bytes; independent temporary installation",
-      "freshCache": false
-    },
-    "repeatInstall": {
-      "status": "PASS",
-      "directory": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\ci-repeat\\api",
-      "offline": true,
-      "dependencyFilesCompared": 7242,
-      "dependencyBytesIdentical": true
-    },
-    "npmLs": "PASS: no missing, invalid or extraneous dependency errors",
-    "originalJunction": "Untouched. No install or ci command run against either repository node_modules directory.",
-    "audit": {
-      "status": "APPROVED_CARGORUN_LIVE_TESTING_ONLY",
-      "exitCode": 1,
-      "findings": {
-        "info": 0,
-        "low": 0,
-        "moderate": 3,
-        "high": 0,
-        "critical": 0,
-        "total": 3
-      },
-      "affectedPackages": [
-        "mssql",
-        "sprintf-js",
-        "tedious"
-      ],
-      "assessment": {
-        "prerequisite": "Attacker controls the first argument (format string) passed to sprintf/vsprintf and supplies an out-of-range precision.",
-        "installedPath": "api -> mssql -> tedious -> sprintf-js",
-        "finding": "All 12 sprintf calls in the five installed tedious runtime files use literal formats; variable SQL data and diagnostic values are subsequent arguments, not formats. CargoRun source has no direct sprintf-js import.",
-        "impact": "The vulnerable library remains installed. If a new path accepts an attacker-controlled format, an uncaught RangeError can abort the calling operation.",
-        "limitations": [
-          "Source inspection of the exact locked bytes, not a proof of non-exploitability.",
-          "No production traffic, SQL connection or Azure deployment tested.",
-          "Does not cover other driver errors, debug logging exposure, compromise of audit infrastructure, or compromised build hosts.",
-          "npm reports the advisory through three packages; those are one underlying advisory, not three independent exceptions."
-        ],
-        "acceptedRisk": "Release owner explicitly accepts this advisory for CargoRun live testing at cargorun-dev only, with the exact reviewed dependencies and controls, until 2026-11-08 00:00 UTC. This acceptance authorizes policy preparation and testing, not deployment.",
-        "publishedPatch": "None listed by the advisory when checked; npm proposed a major mssql downgrade, which was not applied.",
-        "removal": "Remove or re-review at expiry, on a patch, changed dependency bytes/graph, changed severity, new advisory or new formatting call path."
-      },
-      "exception": {
-        "policy": "docs/dependency-security-exception.json",
-        "sha256": "9DE76383BC77810209E8B7303636FF31E859BAD0EB35009D758474D209071A90",
-        "hashBasis": "Exact proposed Git blob",
-        "advisory": "GHSA-hp3w-g68c-fv3c",
-        "expiresAtUtc": "2026-11-08T00:00:00.000Z",
-        "scope": "cargorun-live-testing",
-        "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING",
-        "riskAcceptance": {
-          "acceptedByRole": "release-owner",
-          "targetApplication": "cargorun-dev",
-          "purpose": "live-testing",
-          "acceptedOnUtcDate": "2026-10-08",
-          "expiresAtUtc": "2026-11-08T00:00:00.000Z",
-          "authorizesDeployment": false
-        },
-        "dependencyTreeSha256": "FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D",
-        "testingGate": {
-          "ok": true,
-          "context": "testing",
-          "target": null,
-          "exceptedAdvisory": "GHSA-hp3w-g68c-fv3c",
-          "affectedPackages": [
-            "mssql",
-            "sprintf-js",
-            "tedious"
-          ],
-          "nonBlockingAdvisories": [],
-          "expiresAtUtc": "2026-11-08T00:00:00.000Z",
-          "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING"
-        },
-        "productionGate": {
-          "ok": true,
-          "context": "production",
-          "target": "cargorun-dev",
-          "exceptedAdvisory": "GHSA-hp3w-g68c-fv3c",
-          "affectedPackages": [
-            "mssql",
-            "sprintf-js",
-            "tedious"
-          ],
-          "nonBlockingAdvisories": [],
-          "expiresAtUtc": "2026-11-08T00:00:00.000Z",
-          "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING"
-        }
-      }
-    },
-    "worktreeLockfileSha256": "596F805A3B55B71838D11F1A4A4761F6BBC337FF89E000D1B68EDD229F52FED9",
-    "lockfileCanonicalization": "Root lockfile retains its approved exact LF identity. Only the top-level npm-generated hidden lockfile additionally receives strict LF/CRLF canonicalization during dependency fingerprint computation. All 7242 files remain included."
-  },
-  "validation": {
-    "nodeTests": {
-      "tests": 716,
-      "pass": 716,
-      "fail": 0,
-      "cancelled": 0,
-      "skipped": 0,
-      "command": "node --test --test-concurrency=1",
-      "node": "22.23.3",
-      "npm": "11.11.0",
-      "source": "Exact proposed Git blobs in independent clean Windows installation",
-      "nodePathOverride": "cleared"
-    },
-    "focusedSecurityWorkflowPackagingTests": {
-      "tests": 53,
-      "pass": 53,
-      "fail": 0,
-      "skipped": 0
-    },
-    "newRegressionTests": 5,
-    "liveSecurityGate": {
-      "testing": {
-        "ok": true,
-        "context": "testing",
-        "target": null,
-        "exceptedAdvisory": "GHSA-hp3w-g68c-fv3c",
-        "affectedPackages": [
-          "mssql",
-          "sprintf-js",
-          "tedious"
-        ],
-        "nonBlockingAdvisories": [],
-        "expiresAtUtc": "2026-11-08T00:00:00.000Z",
-        "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING"
-      },
-      "production": {
-        "ok": true,
-        "context": "production",
-        "target": "cargorun-dev",
-        "exceptedAdvisory": "GHSA-hp3w-g68c-fv3c",
-        "affectedPackages": [
-          "mssql",
-          "sprintf-js",
-          "tedious"
-        ],
-        "nonBlockingAdvisories": [],
-        "expiresAtUtc": "2026-11-08T00:00:00.000Z",
-        "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING"
-      },
-      "missingTarget": "PRODUCTION_NOT_APPROVED",
-      "differentTarget": "PRODUCTION_NOT_APPROVED"
-    },
-    "negativeCoverage": [
-      "unapproved or broadened risk acceptance",
-      "missing or different application target",
-      "unknown moderate/high/critical advisories",
-      "new advisory on scoped packages including low severity",
-      "missing or malformed audit evidence",
-      "expiry boundary and later times",
-      "wrong package versions and paths",
-      "lockfile or dependency file drift",
-      "package/file count drift",
-      "policy and state fingerprint rebinding",
-      "strict LF/CRLF canonicalization and unchanged raw checks for other files"
-    ],
-    "package": {
-      "all7327FilesVerified": true,
-      "all85ApplicationFilesUnchangedFromHead": true,
-      "assetsAndApiImports": "PASS",
-      "functions": 16,
-      "existingPackage": "PASS"
-    },
-    "linux": {
-      "currentCandidate": "NOT_RUN: no commit or push authorized",
-      "previousCommit": "c011750d36a93748aad4105b2d974f9abaf11713",
-      "previousRun": "https://github.com/MatchaLatteCargoRun/CargoRun/actions/runs/37727519011",
-      "previousResult": "711/711 PASS; both gate outcomes and package/repeat-install verification passed under the prior testing-only policy"
-    },
-    "gitDiffCheck": "PASS",
-    "secretPatternFindings": 0,
-    "secretScanLimit": "Known credential/private-key patterns, exact release scope and unchanged reviewed dependency bytes; not proof against arbitrary encoded secrets",
-    "powershellAndSql": "Not applicable to policy-only changes; no SQL executed"
-  },
-  "package": {
-    "directory": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/package",
-    "publicRoot": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/package/public",
-    "privateApiRoot": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/package/api",
-    "allowlist": "scripts/deployment-allowlist.json",
-    "builder": "scripts/build-deployment-package.js",
-    "inventory": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/package/package-inventory.json",
-    "inventorySha256": "4FFDCCE8A2EAABA5214B32981FAC799AB78C6D2A40CCEF4710B38A3AEDE28991",
-    "fileCount": 7327,
-    "bytes": 56776665,
-    "publicFiles": 30,
-    "apiSourceFiles": 55,
-    "dependencyFiles": 7242,
-    "dependencyPackages": 74,
-    "functions": [
-      "configuration-control",
-      "db-health",
-      "export-completions",
-      "export-manifest-final",
-      "flight-statement",
-      "flight-status",
-      "flights",
-      "history",
-      "import-completions",
-      "mach-fow",
-      "mail-scan",
-      "manifest-upload",
-      "offloads",
-      "session",
-      "uld-status",
-      "ulds"
-    ],
-    "allFileHashesVerified": true,
-    "excludes": "CargoRun SQL migrations, docs, tests, rehearsal tools, Git files, local settings, credentials and audit evidence are outside both publication roots. Unmodified upstream package contents remain in the private API dependency directory.",
-    "provenance": "Rebuilt locally on Windows from exact proposed Git source bytes and clean dependencies. All 7327 package files matched source bytes and inventory. All 85 application assets/API source files match c011750 HEAD. Existing worktree package also independently verified. No Azure artifact produced.",
-    "repeatabilityLimit": "Prior c011750 Linux run passed repeat-install integrity for all 7242 dependency files. This approved-policy candidate has not yet run on Linux."
-  },
-  "workflow": {
-    "file": ".github/workflows/deploy-cargorun.yml",
-    "triggersUnchanged": true,
-    "credentialsUnchanged": true,
-    "permissionsUnchanged": true,
-    "order": [
-      "checkout",
-      "Node 22.23.3",
-      "npm 11.11.0 ci",
-      "full offline tests",
-      "strict production audit gate with explicit cargorun-dev target",
-      "allowlisted package build",
-      "Azure upload only after separate deployment authorization"
-    ],
-    "currentAuditGate": "Only GHSA-hp3w-g68c-fv3c may be excepted for explicit target cargorun-dev, with approved hashes/graph, complete audit and unexpired release-owner acceptance. Missing or different targets fail closed.",
-    "documentation": "https://learn.microsoft.com/en-us/azure/static-web-apps/build-configuration",
-    "actualAzurePublishingVerified": false,
-    "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING",
-    "target": "cargorun-dev"
-  },
-  "evidence": [
-    {
-      "path": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\node22-full-tests.log",
-      "sha256": "65F27299BE0C750E55D9EAEF2A8CB804103960B769E6FA9B0265838AFAACE891"
-    },
-    {
-      "path": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\npm-audit.json",
-      "sha256": "CF264B1CB7603A046BF90F1275A6685208BC2BC648111D85E8622FF81DCFDE0A"
-    },
-    {
-      "path": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\npm-ls.json",
-      "sha256": "FE76D51B5A83B9E844F9FB91C1D1EBD9B56B1FC09B51C3A5C60028286FBDA44F"
-    },
-    {
-      "path": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\package-verification.json",
-      "sha256": "FEAF8F11B24AAF341EACD8890F8F2292997F1DE03F4478112A2EDCB447AE3D98"
-    },
-    {
-      "path": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\exception-node22-tests.log",
-      "sha256": "4842C22101249800EDC446893AA280DCC52835C71F176DBEBE129D37EA19E004"
-    },
-    {
-      "path": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\exception-live-audit.json",
-      "sha256": "9C484536694E24AA02F6918D5CC7701BFC81B7A9AFEDF96785ABCAB197BBECE7"
-    },
-    {
-      "path": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\exception-audit-validation.json",
-      "sha256": "971C80296D1E04BE4876205FF42A364474BFEF6ADF4C3ED1AC1FC6C07FA61FBA"
-    },
-    {
-      "path": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/focused-tests.log",
-      "sha256": "539DA62344F8FD81D8A82B18F96DC338DBF92972BEFE4D12D219EE189571B1D7"
-    },
-    {
-      "path": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/full-tests.log",
-      "sha256": "1A111B36A1B564B84B10FF0C1723CE7CE6184BFC6E4FDE5DEE174CCB2F87C13A"
-    },
-    {
-      "path": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/testing-no-target-gate.json",
-      "sha256": "73C394DE9EB7C2E0D75F2EFDC974A8C4B945C8B5CFF687184E8BB22D69F6D225"
-    },
-    {
-      "path": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/production-cargorun-dev-gate.json",
-      "sha256": "DCA6C63E306520644B245A708AE8F11AF7BA7E8BE9313EEA963A22E51055012C"
-    },
-    {
-      "path": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/production-no-target-gate.json",
-      "sha256": "FCB87FD50DA45FD5A703D943E940959252EC574B65695BCA9F96D4AA367EEC63"
-    },
-    {
-      "path": "C:/Users/Maxwell/AppData/Local/Temp/CargoRun-ApprovedException-i6StRW/production-different-app-gate.json",
-      "sha256": "FCB87FD50DA45FD5A703D943E940959252EC574B65695BCA9F96D4AA367EEC63"
-    }
-  ],
-  "preservation": {
-    "originalWorkingTree": "Snapshot of all 216 Git-visible source paths and original status retained for comparison; original dependency junction was never used for installation.",
-    "protectedConfiguration": "No changes to staticwebapp.config.json or AUDIT_REPORT.md.",
-    "currentPass": {
-      "commits": 0,
-      "pushes": 0,
-      "deployments": 0,
-      "sqlExecutions": 0,
-      "aklActivation": false,
-      "ordinaryIndexChanged": false
-    },
-    "priorCandidate": "All runtime application files, dependency versions, root lockfile, workflow triggers and credentials remain unchanged."
-  },
-  "remainingGates": [
-    "Separate approval to commit and push this exact candidate; no commit has been created.",
-    "Fresh Linux validation of this new approval-policy candidate; prior c011750 Linux evidence is not evidence for these new bytes.",
-    "Separate deployment authorization, verified target credential mapping, current deployed baseline, named operator/window and tested recovery artifact.",
-    "Owner must replace/remove the temporary exception before 2026-11-08 00:00 UTC; no expiry extension is authorized.",
-    "AKL remains disabled; activation, grants and machine binding require their own future authorization."
-  ],
-  "securityException": {
-    "policy": "docs/dependency-security-exception.json",
-    "gate": "scripts/dependency-security-gate.js",
-    "tests": "tests/dependency-security-gate.test.js",
-    "testing": "PASS",
-    "production": "PASS for cargorun-dev only",
-    "expiresAtUtc": "2026-11-08T00:00:00.000Z",
-    "linuxValidator": "scripts/validate-linux-release.js",
-    "deploymentAuthorized": false
-  },
-  "validationWorkflow": {
-    "file": ".github/workflows/validate-cargorun-linux.yml",
-    "trigger": "push to validation/akl-runtime-linux only",
-    "jobGuard": "github.event_name == 'push' && github.ref == 'refs/heads/validation/akl-runtime-linux'",
-    "runner": "ubuntu-latest",
-    "node": "22.23.3",
-    "npm": "11.11.0",
-    "permissions": {
-      "contents": "read"
-    },
-    "checkoutPersistCredentials": false,
-    "command": "node scripts/validate-linux-release.js",
-    "azureSecrets": false,
-    "deployActions": false,
-    "artifactUploads": false,
-    "githubExecution": "PRIOR_BASELINE_PASSED; APPROVED_POLICY_CANDIDATE_NOT_PUSHED"
-  },
-  "gitProvenance": {
-    "source": "Temporary Git index based on c011750d36a93748aad4105b2d974f9abaf11713 with only proposedCommit.files added; all Git objects read as Node Buffers",
-    "fileEntries": 25,
-    "crlfToLfFiles": 14,
-    "byteIdenticalFiles": 11,
-    "manifestSelfHashExcluded": true,
-    "manifestGitObjectId": "Report separately; no commit created"
-  },
-  "historicalValidation": {
-    "diagnostic": {
-      "parentCommit": "d5248eeda46af300885906dc691b1ddcd95625e5",
-      "changedFiles": [
-        "scripts/validate-linux-release.js",
-        "tests/dependency-security-gate.test.js",
-        "docs/akl-runtime-release-manifest.json"
-      ],
-      "newRegressionTests": 5,
-      "securityGateAndPolicyUnchanged": true,
-      "rootLockfileUnchanged": true,
-      "windowsDependencyFiles": 7242,
-      "windowsFingerprint": "85FE97C48E22C716246DED14C21D1F82B329323C4D96733CC6657D5BBE3E9A6F",
-      "failureOutput": "Scalar fingerprint values, runtime versions, hidden-lockfile byte metadata, sorted relative file paths and SHA-256 hashes only; preserves test process failure.",
-      "testingGate": "PASS: GHSA-hp3w-g68c-fv3c only",
-      "productionGate": "PRODUCTION_NOT_APPROVED",
-      "productionApproval": "PENDING_RELEASE_OWNER_ACCEPTANCE",
-      "linuxDiagnosticOutcome": "Pending authorized push"
-    },
-    "crossPlatform": {
-      "parentCommit": "a85ae66505197f1594aa030b269a7a4ce07384be",
-      "changedFiles": [
-        "scripts/dependency-security-gate.js",
-        "scripts/validate-linux-release.js",
-        "docs/dependency-security-exception.json",
-        "tests/dependency-security-gate.test.js",
-        "docs/akl-runtime-release-manifest.json"
-      ],
-      "newRegressionTests": 4,
-      "normalizationScope": "Fingerprint computation for exactly node_modules/.package-lock.json; only complete LF or CRLF accepted. Raw files remain unchanged.",
-      "dependencyPackages": 74,
-      "dependencyFiles": 7242,
-      "canonicalFingerprint": "FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D",
-      "rootLockfileSha256": "2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6",
-      "testingGate": "PASS: GHSA-hp3w-g68c-fv3c only",
-      "productionGate": "PRODUCTION_NOT_APPROVED",
-      "productionApproval": "PENDING_RELEASE_OWNER_ACCEPTANCE",
-      "expiryUnchanged": "2026-11-08T00:00:00.000Z",
-      "linuxOutcome": "Pending authorized push"
-    }
+  "historicalEvidence": {
+    "sourceCommit": "cb2033c8dd3928ab8aa05b74eef8550c2d9ec7b5",
+    "manifestGitObjectId": "495ff3049198b62b58dbfb1df7367f6688f23889",
+    "linuxRun": "https://github.com/MatchaLatteCargoRun/CargoRun/actions/runs/37729375938",
+    "tests": 716,
+    "limitation": "Previous evidence applies to the prior release, not this correction. Historical metadata remains accessible at that commit."
   },
   "proposedCommit": {
-    "title": "Approve scoped CargoRun live-testing advisory exception",
-    "parent": "c011750d36a93748aad4105b2d974f9abaf11713",
+    "title": "Validate MEL and AKL flight creation station context",
+    "parent": "cb2033c8dd3928ab8aa05b74eef8550c2d9ec7b5",
     "branch": "validation/akl-runtime-linux",
     "files": [
-      ".github/workflows/deploy-cargorun.yml",
       "docs/akl-runtime-release-manifest.json",
-      "docs/dependency-security-exception.json",
-      "scripts/dependency-security-gate.js",
-      "scripts/validate-linux-release.js",
-      "tests/dependency-security-gate.test.js",
-      "tests/deployment-package.test.js",
-      "tests/linux-validation-workflow.test.js"
+      "index.html",
+      "tests/manifest-upload-station.test.js",
+      "tests/uld-normalization.test.js"
     ],
     "fullReleasePaths": [
       ".github/workflows/deploy-cargorun.yml",
@@ -711,48 +320,114 @@
       "tests/deployment-package.test.js",
       "tests/fixtures/dependency-audit-reviewed.json",
       "tests/linux-validation-workflow.test.js",
+      "tests/manifest-upload-station.test.js",
       "tests/operational-authorization.test.js",
-      "tests/selected-station-context.test.js"
+      "tests/selected-station-context.test.js",
+      "tests/uld-normalization.test.js"
     ],
-    "fullReleaseBase": "cbb579c27d4c1b20d91429abd66d6b6a1963c476",
-    "commitCreated": false,
-    "treeIdentity": "Report separately to avoid recursive manifest hashing"
+    "fullReleaseBase": "cbb579c27d4c1b20d91429abd66d6b6a1963c476"
+  },
+  "validation": {
+    "node": "22.23.3",
+    "npm": "11.11.0",
+    "cleanNpmCi": "PASS",
+    "focused": {
+      "passed": 86,
+      "failed": 0,
+      "skipped": 0
+    },
+    "full": {
+      "passed": 728,
+      "failed": 0,
+      "skipped": 0
+    },
+    "testCount": "728 unchanged: original 716 plus the 12 existing flight creation regressions.",
+    "testingGate": {
+      "ok": true,
+      "context": "testing",
+      "target": null,
+      "exceptedAdvisory": "GHSA-hp3w-g68c-fv3c",
+      "affectedPackages": [
+        "mssql",
+        "sprintf-js",
+        "tedious"
+      ],
+      "nonBlockingAdvisories": [],
+      "expiresAtUtc": "2026-11-08T00:00:00.000Z",
+      "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING"
+    },
+    "productionGate": {
+      "ok": true,
+      "context": "production",
+      "target": "cargorun-dev",
+      "exceptedAdvisory": "GHSA-hp3w-g68c-fv3c",
+      "affectedPackages": [
+        "mssql",
+        "sprintf-js",
+        "tedious"
+      ],
+      "nonBlockingAdvisories": [],
+      "expiresAtUtc": "2026-11-08T00:00:00.000Z",
+      "productionApproval": "APPROVED_CARGORUN_LIVE_TESTING"
+    },
+    "linux": "Pending the single authorized validation-branch push.",
+    "coverage": [
+      "MEL import/export",
+      "AKL import/export",
+      "server-resolved StationId",
+      "unauthorized and ambiguous station denial before writes",
+      "route mismatch denial",
+      "stale membership denial",
+      "late responses discarded after switching"
+    ],
+    "limitations": [
+      "Synthetic SQL driver exercises real HTTP and authorization code; no SQL Server or live flight creation executed.",
+      "Missing station is rejected for a two-station actor; existing single-station fallback remains unchanged.",
+      "Station switching clears pending state and discards stale responses; it does not cancel a request already executing on the server."
+    ]
+  },
+  "package": {
+    "publicFiles": 30,
+    "apiSourceFiles": 55,
+    "functions": 16,
+    "dependencyPackages": 74,
+    "dependencyFiles": 7242,
+    "fileCount": 7327,
+    "inventorySha256": "CC90093E0A0FDB545AAE36A6EC7F5FA4C2657946DA62824FFB6224DA8F4B6FDB",
+    "allFileHashesVerified": true,
+    "provenance": "Locally inspected Windows package from exact staged source and clean locked dependencies. Not an Azure artifact.",
+    "excludes": "SQL, repository docs/tests, rehearsal tools, credentials and evidence excluded from publication roots."
+  },
+  "securityException": {
+    "policy": "docs/dependency-security-exception.json",
+    "unchanged": true,
+    "advisory": "GHSA-hp3w-g68c-fv3c",
+    "target": "cargorun-dev",
+    "expiresAtUtc": "2026-11-08T00:00:00.000Z"
+  },
+  "workflow": {
+    "validation": "push to validation/akl-runtime-linux only; contents read; no Azure action, deployment secret, or artifact upload",
+    "deployment": "main push or manual dispatch; neither authorized in this change",
+    "workflowFilesUnchanged": true
+  },
+  "gitProvenance": {
+    "fileEntries": 27,
+    "crlfToLfFiles": 15,
+    "manifestSelfHashExcluded": true
+  },
+  "preservation": {
+    "originalOutstandingPaths": 90,
+    "originalUnchanged": true,
+    "protectedFilesUnchanged": true,
+    "dependenciesUnchanged": true
   },
   "releasePlan": {
-    "authorization": "This user instruction authorizes local policy preparation/testing only. No commit, push, workflow dispatch, deployment, SQL or AKL activation authorized.",
-    "productionGateCommand": "node scripts/dependency-security-gate.js --context production --target cargorun-dev",
-    "expiry": "2026-11-08T00:00:00.000Z",
-    "expiryEffect": "The build gate denies expired exceptions; it does not automatically stop an already deployed app. Replace/remove the vulnerable dependency or obtain a separately reviewed solution before expiry.",
-    "githubControls": [
-      "Review the exact proposed 8-path commit and complete 26-path release scope; approve commit and validation-branch push separately.",
-      "Require a new successful Ubuntu validation for the final committed candidate, including scoped production approval and package integrity.",
-      "The existing workflow auto-deploys on main push and also permits workflow_dispatch. Neither may be triggered without explicit deployment authorization.",
-      "Confirm repository branch protection/required checks and release-owner approval. This repository workflow has no environment reviewer gate; hosted settings were not queried.",
-      "Verify that the Azure deployment credential actually targets cargorun-dev. The gate target argument declares scope; it does not inspect or attest Azure credentials.",
-      "Confirm current main and deployed commit, no superseding release, a named operator/window, and an available verified previous application artifact before rollout."
+    "authorization": "One validation-only commit and push authorized; no main push, Azure deployment, SQL writes, grants, machine-binding or AKL-state changes.",
+    "remainingGates": [
+      "Fresh Ubuntu validation of this exact commit",
+      "Separate controlled deployment authorization",
+      "Refresh browser after deployment; production write smoke tests need separate approval"
     ],
-    "order": [
-      "Review this candidate and approve the exact local commit/validation push.",
-      "Run dedicated Linux validation on that exact commit and inspect gates, artifact inventory and logs.",
-      "Capture current deployed identity, baseline MEL/ADMIN health and the previous recoverable application artifact.",
-      "Obtain separate authorization for the precise main promotion/deployment action and target; promote only the reviewed candidate.",
-      "Allow the workflow to run clean install, all tests, fresh scoped audit and allowlisted packaging; stop on any failed gate.",
-      "After deployment identity is confirmed, run the approved MEL smoke checks and monitor authorization errors, machine ingestion failures and client refreshes."
-    ],
-    "melSmokeTests": [
-      "Read-only: confirm login/session, selected MEL StationId 1 and Australia/Melbourne timestamps.",
-      "Confirm Admin controls work; six global control capabilities remain available, while operations resolve through explicit MEL SUPERVISOR membership.",
-      "Confirm MEL flight boards, supervisor view, history and ULD ownership views remain available for permitted users.",
-      "Confirm AKL is unavailable and forged/nonmember station requests are denied without mutation.",
-      "Verify stale sessions and station switching cannot restore unauthorized operational access.",
-      "Only with explicit smoke-test write approval: perform bounded MEL operational and MACH/FOW idempotency checks with designated data; confirm immutable audit and ownership preservation."
-    ],
-    "rollback": [
-      "Stop rollout and further smoke mutations on loss of MEL/Admin access, unexpected AKL access, machine isolation failure, missing assets or failed authorization verification; capture sanitized evidence.",
-      "Use the designated verified previous application artifact through the separately authorized deployment route after checking compatibility with completed ADMIN remediation and current data.",
-      "Retain allowlisted publishing and security checks; do not blindly rerun an old root-publishing workflow or reset the original development tree.",
-      "This release changes no schema: do not restore SQL, undo ADMIN remediation, regrant global operational permissions or enable AKL as an application rollback.",
-      "Recheck deployed identity and MEL/Admin/AKL isolation after rollback. If no verified compatible artifact exists, stop and escalate rather than improvising a database recovery."
-    ]
+    "rollback": "Use hardened cb2033c8 as the compatibility reference. Older MEL-only recovery requires reassessment now that AKL is active."
   }
 }

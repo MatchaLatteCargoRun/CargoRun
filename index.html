@@ -3782,7 +3782,9 @@ async function createUploadedFlight() {
           /^([A-Z]{2,3})/
         );
 
+    const stationCode = selectedStationCode();
     const payload = {
+      stationCode,
       flight: {
         flightNumber:
           p.flight,
@@ -3799,16 +3801,15 @@ async function createUploadedFlight() {
             ? airlineMatch[1]
             : null,
 
-        // CargoRun Melbourne
-        // prototype
+        // Route ownership follows the same selected station sent to the API.
         originAirport:
           p.type === 'exports'
-            ? 'MEL'
+            ? stationCode
             : null,
 
         destinationAirport:
           p.type === 'imports'
-            ? 'MEL'
+            ? stationCode
             : null,
 
         sourceFileName:
