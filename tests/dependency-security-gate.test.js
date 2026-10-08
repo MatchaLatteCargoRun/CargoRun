@@ -1,6 +1,6 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-const {evaluateAudit,parseAudit,collectAudit,validateState,canonicalLockfileBytes,readDependencyState}=require('../scripts/dependency-security-gate');
+const {evaluateAudit,parseAudit,collectAudit,validateState,canonicalLockfileBytes,dependencyFileSha256,readDependencyState}=require('../scripts/dependency-security-gate');
 const {requireLinux,requireProductionDenial,emitDependencyDiagnostics,runDependencyTests}=require('../scripts/validate-linux-release');
 const root=path.resolve(__dirname,'..');
 const policy=JSON.parse(fs.readFileSync(path.join(root,'docs/dependency-security-exception.json'),'utf8'));
@@ -234,17 +234,18 @@ test('dependency diagnostics report exact sorted bytes without file contents or 
   assert.ok(!lines.join('\n').includes(fixture));
   assert.equal(summary.npm,'11.11.0');assert.equal(summary.node,process.version);
   assert.deepEqual(files.map(f=>f.path),files.map(f=>f.path).sort());
-  assert.deepEqual(files.map(f=>Object.keys(f)),files.map(()=>['path','sha256']));
+  assert.deepEqual(files.map(f=>Object.keys(f)),files.map(()=>['path','sha256','fingerprintSha256']));
   assert.equal(summary.actual.dependencyFileCount,files.length);
-  assert.equal(summary.actual.dependencyTreeSha256,crypto.createHash('sha256').update(JSON.stringify(files.map(f=>[f.path,f.sha256]))).digest('hex').toUpperCase());
-  assert.deepEqual(JSON.parse(lines.at(-1).slice('CARGORUN_DEPENDENCY_DIAGNOSTIC_END '.length)),{files:files.length,sha256:summary.actual.dependencyTreeSha256});
+  assert.equal(summary.actual.dependencyTreeSha256,crypto.createHash('sha256').update(JSON.stringify(files.map(f=>[f.path,f.fingerprintSha256]))).digest('hex').toUpperCase());
+  assert.deepEqual(JSON.parse(lines.at(-1).slice('CARGORUN_DEPENDENCY_DIAGNOSTIC_END '.length)),{files:files.length,sha256:summary.actual.dependencyTreeSha256,rawSha256:summary.rawDependencyTreeSha256});
   return {summary,files};
  };
  const lf=collect();assert.deepEqual(lf.summary.actual,lf.summary.expected);assert.equal(lf.summary.hiddenLockfile.lineEndings.format,'LF');
  fs.writeFileSync(path.join(fixture,'api/node_modules/.package-lock.json'),Buffer.from(hidden.toString().replace(/\n/g,'\r\n')));
  const crlf=collect();assert.equal(crlf.summary.hiddenLockfile.lineEndings.format,'CRLF');
  assert.notEqual(crlf.summary.hiddenLockfile.sha256,lf.summary.hiddenLockfile.sha256);
- assert.notEqual(crlf.summary.actual.dependencyTreeSha256,crlf.summary.expected.dependencyTreeSha256);
+ assert.equal(crlf.summary.actual.dependencyTreeSha256,crlf.summary.expected.dependencyTreeSha256);
+ assert.notEqual(crlf.summary.rawDependencyTreeSha256,lf.summary.rawDependencyTreeSha256);
  assert.deepEqual(crlf.files.filter((f,i)=>f.sha256!==lf.files[i].sha256).map(f=>f.path),['.package-lock.json']);
  assert.equal(crlf.summary.actual.lockfileSha256,lf.summary.actual.lockfileSha256);
 });
@@ -273,4 +274,50 @@ test('interrupted test processes remain failures after diagnostics',()=>{
  let emitted=0;
  assert.throws(()=>runDependencyTests('fixture',{runner:()=>({status:null,signal:'SIGTERM'}),diagnose:()=>emitted++}),error=>error.exitCode===1);
  assert.equal(emitted,1);
+});
+
+test('reviewed hidden lockfile LF and complete CRLF have the exact approved fingerprint',()=>{
+ const raw=fs.readFileSync(path.join(root,'api/node_modules/.package-lock.json'));
+ const lf=canonicalLockfileBytes(raw),crlf=Buffer.from(lf.toString('utf8').replace(/\n/g,'\r\n'));
+ const approved='0CEDA1DCF9CCAF92466D10141442929EE8EE811DFB7DD7F93A9571373F821667';
+ assert.equal(dependencyFileSha256('.package-lock.json',lf),approved);
+ assert.equal(dependencyFileSha256('.package-lock.json',crlf),approved);
+ const actual=readDependencyState(root);validateState(policy,actual);
+ assert.equal(actual.dependencyTreeSha256,'FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D');
+ assert.equal(actual.dependencyFileCount,7242);assert.equal(actual.dependencyPackages,74);
+ assert.deepEqual(fs.readFileSync(path.join(root,'api/node_modules/.package-lock.json')),raw);
+});
+
+test('hidden lockfile mixed and bare CR endings fail before fingerprint acceptance',()=>{
+ const lf=canonicalLockfileBytes(fs.readFileSync(path.join(root,'api/node_modules/.package-lock.json')));
+ const mixed=Buffer.from(lf.toString('utf8').replace('\n','\r\n'));
+ for(const bytes of [mixed,Buffer.concat([lf,Buffer.from('\r')])])
+  assert.throws(()=>dependencyFileSha256('.package-lock.json',bytes),/DEPENDENCY_DRIFT/);
+});
+
+test('unexpected hidden lockfile content remains rejected by the installed tree binding',()=>{
+ const {validateDependencies}=require('../scripts/build-deployment-package');
+ const deps=validateDependencies(root),actual=readDependencyState(root);
+ const tree=deps.files.slice().sort().map(p=>[p,dependencyFileSha256(p,fs.readFileSync(path.join(deps.directory,p)))]);
+ const lf=canonicalLockfileBytes(fs.readFileSync(path.join(deps.directory,'.package-lock.json')));
+ for(const bytes of [Buffer.concat([lf,Buffer.from(' ')]),Buffer.from(lf.toString().replace('"lockfileVersion": 3','"lockfileVersion": 2'))]){
+  const altered=tree.map(([p,h])=>[p,p==='.package-lock.json'?dependencyFileSha256(p,bytes):h]);
+  const changed={...actual,dependencyTreeSha256:crypto.createHash('sha256').update(JSON.stringify(altered)).digest('hex').toUpperCase()};
+  assert.throws(()=>validateState(policy,changed),/DEPENDENCY_DRIFT/);
+ }
+});
+
+test('all other 7241 dependency files and nested lockfiles retain raw-byte verification',()=>{
+ const {validateDependencies}=require('../scripts/build-deployment-package');
+ const deps=validateDependencies(root);let checked=0;
+ for(const p of deps.files){if(p==='.package-lock.json')continue;
+  const bytes=fs.readFileSync(path.join(deps.directory,p));
+  assert.equal(dependencyFileSha256(p,bytes),crypto.createHash('sha256').update(bytes).digest('hex').toUpperCase());checked++;
+ }
+ assert.equal(checked,7241);
+ for(const p of ['package/index.js','package/.package-lock.json','package/package-lock.json']){
+  const lf=Buffer.from('one\ntwo\n'),crlf=Buffer.from('one\r\ntwo\r\n');
+  assert.notEqual(dependencyFileSha256(p,lf),dependencyFileSha256(p,crlf));
+  assert.equal(dependencyFileSha256(p,crlf),crypto.createHash('sha256').update(crlf).digest('hex').toUpperCase());
+ }
 });

@@ -1,10 +1,10 @@
 {
   "schemaVersion": 3,
-  "capturedUtc": "2026-10-08T04:15:56.664Z",
+  "capturedUtc": "2026-10-08T04:25:53.752Z",
   "baseCommit": "cbb579c27d4c1b20d91429abd66d6b6a1963c476",
   "worktree": "C:\\Users\\Maxwell\\Documents\\CargoRun-AKL-Runtime",
   "purpose": "Isolated runtime release candidate. No production deployment or AKL activation authorized.",
-  "status": "LINUX_DEPENDENCY_DIAGNOSTIC_PREPARED",
+  "status": "CROSS_PLATFORM_FINGERPRINT_WINDOWS_VALIDATED_LINUX_PENDING",
   "hashMeaning": "For files[], sha256 and bytes record current Windows worktree bytes; gitBlobSha256 and gitBlobBytes record exact staged Git blob bytes read as binary. lineEndingNormalization records CRLF-to-LF conversion where present. The manifest excludes its own hash to avoid recursion. Package hashes describe a locally inspected package, not an Azure artifact.",
   "scope": "Prior isolated runtime and packaging candidate plus the testing-only advisory policy, audit gate, Linux validator, regression tests and a dedicated nondeploying GitHub Linux validation workflow. Manifest excludes its own hash.",
   "files": [
@@ -91,11 +91,11 @@
     {
       "path": "docs/dependency-security-exception.json",
       "bytes": 8420,
-      "sha256": "09E49847CB87BCA9979CCAC7DAC33F41A82524C507893B7C26CA778ABB76BC27",
+      "sha256": "99CBAEC099FE93C9BAA8EAB32232B3149EF25510D82A1E970CCDA4F9EFDB4AB0",
       "role": "testing-only risk assessment and policy; excluded from deployment package",
       "lineEndingNormalization": "CRLF_TO_LF",
       "normalizedCrLfCount": 114,
-      "gitBlobSha256": "38279AE5E52CD3E13B7E86233BBFCB2BA8D2AFC15D2BDBA6910252085ECAB037",
+      "gitBlobSha256": "BE3275BC87F98EEBB6F0796D5E320AF0018A60D9A1B84F46EED45695CC154212",
       "gitBlobBytes": 8306
     },
     {
@@ -120,13 +120,13 @@
     },
     {
       "path": "scripts/dependency-security-gate.js",
-      "bytes": 13203,
-      "sha256": "115A6A42342D2A99718F3092D5106E84E810D5D25C488E92DAABB1B2FF2BD1CB",
+      "bytes": 13537,
+      "sha256": "FB148C63711357AEC21463958A178E74A81C7FC1DE908760F4412809836075FB",
       "role": "security/build validation tooling; excluded from deployment package",
       "lineEndingNormalization": "NONE",
       "normalizedCrLfCount": 0,
-      "gitBlobSha256": "115A6A42342D2A99718F3092D5106E84E810D5D25C488E92DAABB1B2FF2BD1CB",
-      "gitBlobBytes": 13203
+      "gitBlobSha256": "FB148C63711357AEC21463958A178E74A81C7FC1DE908760F4412809836075FB",
+      "gitBlobBytes": 13537
     },
     {
       "path": "scripts/deployment-allowlist.json",
@@ -140,13 +140,13 @@
     },
     {
       "path": "scripts/validate-linux-release.js",
-      "bytes": 7638,
-      "sha256": "8551E5869907BC47B9862E7BE8EF42BAB8EA86B46A9F09D4A5C0BB5FDA4DFA67",
+      "bytes": 7893,
+      "sha256": "4F538EC2E8D05CB934F47AB9B8875F36392CE45C9967E811C711A2859D64D1D4",
       "role": "security/build validation tooling; excluded from deployment package",
       "lineEndingNormalization": "CRLF_TO_LF",
       "normalizedCrLfCount": 1,
-      "gitBlobSha256": "749ABB74E5547AB5123BA308AE17353DB651F1C2431776EFB0E678124CB12DF8",
-      "gitBlobBytes": 7637
+      "gitBlobSha256": "DA5F02E66C222C9A7FB0B23B9EB59C7B1B62D65D8463859888FF8EF952758BA0",
+      "gitBlobBytes": 7892
     },
     {
       "path": "tests/admin-configuration.test.js",
@@ -200,13 +200,13 @@
     },
     {
       "path": "tests/dependency-security-gate.test.js",
-      "bytes": 17777,
-      "sha256": "0987B5A45B375BC7DDCA867307D30CECEB1E13BAF3A238D38C704BD0F052379E",
+      "bytes": 21064,
+      "sha256": "2C6A7657B84451638985C81F1F4709DC0A8B19604E2A6500343313485B121C2D",
       "role": "offline advisory-gate regression test/fixture",
       "lineEndingNormalization": "NONE",
       "normalizedCrLfCount": 0,
-      "gitBlobSha256": "0987B5A45B375BC7DDCA867307D30CECEB1E13BAF3A238D38C704BD0F052379E",
-      "gitBlobBytes": 17777
+      "gitBlobSha256": "2C6A7657B84451638985C81F1F4709DC0A8B19604E2A6500343313485B121C2D",
+      "gitBlobBytes": 21064
     },
     {
       "path": "tests/deployment-package.test.js",
@@ -364,15 +364,16 @@
   },
   "validation": {
     "nodeTests": {
-      "tests": 707,
-      "pass": 707,
+      "tests": 711,
+      "pass": 711,
       "fail": 0,
       "cancelled": 0,
       "skipped": 0,
       "todo": 0,
       "command": "node --test --test-concurrency=1",
       "source": "Independent temporary Windows source copy with fresh npm ci",
-      "currentRun": "Node 22.23.3 and npm 11.11.0; all tracked source bytes copied from isolated worktree; no dependency junction."
+      "nodePathOverride": "cleared",
+      "currentRun": "Node 22.23.3 and npm 11.11.0; all source copied from isolated worktree; all 7242 dependency files verified."
     },
     "addedPackageSecurityTests": 9,
     "javaScriptSourceFilesParsed": 42,
@@ -405,16 +406,17 @@
       "production context denial"
     ],
     "linux": {
-      "status": "PREVIOUS_RUN_FAILED_DEPENDENCY_DRIFT",
-      "runUrl": "https://github.com/MatchaLatteCargoRun/CargoRun/actions/runs/37724990973",
-      "tests": 702,
-      "pass": 701,
+      "status": "CORRECTION_PREPARED_AFTER_CONFIRMED_DIAGNOSTIC",
+      "runUrl": "https://github.com/MatchaLatteCargoRun/CargoRun/actions/runs/37726730287",
+      "tests": 707,
+      "pass": 706,
       "fail": 1,
-      "nextStep": "One diagnostic commit and validation-branch push authorized after local checks. Existing assertion and failure status retained; fingerprint differences remain unapproved."
+      "rootCause": "Only npm-generated node_modules/.package-lock.json differs: 901 CRLF vs LF endings; all other 7241 files identical.",
+      "nextStep": "One approved correction commit and validation-branch push after all local checks. No retry authorized."
     },
     "focusedLinuxWorkflowAndSecurityTests": {
-      "tests": 35,
-      "pass": 35,
+      "tests": 39,
+      "pass": 39,
       "fail": 0,
       "skipped": 0
     },
@@ -542,7 +544,7 @@
     "aklActivation": false
   },
   "remainingGates": [
-    "Linux dependency fingerprint mismatch remains unresolved. One diagnostic validation-branch push is authorized; no security-policy correction or workflow retry is authorized.",
+    "Confirmed hidden-lockfile line-ending difference corrected in fingerprint computation. Windows full suite and live gates passed; one Linux validation push authorized, with no retry.",
     "Release owner must explicitly accept the documented residual production risk and authorize a separately reviewed policy change; the current implementation rejects production use of this testing-only exception.",
     "Exception expires at 2026-11-08T00:00:00.000Z. Any dependency drift, new advisory, changed exposure or available fix requires review; no automatic extension.",
     "Commit, push and deployment require separate explicit approval. Main pushes remain deployment triggers. Actual Azure artifacts and hosted runtime behavior remain unverified.",
@@ -571,7 +573,7 @@
     "azureSecrets": false,
     "deployActions": false,
     "artifactUploads": false,
-    "githubExecution": "PREVIOUS_RUN_FAILED; ONE_DIAGNOSTIC_PUSH_AUTHORIZED"
+    "githubExecution": "CORRECTION_VALIDATION_PUSH_AUTHORIZED_PENDING"
   },
   "gitProvenance": {
     "source": "git show :<path> read into a Node Buffer from the staged Git index",
@@ -598,5 +600,26 @@
     "productionGate": "PRODUCTION_NOT_APPROVED",
     "productionApproval": "PENDING_RELEASE_OWNER_ACCEPTANCE",
     "linuxDiagnosticOutcome": "Pending authorized push"
+  },
+  "crossPlatformValidation": {
+    "parentCommit": "a85ae66505197f1594aa030b269a7a4ce07384be",
+    "changedFiles": [
+      "scripts/dependency-security-gate.js",
+      "scripts/validate-linux-release.js",
+      "docs/dependency-security-exception.json",
+      "tests/dependency-security-gate.test.js",
+      "docs/akl-runtime-release-manifest.json"
+    ],
+    "newRegressionTests": 4,
+    "normalizationScope": "Fingerprint computation for exactly node_modules/.package-lock.json; only complete LF or CRLF accepted. Raw files remain unchanged.",
+    "dependencyPackages": 74,
+    "dependencyFiles": 7242,
+    "canonicalFingerprint": "FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D",
+    "rootLockfileSha256": "2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6",
+    "testingGate": "PASS: GHSA-hp3w-g68c-fv3c only",
+    "productionGate": "PRODUCTION_NOT_APPROVED",
+    "productionApproval": "PENDING_RELEASE_OWNER_ACCEPTANCE",
+    "expiryUnchanged": "2026-11-08T00:00:00.000Z",
+    "linuxOutcome": "Pending authorized push"
   }
 }

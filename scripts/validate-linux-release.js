@@ -3,7 +3,7 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawnSync,execFileSync}=require('node:child_process');
 const {validateDependencies,safeRelative}=require('./build-deployment-package');
-const {readDependencyState}=require('./dependency-security-gate');
+const {readDependencyState,dependencyFileSha256}=require('./dependency-security-gate');
 function requireLinux(platform=process.platform,node=process.version){
   if(platform!=='linux'||node!=='v22.23.3')throw Error('Run on an approved Linux host with Node 22.23.3; this script does not install the host runtime.');
 }
@@ -29,9 +29,10 @@ function emitDependencyDiagnostics(root,{runner=spawnSync,write=console.log}={})
   const files=deps.files.slice().sort().map(relative=>{
     safeRelative(relative);
     if(/[\x00-\x1f\x7f]/.test(relative))throw Error('Unsafe diagnostic path');
-    return {path:relative,sha256:hash(fs.readFileSync(path.join(deps.directory,relative)))};
+    const bytes=fs.readFileSync(path.join(deps.directory,relative));
+    return {path:relative,sha256:hash(bytes),fingerprintSha256:dependencyFileSha256(relative,bytes)};
   });
-  if(files.length!==actual.dependencyFileCount||hash(JSON.stringify(files.map(f=>[f.path,f.sha256])))!==actual.dependencyTreeSha256)
+  if(files.length!==actual.dependencyFileCount||hash(JSON.stringify(files.map(f=>[f.path,f.fingerprintSha256])))!==actual.dependencyTreeSha256)
     throw Error('Dependency diagnostic snapshot changed');
   const version=runner(process.platform==='win32'?'npm.cmd':'npm',['--version'],
     {cwd:root,encoding:'utf8',shell:process.platform==='win32',timeout:30000,maxBuffer:4096});
@@ -44,12 +45,13 @@ function emitDependencyDiagnostics(root,{runner=spawnSync,write=console.log}={})
     else if(hidden[i]===10)bareLf++;
   }
   const format=bareCr?'BARE_CR':crlf&&bareLf?'MIXED':crlf?'CRLF':bareLf?'LF':'NONE';
-  const summary={schemaVersion:1,platform:process.platform,node:process.version,npm:version.stdout.trim(),
+  const rawDependencyTreeSha256=hash(JSON.stringify(files.map(f=>[f.path,f.sha256])));
+  const summary={schemaVersion:2,rawDependencyTreeSha256,platform:process.platform,node:process.version,npm:version.stdout.trim(),
     expected:select(policy),actual:select(actual),
     hiddenLockfile:{path:'.package-lock.json',bytes:hidden.length,sha256:hash(hidden),lineEndings:{format,crlf,bareLf,bareCr}}};
   write('CARGORUN_DEPENDENCY_DIAGNOSTIC '+JSON.stringify(summary));
   for(const file of files)write('CARGORUN_DEPENDENCY_FILE '+JSON.stringify(file));
-  write('CARGORUN_DEPENDENCY_DIAGNOSTIC_END '+JSON.stringify({files:files.length,sha256:actual.dependencyTreeSha256}));
+  write('CARGORUN_DEPENDENCY_DIAGNOSTIC_END '+JSON.stringify({files:files.length,sha256:actual.dependencyTreeSha256,rawSha256:rawDependencyTreeSha256}));
 }
 function runDependencyTests(root,{runner=spawnSync,diagnose=emitDependencyDiagnostics,write=console.log}={}){
   const result=runner(process.execPath,['--test','--test-concurrency=1'],

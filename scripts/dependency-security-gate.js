@@ -35,6 +35,11 @@ function canonicalLockfileBytes(bytes) {
   }
   return canonical;
 }
+// Only npm's top-level generated lockfile has the reviewed LF/CRLF equivalence.
+// All other dependency bytes, including nested lockfiles, remain exact.
+function dependencyFileSha256(relative, bytes) {
+  return sha(relative === '.package-lock.json' ? canonicalLockfileBytes(bytes) : bytes);
+}
 function validatePolicy(policy, now, context) {
   if (!object(policy) || policy.schemaVersion !== 1 || policy.advisory !== ADVISORY ||
       policy.advisoryUrl !== URL || policy.cve !== 'CVE-2026-97058' ||
@@ -54,7 +59,7 @@ function readDependencyState(root) {
   const dependencies = validateDependencies(root); // Rejects junctions, package additions, version/URL/integrity drift.
   const lockBytes = canonicalLockfileBytes(fs.readFileSync(path.join(root,'api/package-lock.json')));
   const lock = JSON.parse(lockBytes.toString('utf8'));
-  const tree = dependencies.files.slice().sort().map(p => [p,sha(fs.readFileSync(path.join(dependencies.directory,p)))]);
+  const tree = dependencies.files.slice().sort().map(p => [p,dependencyFileSha256(p,fs.readFileSync(path.join(dependencies.directory,p)))]);
   return {lock,lockfileSha256:sha(lockBytes),dependencyPackages:dependencies.packages,
     dependencyFileCount:tree.length,dependencyTreeSha256:sha(JSON.stringify(tree))};
 }
@@ -181,7 +186,7 @@ function runGate({root=ROOT,context='production'}={}) {
   const result=collectAudit(root);
   return evaluateAudit(result.report,{policy,state,exitCode:result.exitCode,context});
 }
-module.exports={validatePolicy,canonicalLockfileBytes,readDependencyState,validateState,evaluateAudit,parseAudit,collectAudit,runGate};
+module.exports={validatePolicy,canonicalLockfileBytes,dependencyFileSha256,readDependencyState,validateState,evaluateAudit,parseAudit,collectAudit,runGate};
 if (require.main === module) {
   try {
     const args=process.argv.slice(2);
