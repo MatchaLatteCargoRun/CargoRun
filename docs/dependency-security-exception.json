@@ -1,0 +1,114 @@
+{
+    "schemaVersion":  1,
+    "advisory":  "GHSA-hp3w-g68c-fv3c",
+    "cve":  "CVE-2026-97058",
+    "advisoryUrl":  "https://github.com/advisories/GHSA-hp3w-g68c-fv3c",
+    "npmAdvisorySource":  1241202,
+    "severity":  "moderate",
+    "affectedRange":  "\u003c=1.1.3",
+    "scope":  "testing-only",
+    "productionApproval":  "PENDING_RELEASE_OWNER_ACCEPTANCE",
+    "validFromUtc":  "2026-10-08T00:00:00.000Z",
+    "expiresAtUtc":  "2026-11-08T00:00:00.000Z",
+    "lockfileSha256":  "2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6",
+    "dependencyPackages":  74,
+    "dependencyFileCount":  7242,
+    "dependencyTreeSha256":  "85FE97C48E22C716246DED14C21D1F82B329323C4D96733CC6657D5BBE3E9A6F",
+    "packages":  {
+                     "mssql":  {
+                                   "path":  "node_modules/mssql",
+                                   "version":  "11.0.2",
+                                   "integrity":  "sha512-x3Rdo3aR7/gQgpcVWA5EexMTd/BtHzdOkv94MTvV137UglFOZUJER6wRlq2Fl4R0F7JqBpDYyV4hX1kMTP0j7A=="
+                               },
+                     "tedious":  {
+                                     "path":  "node_modules/tedious",
+                                     "version":  "18.6.2",
+                                     "integrity":  "sha512-g7jC56o3MzLkE3lHkaFe2ZdOVFBahq5bsB60/M4NYUbocw/MCrS89IOEQUFr+ba6pb8ZHczZ/VqCyYeYq0xBAg=="
+                                 },
+                     "sprintf-js":  {
+                                        "path":  "node_modules/sprintf-js",
+                                        "version":  "1.1.3",
+                                        "integrity":  "sha512-Oo+0REFV59/rz3gfJNKQiBlwfHaSESl1pcGyABQsnnIfWOFt6JNj5gCog2U6MLZ//IGYD+nA8nI+mTShREReaA=="
+                                    }
+                 },
+    "dependencyEdges":  [
+                            [
+                                "mssql",
+                                "tedious"
+                            ],
+                            [
+                                "tedious",
+                                "sprintf-js"
+                            ]
+                        ],
+    "reviewedCalls":  [
+                          {
+                              "path":  "node_modules/tedious/lib/login7-payload.js",
+                              "sha256":  "BBE6A0818F06C20D3C7166B14233DFC5EE30A23D7789D27CEBA00D0974A7EE34",
+                              "literalFormatCalls":  4,
+                              "formats":  [
+                                              "TDS:0x%08X, PacketSize:0x%08X, ClientProgVer:0x%08X, ClientPID:0x%08X, ConnectionID:0x%08X",
+                                              "Flags1:0x%02X, Flags2:0x%02X, TypeFlags:0x%02X, Flags3:0x%02X, ClientTimezone:%d, ClientLCID:0x%08X",
+                                              "Hostname:\u0027%s\u0027, Username:\u0027%s\u0027, Password:\u0027%s\u0027, AppName:\u0027%s\u0027, ServerName:\u0027%s\u0027, LibraryName:\u0027%s\u0027",
+                                              "Language:\u0027%s\u0027, Database:\u0027%s\u0027, SSPI:\u0027%s\u0027, AttachDbFile:\u0027%s\u0027, ChangePassword:\u0027%s\u0027"
+                                          ]
+                          },
+                          {
+                              "path":  "node_modules/tedious/lib/metadata-parser.js",
+                              "sha256":  "948C91D4182004B31C54D03AB7AAC987C61AD4D335B44448D10E05E2775A925B",
+                              "literalFormatCalls":  2,
+                              "formats":  [
+                                              "Unrecognised data type 0x%02X",
+                                              "Unrecognised type %s"
+                                          ]
+                          },
+                          {
+                              "path":  "node_modules/tedious/lib/packet.js",
+                              "sha256":  "FAF1D4763F3FFDCFD2B1CD0D8B7FD2C7DB96E4490791050506A0FB6C0B81831B",
+                              "literalFormatCalls":  3,
+                              "formats":  [
+                                              "type:0x%02X(%s), status:0x%02X(%s), length:0x%04X, spid:0x%04X, packetId:0x%02X, window:0x%02X",
+                                              "%04X  ",
+                                              "%02X"
+                                          ]
+                          },
+                          {
+                              "path":  "node_modules/tedious/lib/prelogin-payload.js",
+                              "sha256":  "5CB3FBB6E8441F22659EDF25D8EFC67710390CB81011180829D1222B003C55F2",
+                              "literalFormatCalls":  1,
+                              "formats":  [
+                                              "version:%d.%d.%d.%d, encryption:0x%02X(%s), instopt:0x%02X, threadId:0x%08X, mars:0x%02X(%s)"
+                                          ]
+                          },
+                          {
+                              "path":  "node_modules/tedious/lib/value-parser.js",
+                              "sha256":  "E5E8DD27740D4DEDD260763B2F34F31D9E1E846C0E5C01419AA3D77CC8EA129D",
+                              "literalFormatCalls":  2,
+                              "formats":  [
+                                              "Unsupported guid size %d",
+                                              "Unsupported numeric dataLength %d"
+                                          ]
+                          }
+                      ],
+    "exposure":  {
+                     "prerequisite":  "Attacker controls the first argument (format string) passed to sprintf/vsprintf and supplies an out-of-range precision.",
+                     "installedPath":  "api -\u003e mssql -\u003e tedious -\u003e sprintf-js",
+                     "finding":  "All 12 sprintf calls in the five installed tedious runtime files use literal formats; variable SQL data and diagnostic values are subsequent arguments, not formats. CargoRun source has no direct sprintf-js import.",
+                     "impact":  "The vulnerable library remains installed. If a new path accepts an attacker-controlled format, an uncaught RangeError can abort the calling operation.",
+                     "limitations":  [
+                                         "Source inspection of the exact locked bytes, not a proof of non-exploitability.",
+                                         "No production traffic, SQL connection or Azure deployment tested.",
+                                         "Does not cover other driver errors, debug logging exposure, compromise of audit infrastructure, or compromised build hosts.",
+                                         "npm reports the advisory through three packages; those are one underlying advisory, not three independent exceptions."
+                                     ],
+                     "proposedAcceptance":  "Temporary local/offline/Linux build testing only for this exact dependency tree, with no production credentials. Production risk acceptance requires an explicit release-owner decision and separate reviewed policy change.",
+                     "publishedPatch":  "None listed by the advisory when checked; npm proposed a major mssql downgrade, which was not applied.",
+                     "removal":  "Remove or re-review at expiry, on a patch, changed dependency bytes/graph, changed severity, new advisory or new formatting call path."
+                 },
+    "linuxValidation":  {
+                            "status":  "NOT_EXECUTED",
+                            "hostObservation":  "Docker executable not found. wsl --list --quiet returned install/help output; wsl --status exited 50. No usable Linux runtime confirmed and no Linux installation attempted.",
+                            "nextStep":  "Use an approved Linux host or build-only runner, exact Node 22.23.3 and npm 11.11.0, and a clean source copy matching the manifest. Run scripts/validate-linux-release.js. It installs only into new temporary directories, tests and builds locally, and contains no deployment command.",
+                            "production":  "Current deployment workflow uses production context and will fail while this testing-only exception is needed."
+                        }
+}

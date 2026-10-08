@@ -2,6 +2,7 @@
 
 const { authorizeCapability } = require('./configuration');
 const { resolveActorCapabilities } = require('./configuration-mutations');
+const { CONTROL_PLANE_CAPABILITY_SQL, isControlPlaneCapability } = require('./capability-scope');
 const {
   LEGACY_NULL_STATION_COMPATIBILITY_ENABLED,
   StationResolutionError,
@@ -133,7 +134,7 @@ async function resolveActorAccess(executor, sql, actor) {
           JOIN dbo.CargoRunUserRoleAssignments assignment
             ON assignment.ActorReference=@OperationalAccessActorReference
            AND ((scope.StationId IS NULL AND assignment.StationId IS NULL)
-             OR (scope.StationId IS NOT NULL AND (assignment.StationId IS NULL OR assignment.StationId=scope.StationId)))
+             OR (scope.StationId IS NOT NULL AND assignment.StationId=scope.StationId))
           WHERE assignment.EffectiveFrom<=CONVERT(date,SYSUTCDATETIME())
             AND (assignment.EffectiveTo IS NULL OR assignment.EffectiveTo>CONVERT(date,SYSUTCDATETIME()))
         ), EffectiveRoles AS (
@@ -159,6 +160,7 @@ async function resolveActorAccess(executor, sql, actor) {
         JOIN dbo.CargoRunRoles role ON role.RoleId=decision.RoleId
         WHERE decision.DecisionRank=1 AND decision.CapabilityAction='GRANT'
           AND capability.IsEnabled=1 AND role.IsEnabled=1
+          AND (decision.StationId IS NOT NULL OR capability.CapabilityCode IN (${CONTROL_PLANE_CAPABILITY_SQL}))
         ORDER BY decision.StationCode,capability.CapabilityCode;
       `);
   } catch {
@@ -176,9 +178,10 @@ async function resolveActorAccess(executor, sql, actor) {
   for (const row of result.recordset || []) {
     const capability = normalizeCapability(row.CapabilityCode);
     if (!capability) continue;
-    capabilities.add(capability);
     const stationCode = String(row.StationCode || '').trim().toUpperCase();
     if (!stationCode) {
+      if (!isControlPlaneCapability(capability)) continue;
+      capabilities.add(capability);
       globalCapabilities.push(capability);
       continue;
     }
@@ -208,12 +211,18 @@ async function resolveActorAccess(executor, sql, actor) {
       );
     }
     stationMetadataByCode.set(stationCode, station);
+    capabilities.add(capability);
     if (!capabilitiesByStation[stationCode]) capabilitiesByStation[stationCode] = [];
     capabilitiesByStation[stationCode].push(capability);
   }
 
   for (const stationCode of Object.keys(capabilitiesByStation)) {
     capabilitiesByStation[stationCode] = [...new Set(capabilitiesByStation[stationCode])].sort();
+    // A configuration-only assignment must not introduce an operational picker.
+    if (capabilitiesByStation[stationCode].every(isControlPlaneCapability)) {
+      delete capabilitiesByStation[stationCode];
+      stationMetadataByCode.delete(stationCode);
+    }
   }
 
   return {

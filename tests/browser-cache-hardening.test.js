@@ -363,19 +363,27 @@ test('a stale admin response cannot replace the new authorization scope configur
   const pending = deferred();
   const events = [];
   provision(context);
+  vm.runInContext("cargoRunAccess.capabilities.push('VIEW_ADMIN_AUDIT')", context);
+  vm.runInContext(sourceBetween('function hasCargoRunCapability(', 'function accessGateScreen('), context);
+  let requests = 0;
   Object.assign(context, {
-    fetch: () => pending.promise,
+    fetch: () => { requests++; return pending.promise; },
     render: () => events.push('render')
   });
   vm.runInContext(sourceBetween('async function loadAdminConfiguration()', 'function adminSectionTools('), context);
 
   const stale = context.loadAdminConfiguration();
-  vm.runInContext("purgeCargoRunOperationalState({preserveIdentity:false});adminConfigState={status:'ready',configuration:{scope:'USER-B'},authorization:null,actor:null,access:null,audit:null,error:'',code:''};route={screen:'admin'}", context);
+  assert.equal(requests, 1, 'the authorized request must actually be in flight');
+  vm.runInContext("purgeCargoRunOperationalState({preserveIdentity:false});cargoRunAccess={status:'unprovisioned',stations:[],stationMetadata:[],capabilities:[],error:'',code:''};adminConfigState={status:'ready',configuration:{scope:'USER-B'},authorization:null,actor:null,access:null,audit:null,error:'',code:''};route={screen:'admin'}", context);
+  assert.equal(context.canOpenAdmin(), false, 'replacement session has no Admin access before the stale response');
   pending.resolve(response(200, { ok: true, configuration: { scope: 'USER-A' } }));
   await stale;
 
   assert.equal(readJson(context, 'adminConfigState').configuration.scope, 'USER-B');
   assert.deepEqual(events, []);
+  assert.equal(context.canOpenAdmin(), false, 'stale response cannot restore Admin access');
+  assert.equal(context.selectedStation(), null);
+  assert.equal(context.selectedStationHasCapability('VIEW_FLIGHTS'), false, 'stale response cannot restore operational access');
 });
 
 test('a stale workbook parse cannot restore a previous-session upload', async () => {

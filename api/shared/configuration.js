@@ -1,5 +1,7 @@
 'use strict';
 
+const { isControlPlaneCapability } = require('./capability-scope');
+
 class ConfigurationError extends Error {
   constructor(code, message) {
     super(message);
@@ -221,8 +223,14 @@ function resolveCapabilities(snapshot, actorReference, effectiveAt, stationCode 
     return candidates[0];
   }).filter(row => text((row.AssignmentAction ?? row.assignmentAction) || 'GRANT') === 'GRANT');
   const roleIds = new Set(activeAssignments.map(row => String(row.RoleId ?? row.roleId)));
+  const stationRoleIds = new Set(activeAssignments
+    .filter(row => text(stationCode) && text(row.StationCode ?? row.stationCode) === text(stationCode))
+    .map(row => String(row.RoleId ?? row.roleId)));
   const decisions = latestEffectiveEvents((snapshot?.roleCapabilities || []).filter(row => roleIds.has(String(row.RoleId ?? row.roleId))), when, row => `${row.RoleId ?? row.roleId}|${text(row.CapabilityCode ?? row.capabilityCode)}`);
-  return [...new Set(decisions.filter(row => text((row.CapabilityAction ?? row.capabilityAction) || 'GRANT') === 'GRANT').map(row => text(row.CapabilityCode ?? row.capabilityCode)).filter(Boolean))].sort();
+  return [...new Set(decisions.filter(row => text((row.CapabilityAction ?? row.capabilityAction) || 'GRANT') === 'GRANT'
+    && (isControlPlaneCapability(row.CapabilityCode ?? row.capabilityCode)
+      || stationRoleIds.has(String(row.RoleId ?? row.roleId))))
+    .map(row => text(row.CapabilityCode ?? row.capabilityCode)).filter(Boolean))].sort();
 }
 function authorizeCapability({ enforcementMode = 'LEGACY', capabilities = [], requiredCapability }) {
   const mode = text(enforcementMode || 'LEGACY');

@@ -1,6 +1,7 @@
 'use strict';
 
 const { randomUUID } = require('node:crypto');
+const { CONTROL_PLANE_CAPABILITY_SQL } = require('./capability-scope');
 const { ConfigurationError, resolveScoped, resolveShcGroups, resolvePriorityRules, resolveSlaRule, resolveMailRules, FALLBACK_SLAS, authorizeCapability } = require('./configuration');
 const { validateMutationInput, requiredCapabilityForOperation, insertConfigurationAudit, resolveGroupColour, groupTextColour } = require('./configuration-admin');
 
@@ -29,7 +30,7 @@ async function resolveActorCapabilities(executor, sql, actorReference, stationCo
     .input('AuthorizationStationCode', sql.VarChar(3), stationCode || null)
     .query(`
       WITH AssignmentDecisions AS (
-        SELECT assignment.RoleId,assignment.StationId,assignment.AssignmentAction,
+        SELECT assignment.RoleId,assignment.StationId,station.IsEnabled AS StationEnabled,assignment.AssignmentAction,
           ROW_NUMBER() OVER (
             PARTITION BY assignment.RoleId
             ORDER BY CASE WHEN assignment.StationId IS NULL THEN 0 ELSE 1 END DESC,
@@ -42,10 +43,10 @@ async function resolveActorCapabilities(executor, sql, actorReference, stationCo
           AND (assignment.EffectiveTo IS NULL OR assignment.EffectiveTo>CONVERT(date,SYSUTCDATETIME()))
           AND (assignment.StationId IS NULL OR station.StationCode=@AuthorizationStationCode)
       ), EffectiveRoles AS (
-        SELECT DISTINCT RoleId FROM AssignmentDecisions
+        SELECT RoleId,StationId,StationEnabled FROM AssignmentDecisions
         WHERE DecisionRank=1 AND AssignmentAction='GRANT'
       ), CapabilityDecisions AS (
-        SELECT rc.RoleId,rc.CapabilityId,rc.CapabilityAction,
+        SELECT rc.RoleId,rc.CapabilityId,rc.CapabilityAction,role.StationId,role.StationEnabled,
           ROW_NUMBER() OVER (
             PARTITION BY rc.RoleId,rc.CapabilityId
             ORDER BY rc.EffectiveFrom DESC,rc.RoleCapabilityVersionId DESC
@@ -61,6 +62,8 @@ async function resolveActorCapabilities(executor, sql, actorReference, stationCo
       JOIN dbo.CargoRunRoles role ON role.RoleId=decision.RoleId
       WHERE decision.DecisionRank=1 AND decision.CapabilityAction='GRANT'
         AND capability.IsEnabled=1 AND role.IsEnabled=1
+        AND (capability.CapabilityCode IN (${CONTROL_PLANE_CAPABILITY_SQL})
+          OR (decision.StationId IS NOT NULL AND decision.StationEnabled=1))
       ORDER BY capability.CapabilityCode;
     `);
   return rows(result).map(row => String(row.CapabilityCode || '').toUpperCase()).filter(Boolean);

@@ -167,13 +167,19 @@ test('multi-station startup dismisses the access loader before awaiting selectio
   assert.equal(events.at(-1), 'hide');
 });
 
-test('zero operational stations fail closed even when aggregate access is provisioned', async () => {
-  const { context } = createSessionContext({
-    ok: true, authenticated: true, provisioned: true, stations: [], stationMetadata: [], capabilities: ['VIEW_ADMIN_AUDIT']
+test('zero operational stations fail closed without a control-plane capability', async () => {
+  const { context, events } = createSessionContext({
+    ok: true, authenticated: true, provisioned: true, stations: [], stationMetadata: [], capabilities: ['VIEW_FLIGHTS', 'MOVE_ULD']
   });
+  vm.runInContext(sourceBetween('function hasCargoRunCapability(', 'function accessGateScreen('), context);
   assert.equal(await context.loadCargoRunSession(), false);
   assert.equal(value(context, 'cargoRunAccess').status, 'unprovisioned');
   assert.equal(value(context, 'cargoRunAccess').code, 'STATION_ACCESS_REQUIRED');
+  assert.equal(context.canOpenAdmin(), false);
+  assert.equal(context.selectedStation(), null);
+  assert.equal(context.selectedStationHasCapability('VIEW_FLIGHTS'), false);
+  assert.equal(context.canUseStationAction('moveUld'), false);
+  assert.equal(events.some(event => event.startsWith('sync:')), false);
   assert.equal(context.operationalSessionIsCurrent(vm.runInContext('operationalSessionGeneration', context)), false);
 });
 

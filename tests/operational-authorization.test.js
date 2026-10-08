@@ -382,7 +382,8 @@ test('frontend session gate precedes every operational sync and blocks scheduler
   assert.ok(stationSwitch.indexOf('syncCentralData(') < stationSwitch.indexOf('centralSyncScheduler.start()'));
   assert.match(html, /canRun:\(\)=>canUseCargoRunApi\(\)&&cargoRunAccess\.status==='provisioned'&&!!selectedStation\(\)/);
   assert.match(html, /if\(cargoRunAccess\.status!=='provisioned'\).*accessGateScreen\(\).*return/);
-  assert.match(html, /status:operationallyProvisioned\?'provisioned':'unprovisioned'/);
+  assert.match(html, /status:operationallyProvisioned\|\|administrativelyProvisioned\?'provisioned':'unprovisioned'/);
+  assert.match(html, /const administrativelyProvisioned=data\.provisioned&&Array\.isArray\(data\.capabilities\)&&CARGORUN_CONTROL_PLANE_CAPABILITIES\.some\(capability=>data\.capabilities\.includes\(capability\)\)/);
   assert.match(html, /cargoRunAccess=\{status:'error'/);
   assert.doesNotMatch(html, /status:\s*'unprovisioned'.*catch/s);
 });

@@ -161,20 +161,26 @@ test('configuration audit requires the mutation transaction and stable authentic
   assert.match(values.sql, /INSERT dbo\.CargoRunConfigurationAudit/);
 });
 
-test('capabilities honor effective grant and revoke events without changing legacy access', () => {
+test('station capabilities honor effective grant and revoke events', () => {
   const snapshot = {
-    userRoleAssignments: [row({ UserRoleVersionId: 1, ActorReference: 'user-1', RoleId: 10, AssignmentAction: 'GRANT' })],
+    userRoleAssignments: [row({ UserRoleVersionId: 1, ActorReference: 'user-1', RoleId: 10, StationCode: 'MEL', AssignmentAction: 'GRANT' })],
     roleCapabilities: [
       row({ RoleCapabilityVersionId: 1, RoleId: 10, CapabilityCode: 'MOVE_ULD', CapabilityAction: 'GRANT' }),
       row({ RoleCapabilityVersionId: 2, RoleId: 10, CapabilityCode: 'MOVE_ULD', CapabilityAction: 'REVOKE', EffectiveFrom: '2027-01-01' }),
       row({ RoleCapabilityVersionId: 3, RoleId: 10, CapabilityCode: 'VIEW_FLIGHTS', CapabilityAction: 'GRANT' })
     ]
   };
-  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2026-09-19'), ['MOVE_ULD', 'VIEW_FLIGHTS']);
-  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2027-02-01'), ['VIEW_FLIGHTS']);
-  snapshot.userRoleAssignments.push(row({ UserRoleVersionId: 2, ActorReference: 'user-1', RoleId: 10, StationCode: 'MEL', AssignmentAction: 'REVOKE' }));
-  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2026-09-19', 'MEL'), []);
-  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2026-09-19', 'SYD'), ['MOVE_ULD', 'VIEW_FLIGHTS']);
+  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2026-09-19', 'MEL'), ['MOVE_ULD', 'VIEW_FLIGHTS']);
+  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2027-02-01', 'MEL'), ['VIEW_FLIGHTS']);
+  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2026-09-19'), [], 'operational access requires a station');
+  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2026-09-19', 'AKL'), [], 'MEL membership cannot authorize AKL');
+  assert.deepEqual(resolveCapabilities(snapshot, 'other-user', '2026-09-19', 'MEL'), [], 'membership belongs to its actor');
+  const globalOnly = { ...snapshot, userRoleAssignments: snapshot.userRoleAssignments.map(assignment => ({ ...assignment, StationCode: null })) };
+  assert.deepEqual(resolveCapabilities(globalOnly, 'user-1', '2026-09-19', 'MEL'), [], 'global roles cannot supply operational access');
+  snapshot.userRoleAssignments.push(row({ UserRoleVersionId: 2, ActorReference: 'user-1', RoleId: 10, StationCode: 'MEL', AssignmentAction: 'REVOKE', EffectiveFrom: '2027-03-01' }));
+  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2027-02-01', 'MEL'), ['VIEW_FLIGHTS'], 'future assignment revocation is not yet effective');
+  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2027-03-01', 'MEL'), []);
+  assert.deepEqual(resolveCapabilities(snapshot, 'user-1', '2026-09-19', 'SYD'), []);
   assert.deepEqual(authorizeCapability({ enforcementMode: 'LEGACY', capabilities: [], requiredCapability: 'MOVE_ULD' }), { allowed: true, mode: 'LEGACY', wouldDeny: true });
   assert.equal(authorizeCapability({ enforcementMode: 'ENFORCED', capabilities: [], requiredCapability: 'MOVE_ULD' }).allowed, false);
 });
