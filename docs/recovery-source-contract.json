@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "baselineCommit": "cbb579c27d4c1b20d91429abd66d6b6a1963c476",
+  "reviewedDependencyCommit": "cb2033c8dd3928ab8aa05b74eef8550c2d9ec7b5",
+  "originalRecoveryInventorySha256": "ECD8486C2BFC414C273B249F16FF22FEC918094F60AC3CF426E8562F846B0A60",
+  "lockfileSha256": "2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6",
+  "dependencyTreeSha256": "FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D",
+  "publicFiles": 30,
+  "apiFiles": 54,
+  "dependencyPackages": 74,
+  "dependencyFiles": 7242,
+  "functions": [
+    "configuration-control",
+    "db-health",
+    "export-completions",
+    "export-manifest-final",
+    "flight-statement",
+    "flight-status",
+    "flights",
+    "history",
+    "import-completions",
+    "mach-fow",
+    "mail-scan",
+    "manifest-upload",
+    "offloads",
+    "session",
+    "uld-status",
+    "ulds"
+  ],
+  "sourceFiles": [
+    {
+      "path": "api/configuration-admin/function.json",
+      "bytes": 310,
+      "sha256": "1D6741529AD448452E80A98818541B75AFCF37AD095A119CE5194C05AD512FF3"
+    },
+    {
+      "path": "api/configuration-admin/index.js",
+      "bytes": 7124,
+      "sha256": "F7B6FA8B36CD14D2B5388D1CD954688185A741205D11AECF148EEE9A4C8E8CE9"
+    },
+    {
+      "path": "api/db-health/function.json",
+      "bytes": 292,
+      "sha256": "3B20D8201291A647FB06B425506CBECADEF198E34B99D94E63A23B1B1E19EAC2"
+    },
+    {
+      "path": "api/db-health/index.js",
+      "bytes": 981,
+      "sha256": "8178DE07F50808EF6E368F2F95D5E3347ED302438600EF949553B4FFC8A6F167"
+    },
+    {
+      "path": "api/export-completions/function.json",
+      "bytes": 294,
+      "sha256": "132BFAE29498852FDD60E58AE8F1AF0964B7B083382133F393CA343A45E34164"
+    },
+    {
+      "path": "api/export-completions/index.js",
+      "bytes": 10552,
+      "sha256": "C61A407291B3EE2081C6C6077160D2F310FAE1C5E4477B128C7628AC2E787864"
+    },
+    {
+      "path": "api/export-manifest-final/function.json",
+      "bytes": 297,
+      "sha256": "2CAC9E59038C96DA64D57724E21A2C9B4B9D9EE68C484D8431889A98865E9B6A"
+    },
+    {
+      "path": "api/export-manifest-final/index.js",
+      "bytes": 13370,
+      "sha256": "D5B88B0513816BB4CAE5F2067547ADFFD5BC6617A1EEB301AB8F4168A517CAEC"
+    },
+    {
+      "path": "api/flight-statement/function.json",
+      "bytes": 284,
+      "sha256": "AFE72435AF2FEB29843227121ED1B7BB53AFFD6CA6B3ED63944C458034C5877D"
+    },
+    {
+      "path": "api/flight-statement/index.js",
+      "bytes": 9129,
+      "sha256": "7B1E665DE452B2827A3CFCF2D5BD30A7490E4C9A45EFADF4FAAE756BF938738E"
+    },
+    {
+      "path": "api/flight-status/function.json",
+      "bytes": 296,
+      "sha256": "D957225C78B34C5882991129796E947BB292A2CC058997E73C594BDA48B207A7"
+    },
+    {
+      "path": "api/flight-status/index.js",
+      "bytes": 7650,
+      "sha256": "112601875B08F8365A89948C0153DC2C821973CC173153608F4B5835080BB735"
+    },
+    {
+      "path": "api/flights/function.json",
+      "bytes": 292,
+      "sha256": "170052FD7F52FBC7D63060B2C1617A6F9ED64D08B524A43AAB1C36977D7735D6"
+    },
+    {
+      "path": "api/flights/index.js",
+      "bytes": 20012,
+      "sha256": "D670E50192B24781A4B285D9CAFB3CDC45FBB8046E1669AEBF07E267EAA696E5"
+    },
+    {
+      "path": "api/history/function.json",
+      "bytes": 283,
+      "sha256": "051798AEAAA77A43A15C777061B32506117FCEB9966F056D6618F77E69407E46"
+    },
+    {
+      "path": "api/history/index.js",
+      "bytes": 6853,
+      "sha256": "C2EE073B7DC60B9D0F261E65DF69670413E497FAD1F230ACDFB9A97A3BAED2DA"
+    },
+    {
+      "path": "api/host.json",
+      "bytes": 135,
+      "sha256": "DB42247F082BE7C3B6B7BCD4E0EF6B6D3BD252BBDE38BD065373F36284ADDE30"
+    },
+    {
+      "path": "api/import-completions/function.json",
+      "bytes": 294,
+      "sha256": "74BFC87E78836C2898FEE0DBC8C916E662C79F7E2E7F3D6E030C928E77F96876"
+    },
+    {
+      "path": "api/import-completions/index.js",
+      "bytes": 13610,
+      "sha256": "0B740D9B6D8AEEEB49EDA9D51463CFCBCB4361BF0EB41F983FCBA134ABC0C7EF"
+    },
+    {
+      "path": "api/mach-fow/function.json",
+      "bytes": 284,
+      "sha256": "F87888167108AB8BA4A1B61361A7D4F604486D60D5EACE3953D043F3993B94F1"
+    },
+    {
+      "path": "api/mach-fow/index.js",
+      "bytes": 53633,
+      "sha256": "9213C9957937624F577A5782EB8632919B355E8E9335333AD0369B25384FC574"
+    },
+    {
+      "path": "api/mail-scan/function.json",
+      "bytes": 278,
+      "sha256": "67C0ED373183004DC587F87EAB5FDE8E367383ADA0D21BD5E50AB78F64E5DF7C"
+    },
+    {
+      "path": "api/mail-scan/index.js",
+      "bytes": 5101,
+      "sha256": "32C8611981F6CEE257D67C8485179390ED4CBC306E019378B2AE80B39D2F86EA"
+    },
+    {
+      "path": "api/manifest-upload/function.json",
+      "bytes": 299,
+      "sha256": "90D4CC4C1487EF6CBA21C968500AD3736D470C359FD924F055B8586C9063EDD4"
+    },
+    {
+      "path": "api/manifest-upload/index.js",
+      "bytes": 20895,
+      "sha256": "1334321DBD088836EED57707A8E987D3E4C589A4EC37F5A0F257A0C3AEB4B9C1"
+    },
+    {
+      "path": "api/offloads/function.json",
+      "bytes": 293,
+      "sha256": "A15B2E8131AA269B1DD7F2674BBDF67B657D98D0A94981BE0F44F03DAAB33303"
+    },
+    {
+      "path": "api/offloads/index.js",
+      "bytes": 36561,
+      "sha256": "FA69CB03229AC4E6D0D7586086EB8F1C06DCEDBB42458E0300D154B81DBEB58B"
+    },
+    {
+      "path": "api/package.json",
+      "bytes": 170,
+      "sha256": "DC1F7617373105D2389722BAF2379D2D6CAA474B0098ABB859C33521D8D8AA73"
+    },
+    {
+      "path": "api/session/function.json",
+      "bytes": 275,
+      "sha256": "2252F0F31B3CC259A3F29E77BF7A1EFA1C56C3CFFD8141C9BFA658E015F4364B"
+    },
+    {
+      "path": "api/session/index.js",
+      "bytes": 1983,
+      "sha256": "62A66D23A6D81A62D59C3E897EEE0DFD9159566D4C22A3A0176A732F318726D2"
+    },
+    {
+      "path": "api/shared/audit.js",
+      "bytes": 5876,
+      "sha256": "7C848A01C593B5DB974FDF55DDF05DFEDC5E7D999BF78AE60EA708C4C2D966A4"
+    },
+    {
+      "path": "api/shared/completion-amendments.js",
+      "bytes": 15256,
+      "sha256": "56956981D743E586F3DC0499B0EFC6E17FC049D6EC920D960738AE6F5F1F91A8"
+    },
+    {
+      "path": "api/shared/completion-snapshot.js",
+      "bytes": 16913,
+      "sha256": "098779AEAF2FD79D794495249D9E5013AECCBFEBFDF9F41C0AE75314E9D7B79B"
+    },
+    {
+      "path": "api/shared/configuration-admin.js",
+      "bytes": 15897,
+      "sha256": "EAB59BA4D36C3F179C41C47E278835AFC12EACA579267040FF1D1DCBEE28180D"
+    },
+    {
+      "path": "api/shared/configuration-mutations.js",
+      "bytes": 36946,
+      "sha256": "DB9FB4201CB4A99F5E0DBD106900B89EF0171FE2C16D10DBCA6003DD29546087"
+    },
+    {
+      "path": "api/shared/configuration-store.js",
+      "bytes": 8367,
+      "sha256": "176F8DBBBB7AA7B9DEC9A8CBB2D747E7B36BD54BFF38673437F25F9860A8D4DC"
+    },
+    {
+      "path": "api/shared/configuration.js",
+      "bytes": 16719,
+      "sha256": "D65104E8C143034F5B040AEC7C3972A7608E447142DB0E78B421EF24BA360FF0"
+    },
+    {
+      "path": "api/shared/document-cor-id.js",
+      "bytes": 1366,
+      "sha256": "A3614F770DBA5C4BCBF19DE995A9E1BF7E8F3E19D65CAFE612247B363D220ECB"
+    },
+    {
+      "path": "api/shared/export-manifest-final.js",
+      "bytes": 5519,
+      "sha256": "EF77EDD45A7583098A468DF7B1DF9D12C4D10C7F4F4558CB756A6A8C13A72D08"
+    },
+    {
+      "path": "api/shared/export-uws.js",
+      "bytes": 16220,
+      "sha256": "260B520AF1062F6188BB9BA6829835A4E6660A2BDD45A64F46713C6BD3014D00"
+    },
+    {
+      "path": "api/shared/flight-statement-evidence.js",
+      "bytes": 6500,
+      "sha256": "61449CB850FF6018F4F80BF158871133D1CD5720970D5935F4F11BA9390BB92A"
+    },
+    {
+      "path": "api/shared/flight.js",
+      "bytes": 1960,
+      "sha256": "FD439EDCD2D9396245C3E6360BF693002DCB92DB95A41FCFA5B86AC64F66DD8A"
+    },
+    {
+      "path": "api/shared/machine-station-binding.js",
+      "bytes": 5476,
+      "sha256": "8C00BFF2DF9A72AE8889C71302AF686737E4CD896681E4142504E563C4ABC48F"
+    },
+    {
+      "path": "api/shared/offload-eligibility.js",
+      "bytes": 3420,
+      "sha256": "DBDAD7CF35C56ED0C1A7CDF4D4ECA8247BAE984BF1B034A50C13365C9B0BC731"
+    },
+    {
+      "path": "api/shared/operational-authorization.js",
+      "bytes": 17350,
+      "sha256": "9FD327D54D69620CF968453ED32BCB8BC159703BCA646056D570FAD4A353AEF8"
+    },
+    {
+      "path": "api/shared/station-local-input.js",
+      "bytes": 3410,
+      "sha256": "C7A0F80F3AC7A0998F6E7609242D79945956672811F1ACA6B2EF3C3C4AF8DF17"
+    },
+    {
+      "path": "api/shared/station-time.js",
+      "bytes": 12120,
+      "sha256": "45C1C8E3F449B444AC26A0C93C5BAD6CC7D656C89FD3161089CE078493125EC0"
+    },
+    {
+      "path": "api/shared/station.js",
+      "bytes": 6413,
+      "sha256": "3E13E4086263213733FA2E49E22FC3C51AA3507971E559321E67EA0064378697"
+    },
+    {
+      "path": "api/shared/uld.js",
+      "bytes": 361,
+      "sha256": "9D72959F1425CBA40854F5E520F702171A752A62A044528C678CDEC704583FF7"
+    },
+    {
+      "path": "api/uld-status/function.json",
+      "bytes": 279,
+      "sha256": "FF246B40D1D44DD2FC620C1A1A73A8F3F7DD617930C88B513A53A36755DBC3F5"
+    },
+    {
+      "path": "api/uld-status/index.js",
+      "bytes": 13690,
+      "sha256": "BBB84B7D0FFCC0CC0DBB9A7099CC5457EAEAE3152C63B916621CCA62366DF58C"
+    },
+    {
+      "path": "api/ulds/function.json",
+      "bytes": 280,
+      "sha256": "4857297614320AE04C6A3F5D83709940B9D0E6873B7157E7888D2F37290B9736"
+    },
+    {
+      "path": "api/ulds/index.js",
+      "bytes": 11173,
+      "sha256": "52D7F6B8047DA571013EEB03915E3267DCE4C1B37414E893C4AAD1481049745D"
+    },
+    {
+      "path": "assets/home-icons/icon-exports.png",
+      "bytes": 107561,
+      "sha256": "D9DF86553FA0D2A8857EDA0DEEA7DFC9391F9E52217B035BF735F9E869EB7643"
+    },
+    {
+      "path": "assets/home-icons/icon-flight-board.png",
+      "bytes": 132017,
+      "sha256": "6194AE131C7A15148AFCCC57E871522DF1CC323B89063A3BA826941AFDA1E4C5"
+    },
+    {
+      "path": "assets/home-icons/icon-flight-lookup.png",
+      "bytes": 113434,
+      "sha256": "6D39AE4BF096E549C0E0DF1FD120BF50D225F71F4C183CB212BA1F297AC51CE6"
+    },
+    {
+      "path": "assets/home-icons/icon-history.png",
+      "bytes": 128817,
+      "sha256": "093648655AFD433C92E9A5D32C2EB466573D54E29D55383196DC9587DA4E9C5D"
+    },
+    {
+      "path": "assets/home-icons/icon-imports.png",
+      "bytes": 105361,
+      "sha256": "A0679478E95B13301E87997CF45490E4E880815EC2F93B2FBF423B57EBBB39E2"
+    },
+    {
+      "path": "assets/home-icons/icon-offloads.png",
+      "bytes": 129521,
+      "sha256": "F8AFE18B15FE8B3B571D97BCF277FD6E1DDC99762B84FBD67C8BFE853FCAFE88"
+    },
+    {
+      "path": "assets/home-icons/icon-priority.png",
+      "bytes": 130981,
+      "sha256": "C547A5DB58DAE749602907E33FF7BFA49AF2869E59704F6CAAE12DA79D89437F"
+    },
+    {
+      "path": "assets/home-icons/icon-supervisor.png",
+      "bytes": 124697,
+      "sha256": "967EF5D33B4CA3C2F61FB3C7ED4B945963D4ABFCA992303F536CBC2C6C3D3D78"
+    },
+    {
+      "path": "assets/home-icons/icon-uld-lookup.png",
+      "bytes": 110563,
+      "sha256": "47A7570704E8E86518C971D22272CD1B39FAFF3B29B1205A0FAB496202030FCC"
+    },
+    {
+      "path": "assets/home-icons/icon-upload.png",
+      "bytes": 117540,
+      "sha256": "C6046200F60DE9B80C5F81D29459988A706A14E9043DF837A6060461A2486615"
+    },
+    {
+      "path": "assets/mobile-art/cargo_imports_dashboard_card.png",
+      "bytes": 1052756,
+      "sha256": "C117226531C577403D5DB711DB08AF24213BC27B956B63B46A021D2324530D2B"
+    },
+    {
+      "path": "assets/mobile-art/exports_dashboard_card.png",
+      "bytes": 1207897,
+      "sha256": "05C7F15F138F407A7417B259A708729F3B012CEC790903CD48EDD535004F7FD9"
+    },
+    {
+      "path": "assets/mobile-art/offloads_21_active_retrieval_work.png",
+      "bytes": 1267882,
+      "sha256": "8B9C21161990133A616C955CD64CBA2E90DB091700133DE710954BF487C54A2A"
+    },
+    {
+      "path": "assets/mobile-art/priority_courier_cargo_card.png",
+      "bytes": 1154992,
+      "sha256": "FAEECC8B01ADEE07B1A25135904987C68C95A38A8AB0367ED1B8742590D53D8D"
+    },
+    {
+      "path": "assets/mobile-art/priority_courier_in_motion.png",
+      "bytes": 297541,
+      "sha256": "4D7A2A2E1B285BE91481D6CE4DBE27C106E91A84A8369B0A4722CE1F318CEC05"
+    },
+    {
+      "path": "assets/mobile-art/rider_on_descending_airplane_icon.png",
+      "bytes": 241459,
+      "sha256": "63BD006FC96AF0C9E391780F066603B1FE616649D92C9B0C0BC0D33F80997683"
+    },
+    {
+      "path": "assets/mobile-art/white_airplane_rider_takeoff_icon.png",
+      "bytes": 228395,
+      "sha256": "0E933887208E6B72DE8874AEFFCEA4F60EF6DD74CF6D14D16FCD007AD2FF7DC3"
+    },
+    {
+      "path": "assets/mobile-art/white_parachute_cargo_icon.png",
+      "bytes": 392776,
+      "sha256": "C1CEC1120617379513B67045160699B499E7D334C3D0F982DC9E3DF4E7E3250B"
+    },
+    {
+      "path": "cargorun-logo.png",
+      "bytes": 104108,
+      "sha256": "6F50E3E1F231CAD5A3FA0649CFC50B61A8AF4AB697135C9CDF70E4A92D816E83"
+    },
+    {
+      "path": "cargorun-mascot-transparent.png",
+      "bytes": 91413,
+      "sha256": "FF5DB95EEAF7C516E1F69D7FD39B1C64DE7DE93D783D0F915A63C746BAADE87B"
+    },
+    {
+      "path": "cargorun-mascot.png",
+      "bytes": 91413,
+      "sha256": "FF5DB95EEAF7C516E1F69D7FD39B1C64DE7DE93D783D0F915A63C746BAADE87B"
+    },
+    {
+      "path": "central-sync-scheduler.js",
+      "bytes": 5391,
+      "sha256": "C2FC52094D72772330D3A69030DD729DA2823FB508FDFF99BE60ECD16A77A2A5"
+    },
+    {
+      "path": "icon-192.png",
+      "bytes": 12446,
+      "sha256": "76AE049F8B7A69BB30A8CB241C1DABD05BDB1A6A14FD66A3FFC8765BF7409D49"
+    },
+    {
+      "path": "icon-512.png",
+      "bytes": 37116,
+      "sha256": "D28044C46C2B45F33EC9A0B9499AF94949865ED060DB8BCCF1D6A0CA6B80AB45"
+    },
+    {
+      "path": "index.html",
+      "bytes": 810768,
+      "sha256": "754ACCB4C4E5C5CBF0AFBFB0C6EC7460D2EE0C62DE3CAB7A654B21D1E759C22E"
+    },
+    {
+      "path": "manifest.webmanifest",
+      "bytes": 524,
+      "sha256": "5D983CF8C87CD60CB999C563211B03ABD0AA9167F026F0C70D77B8E6075EAAE3"
+    },
+    {
+      "path": "mascot-loader.js",
+      "bytes": 88868,
+      "sha256": "9C53B062EDA39E6B45BB28FFC6E514511B54E4A98961A50695C49D96F9592C66"
+    },
+    {
+      "path": "signed-out.html",
+      "bytes": 1643,
+      "sha256": "0AA6750314A3C132951DEE5540E7D0E09C49C6C1BB1950C75C2FB2D63F246B9D"
+    },
+    {
+      "path": "staticwebapp.config.json",
+      "bytes": 695,
+      "sha256": "069C29214F638601D6A1D2140D4454FD8B6BEBA65AE7B29B6EC99B7EBA08BCB7"
+    },
+    {
+      "path": "sw.js",
+      "bytes": 581,
+      "sha256": "EA53F45A5245376E159C52B32E305CF9916EB66660DBA39C500D55C1FFBD812C"
+    }
+  ]
+}
