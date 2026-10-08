@@ -23,11 +23,12 @@ test('Linux validation workflow uses read-only checkout and runs only local vali
  assert.doesNotMatch(validation,/Azure\/static-web-apps-deploy|AZURE_|secrets\.|deployment[_ -]?token|upload-artifact|gh release|git push|sqlcmd|environment:/i);
 });
 
-test('Linux validator checks exact production denial and locally inspects the package',()=>{
+test('Linux validator checks scoped production approval and locally inspects the package',()=>{
  const validator=fs.readFileSync(path.join(root,'scripts/validate-linux-release.js'),'utf8');
  assert.match(validator,/dependency-security-gate\.js','--context','testing'/);
  assert.match(validator,/dependency-security-gate\.js','--context','production'/);
- assert.match(validator,/requireProductionDenial\(productionGate\)/);
+ assert.match(validator,/requireApprovedProductionResult\(productionGate\)/);
+ assert.match(validator,/'--context','production','--target',PRODUCTION_TARGET/);
  assert.match(validator,/scripts\/build-deployment-package\.js/);
  assert.match(validator,/const inventory=JSON\.parse/);
  assert.match(validator,/Linux repeat installation differs/);

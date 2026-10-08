@@ -8,6 +8,9 @@ const ROOT = path.resolve(__dirname, '..');
 const ADVISORY = 'GHSA-hp3w-g68c-fv3c';
 const URL = 'https://github.com/advisories/' + ADVISORY;
 const EXPIRES = '2026-11-08T00:00:00.000Z';
+const PRODUCTION_TARGET = 'cargorun-dev';
+const PRODUCTION_APPROVAL = 'APPROVED_CARGORUN_LIVE_TESTING';
+const RISK_ACCEPTANCE = {"acceptedByRole":"release-owner","targetApplication":"cargorun-dev","purpose":"live-testing","acceptedOnUtcDate":"2026-10-08","expiresAtUtc":"2026-11-08T00:00:00.000Z","authorizesDeployment":false};
 const LEVELS = ['info','low','moderate','high','critical'];
 const SCOPED = ['mssql','sprintf-js','tedious'];
 const sha = data => crypto.createHash('sha256').update(data).digest('hex').toUpperCase();
@@ -40,18 +43,22 @@ function canonicalLockfileBytes(bytes) {
 function dependencyFileSha256(relative, bytes) {
   return sha(relative === '.package-lock.json' ? canonicalLockfileBytes(bytes) : bytes);
 }
-function validatePolicy(policy, now, context) {
+function validatePolicy(policy, now, context, target) {
   if (!object(policy) || policy.schemaVersion !== 1 || policy.advisory !== ADVISORY ||
       policy.advisoryUrl !== URL || policy.cve !== 'CVE-2026-97058' ||
       policy.npmAdvisorySource !== 1241202 || policy.severity !== 'moderate' ||
-      policy.affectedRange !== '<=1.1.3' || policy.scope !== 'testing-only' ||
-      policy.productionApproval !== 'PENDING_RELEASE_OWNER_ACCEPTANCE' ||
+      policy.affectedRange !== '<=1.1.3' || policy.scope !== 'cargorun-live-testing' ||
       policy.expiresAtUtc !== EXPIRES || policy.validFromUtc !== '2026-10-08T00:00:00.000Z') fail('POLICY_INVALID','exception scope or validity changed');
   if (!['testing','production'].includes(context)) fail('CONTEXT_INVALID','explicit testing or production context required');
+  if (policy.productionApproval !== PRODUCTION_APPROVAL || !equal(policy.riskAcceptance,RISK_ACCEPTANCE))
+    fail('PRODUCTION_NOT_APPROVED','CargoRun live-testing risk acceptance missing or changed');
+  if (context === 'production' && target !== PRODUCTION_TARGET)
+    fail('PRODUCTION_NOT_APPROVED','explicit target cargorun-dev required');
+  if (context === 'testing' && target !== undefined) fail('CONTEXT_INVALID','target applies only to production context');
   if (!Number.isFinite(now) || now < Date.parse(policy.validFromUtc)) fail('CLOCK_INVALID','outside exception validity');
   if (now >= Date.parse(EXPIRES)) fail('EXCEPTION_EXPIRED','expired at ' + EXPIRES);
-  if (!/^[A-F0-9]{64}$/.test(policy.lockfileSha256 || '') ||
-      !/^[A-F0-9]{64}$/.test(policy.dependencyTreeSha256 || '') ||
+  if (policy.lockfileSha256 !== '2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6' ||
+      policy.dependencyTreeSha256 !== 'FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D' ||
       policy.dependencyPackages !== 74 || policy.dependencyFileCount !== 7242 ||
       !object(policy.packages) || !equal(Object.keys(policy.packages).sort(),SCOPED)) fail('POLICY_INVALID','dependency binding incomplete');
 }
@@ -78,8 +85,8 @@ function validateState(policy,state) {
   if (!state.lock.packages['node_modules/mssql'].dependencies?.tedious ||
       !state.lock.packages['node_modules/tedious'].dependencies?.['sprintf-js']) fail('DEPENDENCY_DRIFT','reviewed dependency path changed');
 }
-function evaluateAudit(report,{policy,state,exitCode,now=Date.now(),context='production'}) {
-  validatePolicy(policy,now,context);
+function evaluateAudit(report,{policy,state,exitCode,now=Date.now(),context='production',target}) {
+  validatePolicy(policy,now,context,target);
   validateState(policy,state);
   if (!object(report) || report.auditReportVersion !== 2 || own(report,'error') ||
       !object(report.vulnerabilities) || !object(report.metadata?.vulnerabilities) ||
@@ -141,8 +148,7 @@ function evaluateAudit(report,{policy,state,exitCode,now=Date.now(),context='pro
   }
   if (blocked.size) fail('UNACCEPTED_ADVISORY','other or new advisory: '+[...blocked].sort().join(', '));
   if (accepted.size && !equal([...accepted].sort(),SCOPED)) fail('AUDIT_INVALID','exception dependency chain incomplete');
-  if (context !== 'testing') fail('PRODUCTION_NOT_APPROVED','testing exception is not release-owner production acceptance');
-  return {ok:true,context,exceptedAdvisory:accepted.size ? ADVISORY : null,affectedPackages:[...accepted].sort(),
+  return {ok:true,context,target:context === 'production' ? target : null,exceptedAdvisory:accepted.size ? ADVISORY : null,affectedPackages:[...accepted].sort(),
     nonBlockingAdvisories:[...nonBlocking].sort(),expiresAtUtc:EXPIRES,productionApproval:policy.productionApproval};
 }
 function parseAudit(stdout) {
@@ -178,19 +184,24 @@ function collectAudit(root,runner=runNpm) {
   if (result.error || result.signal || ![0,1].includes(result.status)) fail('AUDIT_TOOL_ERROR','npm audit did not complete');
   return {report:parseAudit(result.stdout),exitCode:result.status};
 }
-function runGate({root=ROOT,context='production'}={}) {
+function runGate({root=ROOT,context='production',target}={}) {
   const policy=readJson(path.join(root,'docs/dependency-security-exception.json'));
-  validatePolicy(policy,Date.now(),context);
+  validatePolicy(policy,Date.now(),context,target);
   const state=readDependencyState(root);
   validateState(policy,state);
   const result=collectAudit(root);
-  return evaluateAudit(result.report,{policy,state,exitCode:result.exitCode,context});
+  return evaluateAudit(result.report,{policy,state,exitCode:result.exitCode,context,target});
 }
-module.exports={validatePolicy,canonicalLockfileBytes,dependencyFileSha256,readDependencyState,validateState,evaluateAudit,parseAudit,collectAudit,runGate};
+function parseGateArguments(args) {
+  if (!Array.isArray(args) || args[0] !== '--context' || !['testing','production'].includes(args[1]))
+    fail('CONTEXT_INVALID','explicit testing or production context required');
+  if (args.length === 2) return {context:args[1]};
+  if (args.length === 4 && args[1] === 'production' && args[2] === '--target') return {context:args[1],target:args[3]};
+  fail('CONTEXT_INVALID','production target must be explicit and unique');
+}
+module.exports={PRODUCTION_TARGET,PRODUCTION_APPROVAL,parseGateArguments,validatePolicy,canonicalLockfileBytes,dependencyFileSha256,readDependencyState,validateState,evaluateAudit,parseAudit,collectAudit,runGate};
 if (require.main === module) {
   try {
-    const args=process.argv.slice(2);
-    if (args.length !== 2 || args[0] !== '--context' || !['testing','production'].includes(args[1])) fail('CONTEXT_INVALID','use --context testing or --context production');
-    console.log(JSON.stringify(runGate({context:args[1]})));
+    console.log(JSON.stringify(runGate(parseGateArguments(process.argv.slice(2)))));
   } catch(error) {console.error(JSON.stringify({ok:false,error:error.message}));process.exitCode=1;}
 }

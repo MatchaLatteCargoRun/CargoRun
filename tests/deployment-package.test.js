@@ -62,7 +62,7 @@ test('workflow publishes isolated roots after clean install, tests and packaging
   assert.match(workflow,/api_location: "\.release\/api"/);
   assert.match(workflow,/skip_app_build: true/);
   assert.match(workflow,/skip_api_build: true/);
-  assert.match(workflow,/npm@11\.11\.0 -- node scripts\/dependency-security-gate\.js --context production/);
+  assert.match(workflow,/npm@11\.11\.0 -- node scripts\/dependency-security-gate\.js --context production --target cargorun-dev/);
   assert.doesNotMatch(workflow,/continue-on-error|audit[^\r\n]*\|\|/);
   assert.ok(workflow.indexOf('npm@11.11.0 ci') < workflow.indexOf('node --test'));
   assert.ok(workflow.indexOf('node --test') < workflow.indexOf('node scripts/build-deployment-package.js'));

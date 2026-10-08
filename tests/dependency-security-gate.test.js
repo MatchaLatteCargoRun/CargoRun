@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-const {evaluateAudit,parseAudit,collectAudit,validateState,canonicalLockfileBytes,dependencyFileSha256,readDependencyState}=require('../scripts/dependency-security-gate');
-const {requireLinux,requireProductionDenial,emitDependencyDiagnostics,runDependencyTests}=require('../scripts/validate-linux-release');
+const {parseGateArguments,evaluateAudit,parseAudit,collectAudit,validateState,canonicalLockfileBytes,dependencyFileSha256,readDependencyState}=require('../scripts/dependency-security-gate');
+const {requireLinux,requireApprovedProductionResult,emitDependencyDiagnostics,runDependencyTests}=require('../scripts/validate-linux-release');
 const root=path.resolve(__dirname,'..');
 const policy=JSON.parse(fs.readFileSync(path.join(root,'docs/dependency-security-exception.json'),'utf8'));
 const fixture=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/dependency-audit-reviewed.json'),'utf8'));
@@ -26,9 +26,9 @@ test('only the reviewed advisory and its exact three-package chain are excepted 
  const result=evaluateAudit(clone(fixture),options());
  assert.equal(result.exceptedAdvisory,'GHSA-hp3w-g68c-fv3c');
  assert.deepEqual(result.affectedPackages,['mssql','sprintf-js','tedious']);
- assert.equal(result.productionApproval,'PENDING_RELEASE_OWNER_ACCEPTANCE');
+ assert.equal(result.productionApproval,'APPROVED_CARGORUN_LIVE_TESTING');
 });
-test('production context remains blocked and is the default',()=>{
+test('production context requires an explicit approved target including the default context',()=>{
  for(const context of ['production',undefined]){
   const opts=options();delete opts.context;if(context)opts.context=context;
   assert.throws(()=>evaluateAudit(clone(fixture),opts),/PRODUCTION_NOT_APPROVED/);
@@ -190,18 +190,22 @@ test('Linux validator rejects Windows or a different runtime before any install'
  assert.match(source,/scripts\/dependency-security-gate\.js','--context','production'/);
 });
 
-test('Linux validator accepts only the exact production gate denial',()=>{
- const expected=JSON.stringify({ok:false,error:'PRODUCTION_NOT_APPROVED: testing exception is not release-owner production acceptance'});
- assert.equal(requireProductionDenial({status:1,stdout:'',stderr:expected}),true);
- for(const result of [
-  {status:0,stdout:'',stderr:expected},
-  {status:2,stdout:'',stderr:expected},
-  {status:1,stdout:'unexpected success',stderr:expected},
-  {status:1,stdout:'',stderr:'{"ok":false,"error":"AUDIT_INVALID: incomplete report"}'},
-  {status:1,stdout:'',stderr:'not JSON'},
-  {status:1,stdout:'',stderr:expected,signal:'SIGTERM'},
-  {status:1,stdout:'',stderr:expected,error:new Error('spawn failed')}
- ])assert.throws(()=>requireProductionDenial(result),/Production audit gate/);
+test('Linux validator accepts only complete scoped production approval evidence',()=>{
+ const approved=evaluateAudit(clone(fixture),{...options(),context:'production',target:'cargorun-dev'});
+ const result={status:0,stdout:JSON.stringify(approved),stderr:''};
+ assert.equal(requireApprovedProductionResult(result),true);
+ for(const changed of [
+  {...result,status:1},{...result,status:2},{...result,stderr:'unexpected error'},
+  {...result,stdout:'not JSON'},{...result,stdout:'{}'},
+  {...result,stdout:'{"ok":true,"ok":false}'},{...result,signal:'SIGTERM'},
+  {...result,error:new Error('spawn failed')}
+ ])assert.throws(()=>requireApprovedProductionResult(changed),/Production audit gate/);
+ for(const mutate of [r=>r.ok=false,r=>r.context='testing',r=>r.target='different-app',
+  r=>r.productionApproval='PENDING_RELEASE_OWNER_ACCEPTANCE',r=>r.expiresAtUtc='2027-11-08T00:00:00.000Z',
+  r=>r.exceptedAdvisory='GHSA-aaaa-bbbb-cccc',r=>r.affectedPackages=[],r=>delete r.nonBlockingAdvisories]){
+  const changed=clone(approved);mutate(changed);
+  assert.throws(()=>requireApprovedProductionResult({...result,stdout:JSON.stringify(changed)}),/Production audit gate/);
+ }
 });
 
 test('dependency diagnostics report exact sorted bytes without file contents or absolute paths',t=>{
@@ -320,4 +324,63 @@ test('all other 7241 dependency files and nested lockfiles retain raw-byte verif
   assert.notEqual(dependencyFileSha256(p,lf),dependencyFileSha256(p,crlf));
   assert.equal(dependencyFileSha256(p,crlf),crypto.createHash('sha256').update(crlf).digest('hex').toUpperCase());
  }
+});
+
+test('approved live-testing production target passes the exact advisory without granting deployment authority',()=>{
+ const result=evaluateAudit(clone(fixture),{...options(),context:'production',target:'cargorun-dev'});
+ assert.equal(result.ok,true);assert.equal(result.target,'cargorun-dev');
+ assert.equal(result.exceptedAdvisory,'GHSA-hp3w-g68c-fv3c');
+ assert.equal(result.productionApproval,'APPROVED_CARGORUN_LIVE_TESTING');
+ assert.equal(policy.riskAcceptance.authorizesDeployment,false);
+ assert.equal(result.expiresAtUtc,'2026-11-08T00:00:00.000Z');
+});
+
+test('missing, changed or broadened risk acceptance and unapproved targets fail closed',()=>{
+ const production=()=>({...options(),context:'production',target:'cargorun-dev'});
+ for(const target of [undefined,null,'','production','CARGORUN-DEV','different-app'])
+  assert.throws(()=>evaluateAudit(clone(fixture),{...production(),target}),/PRODUCTION_NOT_APPROVED/);
+ for(const change of [p=>delete p.riskAcceptance,p=>p.productionApproval='PENDING_RELEASE_OWNER_ACCEPTANCE',
+  p=>p.riskAcceptance.targetApplication='*',p=>p.riskAcceptance.purpose='all-production',
+  p=>p.riskAcceptance.acceptedByRole='unknown',p=>p.riskAcceptance.authorizesDeployment=true]){
+  const opts=production();change(opts.policy);
+  assert.throws(()=>evaluateAudit(clone(fixture),opts),/PRODUCTION_NOT_APPROVED/);
+ }
+});
+
+test('production approval preserves advisory, expiry, evidence and dependency denials',()=>{
+ const production=()=>({...options(),context:'production',target:'cargorun-dev'});
+ for(const severity of ['moderate','high','critical'])
+  assert.throws(()=>evaluateAudit(addFinding(clone(fixture),'debug',severity),production()),/UNACCEPTED_ADVISORY/);
+ for(const name of ['mssql','tedious','sprintf-js']){
+  const report=clone(fixture);report.vulnerabilities[name].via.push(advisory(name,'low'));
+  assert.throws(()=>evaluateAudit(report,production()),/UNACCEPTED_ADVISORY/);
+  const opts=production();opts.state.lock.packages['node_modules/'+name].version='99.0.0';
+  assert.throws(()=>evaluateAudit(clone(fixture),opts),/DEPENDENCY_DRIFT/);
+  const wrongPath=production();wrongPath.policy.packages[name].path='node_modules/other';
+  assert.throws(()=>evaluateAudit(clone(fixture),wrongPath),/DEPENDENCY_DRIFT/);
+ }
+ for(const report of [null,{}, {...clone(fixture),metadata:null}])
+  assert.throws(()=>evaluateAudit(report,production()),/AUDIT_INVALID/);
+ for(const key of ['lockfileSha256','dependencyTreeSha256','dependencyPackages','dependencyFileCount']){
+  const opts=production();opts.state[key]=typeof opts.state[key]==='number'?opts.state[key]+1:'0'.repeat(64);
+  assert.throws(()=>evaluateAudit(clone(fixture),opts),/DEPENDENCY_DRIFT/);
+ }
+ for(const now of [Date.parse(policy.expiresAtUtc),Date.parse(policy.expiresAtUtc)+1])
+  assert.throws(()=>evaluateAudit(clone(fixture),{...production(),now}),/EXCEPTION_EXPIRED/);
+});
+
+test('approved root and dependency fingerprints cannot be rebound by changing policy and state together',()=>{
+ for(const key of ['lockfileSha256','dependencyTreeSha256']){
+  const opts={...options(),context:'production',target:'cargorun-dev'};
+  opts.policy[key]='0'.repeat(64);opts.state[key]=opts.policy[key];
+  assert.throws(()=>evaluateAudit(clone(fixture),opts),/POLICY_INVALID/);
+ }
+});
+
+test('gate command arguments keep production target explicit and reject extra or duplicate flags',()=>{
+ assert.deepEqual(parseGateArguments(['--context','testing']),{context:'testing'});
+ assert.deepEqual(parseGateArguments(['--context','production','--target','cargorun-dev']),{context:'production',target:'cargorun-dev'});
+ for(const args of [[],['--context','other'],['--context','testing','--target','cargorun-dev'],
+  ['--context','production','--target','cargorun-dev','--target','other'],['--context','production','--skip-integrity','true']])
+  assert.throws(()=>parseGateArguments(args),/CONTEXT_INVALID/);
 });

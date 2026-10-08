@@ -6,8 +6,16 @@
     "npmAdvisorySource":  1241202,
     "severity":  "moderate",
     "affectedRange":  "\u003c=1.1.3",
-    "scope":  "testing-only",
-    "productionApproval":  "PENDING_RELEASE_OWNER_ACCEPTANCE",
+    "scope":  "cargorun-live-testing",
+    "productionApproval":  "APPROVED_CARGORUN_LIVE_TESTING",
+    "riskAcceptance": {
+        "acceptedByRole": "release-owner",
+        "targetApplication": "cargorun-dev",
+        "purpose": "live-testing",
+        "acceptedOnUtcDate": "2026-10-08",
+        "expiresAtUtc": "2026-11-08T00:00:00.000Z",
+        "authorizesDeployment": false
+    },
     "validFromUtc":  "2026-10-08T00:00:00.000Z",
     "expiresAtUtc":  "2026-11-08T00:00:00.000Z",
     "lockfileSha256":  "2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6",
@@ -101,14 +109,14 @@
                                          "Does not cover other driver errors, debug logging exposure, compromise of audit infrastructure, or compromised build hosts.",
                                          "npm reports the advisory through three packages; those are one underlying advisory, not three independent exceptions."
                                      ],
-                     "proposedAcceptance":  "Temporary local/offline/Linux build testing only for this exact dependency tree, with no production credentials. Production risk acceptance requires an explicit release-owner decision and separate reviewed policy change.",
+                     "acceptedRisk":  "Release owner explicitly accepts this advisory for CargoRun live testing at cargorun-dev only, with the exact reviewed dependencies and controls, until 2026-11-08 00:00 UTC. This acceptance authorizes policy preparation and testing, not deployment.",
                      "publishedPatch":  "None listed by the advisory when checked; npm proposed a major mssql downgrade, which was not applied.",
                      "removal":  "Remove or re-review at expiry, on a patch, changed dependency bytes/graph, changed severity, new advisory or new formatting call path."
                  },
     "linuxValidation":  {
-                            "status":  "NOT_EXECUTED",
-                            "hostObservation":  "Docker executable not found. wsl --list --quiet returned install/help output; wsl --status exited 50. No usable Linux runtime confirmed and no Linux installation attempted.",
+                            "status":  "PRIOR_BASELINE_PASSED_APPROVED_POLICY_PENDING",
+                            "hostObservation":  "GitHub Ubuntu run 37727519011 passed 711/711 tests for c011750d36a93748aad4105b2d974f9abaf11713. This new approval-policy candidate has not run on Linux.",
                             "nextStep":  "Use an approved Linux host or build-only runner, exact Node 22.23.3 and npm 11.11.0, and a clean source copy matching the manifest. Run scripts/validate-linux-release.js. It installs only into new temporary directories, tests and builds locally, and contains no deployment command.",
-                            "production":  "Current deployment workflow uses production context and will fail while this testing-only exception is needed."
+                            "production":  "Production context requires the explicit cargorun-dev target and the recorded live-testing acceptance, plus every integrity, audit and expiry check. Deployment is not authorized by this policy."
                         }
 }

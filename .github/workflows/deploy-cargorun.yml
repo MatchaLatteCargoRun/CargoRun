@@ -30,7 +30,7 @@ jobs:
         run: node --test --test-concurrency=1
 
       - name: Block unresolved dependency advisories
-        run: npx --yes --package=npm@11.11.0 -- node scripts/dependency-security-gate.js --context production
+        run: npx --yes --package=npm@11.11.0 -- node scripts/dependency-security-gate.js --context production --target cargorun-dev
 
       - name: Build and validate allowlisted deployment package
         run: node scripts/build-deployment-package.js
