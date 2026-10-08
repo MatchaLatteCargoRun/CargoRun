@@ -1,10 +1,10 @@
 {
   "schemaVersion": 3,
-  "capturedUtc": "2026-10-08T03:52:47.674Z",
+  "capturedUtc": "2026-10-08T04:15:56.664Z",
   "baseCommit": "cbb579c27d4c1b20d91429abd66d6b6a1963c476",
   "worktree": "C:\\Users\\Maxwell\\Documents\\CargoRun-AKL-Runtime",
   "purpose": "Isolated runtime release candidate. No production deployment or AKL activation authorized.",
-  "status": "TESTING_EXCEPTION_VALIDATED_PRODUCTION_ACCEPTANCE_PENDING",
+  "status": "LINUX_DEPENDENCY_DIAGNOSTIC_PREPARED",
   "hashMeaning": "For files[], sha256 and bytes record current Windows worktree bytes; gitBlobSha256 and gitBlobBytes record exact staged Git blob bytes read as binary. lineEndingNormalization records CRLF-to-LF conversion where present. The manifest excludes its own hash to avoid recursion. Package hashes describe a locally inspected package, not an Azure artifact.",
   "scope": "Prior isolated runtime and packaging candidate plus the testing-only advisory policy, audit gate, Linux validator, regression tests and a dedicated nondeploying GitHub Linux validation workflow. Manifest excludes its own hash.",
   "files": [
@@ -140,13 +140,13 @@
     },
     {
       "path": "scripts/validate-linux-release.js",
-      "bytes": 4453,
-      "sha256": "FBFA5805E93E7DF6AC44515913E324C4D1C34FDF1BCCBAAE4362DD7B4F8121DB",
+      "bytes": 7638,
+      "sha256": "8551E5869907BC47B9862E7BE8EF42BAB8EA86B46A9F09D4A5C0BB5FDA4DFA67",
       "role": "security/build validation tooling; excluded from deployment package",
       "lineEndingNormalization": "CRLF_TO_LF",
       "normalizedCrLfCount": 1,
-      "gitBlobSha256": "6A8733FE349DBF6D4176D43AF2598A65A1AB7C44CB73D383E9BDEBAA31B40DC7",
-      "gitBlobBytes": 4452
+      "gitBlobSha256": "749ABB74E5547AB5123BA308AE17353DB651F1C2431776EFB0E678124CB12DF8",
+      "gitBlobBytes": 7637
     },
     {
       "path": "tests/admin-configuration.test.js",
@@ -200,13 +200,13 @@
     },
     {
       "path": "tests/dependency-security-gate.test.js",
-      "bytes": 12740,
-      "sha256": "EE98A2579DE0884DE94C9EB09C66D7DDAC0687F5DFD033F2845A2D709D071406",
+      "bytes": 17777,
+      "sha256": "0987B5A45B375BC7DDCA867307D30CECEB1E13BAF3A238D38C704BD0F052379E",
       "role": "offline advisory-gate regression test/fixture",
       "lineEndingNormalization": "NONE",
       "normalizedCrLfCount": 0,
-      "gitBlobSha256": "EE98A2579DE0884DE94C9EB09C66D7DDAC0687F5DFD033F2845A2D709D071406",
-      "gitBlobBytes": 12740
+      "gitBlobSha256": "0987B5A45B375BC7DDCA867307D30CECEB1E13BAF3A238D38C704BD0F052379E",
+      "gitBlobBytes": 17777
     },
     {
       "path": "tests/deployment-package.test.js",
@@ -364,16 +364,15 @@
   },
   "validation": {
     "nodeTests": {
-      "tests": 702,
-      "pass": 702,
+      "tests": 707,
+      "pass": 707,
       "fail": 0,
       "cancelled": 0,
       "skipped": 0,
       "todo": 0,
       "command": "node --test --test-concurrency=1",
-      "source": "C:\\Users\\Maxwell\\AppData\\Local\\Temp\\CargoRun-AKL-Release-ace359651d2d4ee89416824091a38576\\clean-source",
-      "nodePathOverride": "cleared",
-      "currentRun": "Complete Node 22.23.3 suite on independent copy of staged Git blobs: 702 tests, 702 pass, zero failures and skips."
+      "source": "Independent temporary Windows source copy with fresh npm ci",
+      "currentRun": "Node 22.23.3 and npm 11.11.0; all tracked source bytes copied from isolated worktree; no dependency junction."
     },
     "addedPackageSecurityTests": 9,
     "javaScriptSourceFilesParsed": 42,
@@ -406,14 +405,16 @@
       "production context denial"
     ],
     "linux": {
-      "status": "NOT_EXECUTED",
-      "hostObservation": "Docker executable not found. wsl --list --quiet returned install/help output; wsl --status exited 50. No usable Linux runtime confirmed and no Linux installation attempted.",
-      "nextStep": "After explicit approval to commit and push only the reviewed candidate files to validation/akl-runtime-linux, let the dedicated GitHub-hosted Ubuntu workflow run node scripts/validate-linux-release.js. It installs into new temporary directories, tests, checks both testing acceptance and production denial, builds and inspects locally, and contains no deployment command.",
-      "production": "Current deployment workflow uses production context and will fail while this testing-only exception is needed."
+      "status": "PREVIOUS_RUN_FAILED_DEPENDENCY_DRIFT",
+      "runUrl": "https://github.com/MatchaLatteCargoRun/CargoRun/actions/runs/37724990973",
+      "tests": 702,
+      "pass": 701,
+      "fail": 1,
+      "nextStep": "One diagnostic commit and validation-branch push authorized after local checks. Existing assertion and failure status retained; fingerprint differences remain unapproved."
     },
     "focusedLinuxWorkflowAndSecurityTests": {
-      "tests": 27,
-      "pass": 27,
+      "tests": 35,
+      "pass": 35,
       "fail": 0,
       "skipped": 0
     },
@@ -541,7 +542,7 @@
     "aklActivation": false
   },
   "remainingGates": [
-    "GitHub-hosted Linux execution remains unverified. The dedicated validation workflow is prepared locally, but no validation branch commit or push is authorized yet.",
+    "Linux dependency fingerprint mismatch remains unresolved. One diagnostic validation-branch push is authorized; no security-policy correction or workflow retry is authorized.",
     "Release owner must explicitly accept the documented residual production risk and authorize a separately reviewed policy change; the current implementation rejects production use of this testing-only exception.",
     "Exception expires at 2026-11-08T00:00:00.000Z. Any dependency drift, new advisory, changed exposure or available fix requires review; no automatic extension.",
     "Commit, push and deployment require separate explicit approval. Main pushes remain deployment triggers. Actual Azure artifacts and hosted runtime behavior remain unverified.",
@@ -570,7 +571,7 @@
     "azureSecrets": false,
     "deployActions": false,
     "artifactUploads": false,
-    "githubExecution": "NOT_EXECUTED"
+    "githubExecution": "PREVIOUS_RUN_FAILED; ONE_DIAGNOSTIC_PUSH_AUTHORIZED"
   },
   "gitProvenance": {
     "source": "git show :<path> read into a Node Buffer from the staged Git index",
@@ -579,5 +580,23 @@
     "byteIdenticalFiles": 10,
     "manifestSelfHashExcluded": true,
     "manifestGitObjectId": "Report separately after commit"
+  },
+  "diagnosticValidation": {
+    "parentCommit": "d5248eeda46af300885906dc691b1ddcd95625e5",
+    "changedFiles": [
+      "scripts/validate-linux-release.js",
+      "tests/dependency-security-gate.test.js",
+      "docs/akl-runtime-release-manifest.json"
+    ],
+    "newRegressionTests": 5,
+    "securityGateAndPolicyUnchanged": true,
+    "rootLockfileUnchanged": true,
+    "windowsDependencyFiles": 7242,
+    "windowsFingerprint": "85FE97C48E22C716246DED14C21D1F82B329323C4D96733CC6657D5BBE3E9A6F",
+    "failureOutput": "Scalar fingerprint values, runtime versions, hidden-lockfile byte metadata, sorted relative file paths and SHA-256 hashes only; preserves test process failure.",
+    "testingGate": "PASS: GHSA-hp3w-g68c-fv3c only",
+    "productionGate": "PRODUCTION_NOT_APPROVED",
+    "productionApproval": "PENDING_RELEASE_OWNER_ACCEPTANCE",
+    "linuxDiagnosticOutcome": "Pending authorized push"
   }
 }

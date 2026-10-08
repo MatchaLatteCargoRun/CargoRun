@@ -1,7 +1,7 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
 const {evaluateAudit,parseAudit,collectAudit,validateState,canonicalLockfileBytes,readDependencyState}=require('../scripts/dependency-security-gate');
-const {requireLinux,requireProductionDenial}=require('../scripts/validate-linux-release');
+const {requireLinux,requireProductionDenial,emitDependencyDiagnostics,runDependencyTests}=require('../scripts/validate-linux-release');
 const root=path.resolve(__dirname,'..');
 const policy=JSON.parse(fs.readFileSync(path.join(root,'docs/dependency-security-exception.json'),'utf8'));
 const fixture=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/dependency-audit-reviewed.json'),'utf8'));
@@ -202,4 +202,75 @@ test('Linux validator accepts only the exact production gate denial',()=>{
   {status:1,stdout:'',stderr:expected,signal:'SIGTERM'},
   {status:1,stdout:'',stderr:expected,error:new Error('spawn failed')}
  ])assert.throws(()=>requireProductionDenial(result),/Production audit gate/);
+});
+
+test('dependency diagnostics report exact sorted bytes without file contents or absolute paths',t=>{
+ const os=require('node:os');
+ const fixture=fs.mkdtempSync(path.join(os.tmpdir(),'cargorun-diagnostic-fixture-'));
+ t.after(()=>{
+  const resolved=path.resolve(fixture);
+  assert.equal(path.dirname(resolved),path.resolve(os.tmpdir()));
+  assert.ok(path.basename(resolved).startsWith('cargorun-diagnostic-fixture-'));
+  fs.rmSync(resolved,{recursive:true,force:true});
+ });
+ fs.mkdirSync(path.join(fixture,'api/node_modules/fixture-package'),{recursive:true});
+ fs.mkdirSync(path.join(fixture,'docs'));
+ const entry={version:'1.0.0',resolved:'https://registry.npmjs.org/fixture-package/-/fixture-package-1.0.0.tgz',integrity:'sha512-fixture'};
+ const fixtureLock={lockfileVersion:3,packages:{'':{dependencies:{'fixture-package':'1.0.0'}},'node_modules/fixture-package':entry}};
+ fs.writeFileSync(path.join(fixture,'api/package.json'),JSON.stringify({dependencies:{'fixture-package':'1.0.0'}}));
+ fs.writeFileSync(path.join(fixture,'api/package-lock.json'),JSON.stringify(fixtureLock));
+ fs.writeFileSync(path.join(fixture,'api/node_modules/fixture-package/package.json'),JSON.stringify({version:'1.0.0'}));
+ fs.writeFileSync(path.join(fixture,'api/node_modules/fixture-package/private.txt'),'PRIVATE_DIAGNOSTIC_SENTINEL');
+ const hidden=Buffer.from(JSON.stringify({lockfileVersion:3,packages:{'node_modules/fixture-package':entry}},null,2)+'\n');
+ fs.writeFileSync(path.join(fixture,'api/node_modules/.package-lock.json'),hidden);
+ const expected=readDependencyState(fixture);
+ fs.writeFileSync(path.join(fixture,'docs/dependency-security-exception.json'),JSON.stringify(expected));
+ const collect=()=>{
+  const lines=[];
+  emitDependencyDiagnostics(fixture,{write:line=>lines.push(line),runner:()=>({status:0,stdout:'11.11.0\n'})});
+  const summary=JSON.parse(lines[0].slice('CARGORUN_DEPENDENCY_DIAGNOSTIC '.length));
+  const files=lines.slice(1,-1).map(line=>JSON.parse(line.slice('CARGORUN_DEPENDENCY_FILE '.length)));
+  assert.doesNotMatch(lines.join('\n'),/PRIVATE_DIAGNOSTIC_SENTINEL/);
+  assert.ok(!lines.join('\n').includes(fixture));
+  assert.equal(summary.npm,'11.11.0');assert.equal(summary.node,process.version);
+  assert.deepEqual(files.map(f=>f.path),files.map(f=>f.path).sort());
+  assert.deepEqual(files.map(f=>Object.keys(f)),files.map(()=>['path','sha256']));
+  assert.equal(summary.actual.dependencyFileCount,files.length);
+  assert.equal(summary.actual.dependencyTreeSha256,crypto.createHash('sha256').update(JSON.stringify(files.map(f=>[f.path,f.sha256]))).digest('hex').toUpperCase());
+  assert.deepEqual(JSON.parse(lines.at(-1).slice('CARGORUN_DEPENDENCY_DIAGNOSTIC_END '.length)),{files:files.length,sha256:summary.actual.dependencyTreeSha256});
+  return {summary,files};
+ };
+ const lf=collect();assert.deepEqual(lf.summary.actual,lf.summary.expected);assert.equal(lf.summary.hiddenLockfile.lineEndings.format,'LF');
+ fs.writeFileSync(path.join(fixture,'api/node_modules/.package-lock.json'),Buffer.from(hidden.toString().replace(/\n/g,'\r\n')));
+ const crlf=collect();assert.equal(crlf.summary.hiddenLockfile.lineEndings.format,'CRLF');
+ assert.notEqual(crlf.summary.hiddenLockfile.sha256,lf.summary.hiddenLockfile.sha256);
+ assert.notEqual(crlf.summary.actual.dependencyTreeSha256,crlf.summary.expected.dependencyTreeSha256);
+ assert.deepEqual(crlf.files.filter((f,i)=>f.sha256!==lf.files[i].sha256).map(f=>f.path),['.package-lock.json']);
+ assert.equal(crlf.summary.actual.lockfileSha256,lf.summary.actual.lockfileSha256);
+});
+
+test('failed dependency test process emits diagnostics and retains its nonzero exit code',()=>{
+ const calls=[];
+ assert.throws(()=>runDependencyTests('fixture',{runner:(_program,args,options)=>{
+  assert.deepEqual(args,['--test','--test-concurrency=1']);assert.equal(options.stdio,'inherit');return {status:17};
+ },diagnose:(root,{write})=>{calls.push(root);write('diagnostic');},write:line=>calls.push(line)}),
+ error=>error.exitCode===17&&error.message==='Validation step failed: Node test suite');
+ assert.deepEqual(calls,['fixture','diagnostic']);
+});
+
+test('diagnostic errors cannot conceal the test failure or leak exception contents',()=>{
+ const lines=[];
+ assert.throws(()=>runDependencyTests('fixture',{runner:()=>({status:1}),diagnose:()=>{throw Error('PRIVATE_DIAGNOSTIC_SENTINEL');},write:line=>lines.push(line)}),
+ error=>error.exitCode===1);
+ assert.deepEqual(lines,['CARGORUN_DEPENDENCY_DIAGNOSTIC_ERROR {"code":"DIAGNOSTIC_UNAVAILABLE"}']);
+});
+
+test('successful tests do not emit dependency diagnostics',()=>{
+ assert.doesNotThrow(()=>runDependencyTests('fixture',{runner:()=>({status:0}),diagnose:()=>assert.fail('unexpected diagnostic')}));
+});
+
+test('interrupted test processes remain failures after diagnostics',()=>{
+ let emitted=0;
+ assert.throws(()=>runDependencyTests('fixture',{runner:()=>({status:null,signal:'SIGTERM'}),diagnose:()=>emitted++}),error=>error.exitCode===1);
+ assert.equal(emitted,1);
 });
