@@ -1,10 +1,10 @@
 {
   "schemaVersion": 3,
-  "capturedUtc": "2026-10-10T05:13:38.144Z",
-  "baseCommit": "331cbf98dfcec91c0baea4f2ea5ec54096e0f2a3",
-  "purpose": "H1 interactive FOW/UWS selected-station isolation: validation only; no deployment authorized.",
+  "capturedUtc": "2026-10-10T06:01:35.192Z",
+  "baseCommit": "e0d6b8a3971154ac8a3f0a3e40d345b5397535f6",
+  "purpose": "H2 parent-flight lifecycle enforcement: validation only; no deployment authorized.",
   "status": "WINDOWS_VALIDATED_LINUX_PENDING",
-  "scope": "Seven reviewed H1 paths plus this release manifest.",
+  "scope": "Nine reviewed H2 paths plus the existing release manifest; H1, dependencies and workflows unchanged.",
   "hashMeaning": "sha256/bytes describe worktree bytes; gitBlobSha256/gitBlobBytes describe exact staged Git blob bytes read as Buffers. Only documented CRLF-to-LF conversion is accepted. Manifest self-hash is excluded; report its Git blob ID separately.",
   "files": [
     {
@@ -38,6 +38,16 @@
       "gitBlobBytes": 28
     },
     {
+      "path": "api/export-completions/index.js",
+      "sha256": "AF1586EE3A8AF0123B2B43FF63D77B1ED90763A345691109E5F0691C1014785A",
+      "bytes": 11081,
+      "gitBlobSha256": "75B0A56058D56D6549114051D23CD30597C714771D75DF87CCA6D8D68869C27B",
+      "gitBlobBytes": 11005,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 76,
+      "role": "H2 lifecycle runtime"
+    },
+    {
       "path": "api/mach-fow/index.js",
       "bytes": 56627,
       "sha256": "301A8A7FB18809E3D825C798183CD6B668DA3E8E8AD874CB2F23A78418698483",
@@ -46,6 +56,16 @@
       "normalizedCrLfCount": 2436,
       "gitBlobSha256": "258E5A310FDAAD937F6A564DCB5381A5E4D9CF0E0364FBA8C4681116DA29FFCC",
       "gitBlobBytes": 54191
+    },
+    {
+      "path": "api/mail-scan/index.js",
+      "sha256": "78688BE1C5B56BB5C62224A66672EC79D7C0F42FE1E70B1FFEF1DF52327DF072",
+      "bytes": 6130,
+      "gitBlobSha256": "56FA1EF78D56344B00CB37D782816625B74443949DF4DCDF55F382AFCFCEA1B0",
+      "gitBlobBytes": 5989,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 141,
+      "role": "H2 lifecycle runtime"
     },
     {
       "path": "api/manifest-upload/index.js",
@@ -98,6 +118,16 @@
       "gitBlobBytes": 17138
     },
     {
+      "path": "api/shared/flight.js",
+      "sha256": "AA6534E7E7711284F7BC4155FD8CF8CFDFFB205420A65B846C3C74EDB1D09483",
+      "bytes": 3976,
+      "gitBlobSha256": "B2F5BD21B2F6D09E25086255F344E7FF534DD3A3B7547D2986A06B469157C14B",
+      "gitBlobBytes": 3877,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 99,
+      "role": "H2 lifecycle runtime"
+    },
+    {
       "path": "api/shared/operational-authorization.js",
       "bytes": 18387,
       "sha256": "5316AFE87F081C2BB18252C95189D672A035F972AA01462352111AF2FAF04889",
@@ -106,6 +136,16 @@
       "normalizedCrLfCount": 502,
       "gitBlobSha256": "D36652CA3C0219A1426555D8278C6647F01DE5F5FB8167B758CE9E2E184E26CC",
       "gitBlobBytes": 17885
+    },
+    {
+      "path": "api/uld-status/index.js",
+      "sha256": "3E06950C0B3D6D6593A740D6BC100A0353C6CA72E85146F1E098F81767FA38C2",
+      "bytes": 15219,
+      "gitBlobSha256": "DF68BD59F98A8244C862A513235CA8BFDFDAC88B231F33CB397E956893769A45",
+      "gitBlobBytes": 14778,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 441,
+      "role": "H2 lifecycle runtime"
     },
     {
       "path": "docs/dependency-security-exception.json",
@@ -239,11 +279,11 @@
     },
     {
       "path": "tests/document-station-binding.test.js",
-      "bytes": 8477,
-      "sha256": "4DC61D3CCF7F04CC804994D00C4E0FB26E6A32C3045AD375FE0329B11288B550",
+      "bytes": 8612,
+      "sha256": "2A17724AE332ADCC175B4D934CF267EACE278F242D8EF2AFE3B783542A2E7FF1",
       "role": "H1 security regression test or updated explicit-station fixture",
-      "lineEndingNormalization": "NONE",
-      "normalizedCrLfCount": 0,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 135,
       "gitBlobSha256": "4DC61D3CCF7F04CC804994D00C4E0FB26E6A32C3045AD375FE0329B11288B550",
       "gitBlobBytes": 8477
     },
@@ -268,6 +308,16 @@
       "gitBlobBytes": 74285
     },
     {
+      "path": "tests/flight-statement-evidence.test.js",
+      "sha256": "E4AC756EEEA5F2FCB0AD53B4EE0527CDED75ABC09A74AFAD8956BF1F1130C93D",
+      "bytes": 7639,
+      "gitBlobSha256": "66D25F9B93A3ADE358EB67979328552E1539D5569DD2DD3EA3E9547226F9C454",
+      "gitBlobBytes": 7502,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 137,
+      "role": "H2 lifecycle regression test or transaction harness"
+    },
+    {
       "path": "tests/h01c-mach-cache-health.test.js",
       "bytes": 24637,
       "sha256": "0D1926431265034C1C282C252E32E608F1F46FF5DA9D45475675C07F911764E4",
@@ -276,6 +326,26 @@
       "normalizedCrLfCount": 679,
       "gitBlobSha256": "688082C7C26E5B844F8713D1EBC031248296643830B852845A3B19FE7B7BDFF0",
       "gitBlobBytes": 23958
+    },
+    {
+      "path": "tests/h2-flight-lifecycle.test.js",
+      "sha256": "19CCDEDB6D9A9BC9B675F8B9BA3BE888E96331A3D1E180CE798328D5AEC56AB8",
+      "bytes": 19514,
+      "gitBlobSha256": "19CCDEDB6D9A9BC9B675F8B9BA3BE888E96331A3D1E180CE798328D5AEC56AB8",
+      "gitBlobBytes": 19514,
+      "lineEndingNormalization": "NONE",
+      "normalizedCrLfCount": 0,
+      "role": "H2 lifecycle regression test or transaction harness"
+    },
+    {
+      "path": "tests/helpers/operational-harness.js",
+      "sha256": "DF8DD72018E5D594CEEC82BF7292708ECF86DB832E5F4AF026827BBAAD00EE5D",
+      "bytes": 24989,
+      "gitBlobSha256": "01BE86A653489217249ECCCF3E9CAB9174C0A02CA0EA7E3C2FDF4C7E5ED4317D",
+      "gitBlobBytes": 24654,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 335,
+      "role": "H2 lifecycle regression test or transaction harness"
     },
     {
       "path": "tests/linux-validation-workflow.test.js",
@@ -296,6 +366,26 @@
       "normalizedCrLfCount": 222,
       "gitBlobSha256": "65E535D26F5306E52015AF791836FA6CA140747888734BF6DD069B8F8AEFFC81",
       "gitBlobBytes": 11246
+    },
+    {
+      "path": "tests/multi-station-foundation.test.js",
+      "sha256": "3940FE57FFF2FE8B22B04065B1654AF30D9768C7293C1306358F6E5F59B950FF",
+      "bytes": 35437,
+      "gitBlobSha256": "C172DE7E4848B3B2606E7276B796281F54C2515B575476F6CB810C5069206237",
+      "gitBlobBytes": 34895,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 542,
+      "role": "H2 lifecycle regression test or transaction harness"
+    },
+    {
+      "path": "tests/offload-identity.test.js",
+      "sha256": "A933B1B92B64BF855F9AB6B824E4A7BB2BE270314DF2EB69A05C63E6870D897C",
+      "bytes": 31095,
+      "gitBlobSha256": "92AF69436F91F8F1CAAA26F392F937437EA35B4E94D31B48864FF3132EE24A46",
+      "gitBlobBytes": 30708,
+      "lineEndingNormalization": "CRLF_TO_LF",
+      "normalizedCrLfCount": 387,
+      "role": "H2 lifecycle regression test or transaction harness"
     },
     {
       "path": "tests/operational-authorization.test.js",
@@ -329,35 +419,41 @@
     }
   ],
   "historicalEvidence": {
-    "sourceCommit": "331cbf98dfcec91c0baea4f2ea5ec54096e0f2a3",
-    "manifestGitObjectId": "ef92bf22f22aada981fdc0cffe72f563730661a2",
-    "limitation": "Prior release evidence remains at the pinned source commit; it does not establish Linux validation of H1."
+    "sourceCommit": "e0d6b8a3971154ac8a3f0a3e40d345b5397535f6",
+    "manifestGitObjectId": "fdba2f09064954f194da8c72d06bb30178707243",
+    "limitation": "Prior H1 evidence remains at the pinned deployed commit; it does not establish Ubuntu validation of H2."
   },
   "proposedCommit": {
-    "title": "Validate H1 interactive FOW and UWS station isolation",
-    "parent": "331cbf98dfcec91c0baea4f2ea5ec54096e0f2a3",
+    "title": "Validate H2 parent-flight lifecycle enforcement",
+    "parent": "e0d6b8a3971154ac8a3f0a3e40d345b5397535f6",
     "branch": "validation/akl-runtime-linux",
     "files": [
-      "api/mach-fow/index.js",
-      "api/manifest-upload/index.js",
+      "api/export-completions/index.js",
+      "api/mail-scan/index.js",
+      "api/shared/flight.js",
+      "api/uld-status/index.js",
       "docs/akl-runtime-release-manifest.json",
-      "index.html",
-      "tests/document-station-binding.test.js",
-      "tests/flight-concurrency.test.js",
-      "tests/h01c-mach-cache-health.test.js",
-      "tests/uld-normalization.test.js"
+      "tests/flight-statement-evidence.test.js",
+      "tests/h2-flight-lifecycle.test.js",
+      "tests/helpers/operational-harness.js",
+      "tests/multi-station-foundation.test.js",
+      "tests/offload-identity.test.js"
     ],
     "fullReleasePaths": [
       ".github/workflows/deploy-cargorun.yml",
       ".github/workflows/validate-cargorun-linux.yml",
       ".gitignore",
+      "api/export-completions/index.js",
       "api/mach-fow/index.js",
+      "api/mail-scan/index.js",
       "api/manifest-upload/index.js",
       "api/package-lock.json",
       "api/shared/capability-scope.js",
       "api/shared/configuration-mutations.js",
       "api/shared/configuration.js",
+      "api/shared/flight.js",
       "api/shared/operational-authorization.js",
+      "api/uld-status/index.js",
       "docs/akl-runtime-release-manifest.json",
       "docs/dependency-security-exception.json",
       "index.html",
@@ -375,9 +471,14 @@
       "tests/document-station-binding.test.js",
       "tests/fixtures/dependency-audit-reviewed.json",
       "tests/flight-concurrency.test.js",
+      "tests/flight-statement-evidence.test.js",
       "tests/h01c-mach-cache-health.test.js",
+      "tests/h2-flight-lifecycle.test.js",
+      "tests/helpers/operational-harness.js",
       "tests/linux-validation-workflow.test.js",
       "tests/manifest-upload-station.test.js",
+      "tests/multi-station-foundation.test.js",
+      "tests/offload-identity.test.js",
       "tests/operational-authorization.test.js",
       "tests/selected-station-context.test.js",
       "tests/uld-normalization.test.js"
@@ -385,33 +486,32 @@
     "fullReleaseBase": "cbb579c27d4c1b20d91429abd66d6b6a1963c476"
   },
   "validation": {
-    "windows": "PASS: independent clean install and full suite from exact staged Git bytes; only non-executable manifest evidence finalized afterward.",
+    "windows": "PASS: independent clean installation and all 870 tests from exact staged Git source; only non-executable manifest evidence finalized afterward.",
     "linux": "Pending the single authorized validation-branch push.",
     "coverage": [
-      "Explicit selected station for interactive FOW and both UWS actions",
-      "MEL/AKL match acceptance and bidirectional mismatch denial",
-      "Missing/forged/unauthorized station denied before writes",
-      "No upload or audit evidence on denial",
-      "Authoritative flight ownership",
-      "Station-timezone sample dates including midnight and DST",
-      "Machine binding, DocumentCorID and ULD invariants retained",
-      "Captured station context and stale response rejection"
+      "MEL and AKL ACTIVE operations allowed; CLOSED/FINALISED ordinary movements and scans denied",
+      "Initial export completion requires ACTIVE under parent-flight lock",
+      "No persistent changes on authorization/lifecycle/locking/audit failure",
+      "V1 immutable evidence retained and authorized V2/V3/V4 offload amendment hash chains verified",
+      "Canonical flight application lock then authoritative parent row then child row",
+      "16 simulated concurrency orderings"
     ],
     "limitations": [
-      "Synthetic SQL driver exercises real handlers and authorization; no SQL execution or operational records.",
-      "Station switching does not cancel already executing server requests.",
-      "Old interactive clients without stationId fail closed and must refresh after a separately approved deployment."
+      "Synthetic SQL driver exercises real handlers, authorization and audit; no SQL Server execution.",
+      "Synthetic concurrency tests do not prove SQL Server deadlock freedom or transaction scheduling.",
+      "Actual SQL Server concurrency and rollback verification remains mandatory before deployment approval."
     ],
     "node": "22.23.3",
     "npm": "11.11.0",
     "cleanNpmCi": "PASS",
     "full": {
-      "tests": 768,
-      "passed": 768,
+      "tests": 870,
+      "passed": 870,
       "failed": 0,
-      "skipped": 0
+      "skipped": 0,
+      "cancelled": 0
     },
-    "testCount": "728 baseline tests retained plus 40 H1 regressions.",
+    "testCount": "768 H1 baseline tests retained plus 102 H2 regression tests.",
     "testingGate": {
       "ok": true,
       "context": "testing",
@@ -454,7 +554,7 @@
     "dependencyPackages": 74,
     "dependencyFiles": 7242,
     "fileCount": 7327,
-    "inventorySha256": "6DFEB45475B07B108FA89A295FEF1F7AB82B565C4793B6E173D91226118332BF",
+    "inventorySha256": "3C7C538497FCADED0AE721DA0A156133A40CB30A092D5F33551BDBF8F9D8354B",
     "allFileHashesVerified": true,
     "provenance": "Locally inspected Windows package from exact staged source and fresh locked dependencies. Not an Azure deployment artifact.",
     "excludes": "SQL, repository documentation/tests, rehearsal tools, credentials and evidence excluded from publication roots.",
@@ -473,8 +573,8 @@
     "workflowFilesUnchanged": true
   },
   "gitProvenance": {
-    "fileEntries": 32,
-    "crlfToLfFiles": 31,
+    "fileEntries": 41,
+    "crlfToLfFiles": 40,
     "manifestSelfHashExcluded": true
   },
   "preservation": {
@@ -484,12 +584,12 @@
     "dependenciesUnchanged": true
   },
   "releasePlan": {
-    "authorization": "One validation-only commit and push authorized; no main push, Azure deployment, SQL writes, grants, machine-binding or AKL-state changes.",
+    "authorization": "One validation-only commit and push authorized; no main push, Azure deployment, SQL writes, grants, machine-binding or station-state changes.",
     "remainingGates": [
       "Fresh Ubuntu validation of this exact commit",
-      "Separate controlled deployment authorization",
-      "Refresh browser after deployment; production write smoke tests need separate approval"
+      "Actual SQL Server concurrency and rollback verification",
+      "Separate controlled deployment authorization"
     ],
-    "rollback": "Any rollback requires separate approval and assessment of restoring the prior H1 document-isolation defect; do not reverse SQL remediation."
+    "rollback": "Any application rollback requires separate approval; preserve H1 isolation and completed production ADMIN SQL remediation."
   }
 }

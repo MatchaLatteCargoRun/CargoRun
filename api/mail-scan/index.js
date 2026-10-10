@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { lockAuthoritativeFlight, requireActiveFlight, FlightLifecycleConflict } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
@@ -51,8 +52,9 @@ module.exports = async function(context, req) {
 
     const selected = await new sql.Request(transaction)
       .input('AuthorizationUldId', sql.BigInt, uldId)
-      .query(`SELECT u.UldId,u.FlightId,f.StationId,f.Direction,f.OriginAirport,f.DestinationAirport
-        FROM dbo.ULDs u WITH (UPDLOCK,HOLDLOCK)
+      .query(`SELECT u.UldId,u.FlightId,f.StationId,f.Direction,f.OriginAirport,f.DestinationAirport,
+          f.FlightNumber,CONVERT(char(10),f.OperatingDate,23) AS OperatingDateIso
+        FROM dbo.ULDs u
         INNER JOIN dbo.Flights f ON f.FlightId=u.FlightId
         WHERE u.UldId=@AuthorizationUldId;`);
     await requireOperationalEntityCapability(
@@ -62,6 +64,19 @@ module.exports = async function(context, req) {
       selected.recordset[0] || null,
       'SCAN_ULD'
     );
+
+    const flight = await lockAuthoritativeFlight(transaction, sql, selected.recordset[0],
+      locked => requireOperationalEntityCapability(transaction, sql, actor, locked, 'SCAN_ULD'));
+    requireActiveFlight(flight);
+    const lockedUld = await new sql.Request(transaction)
+      .input('LockedUldId', sql.BigInt, uldId)
+      .input('LockedUldFlightId', sql.BigInt, flight.FlightId)
+      .query(`SELECT UldId,FlightId,UldNumber,MailScannedAtUtc,MailScannedByDisplayName,MailScannedByReference
+        FROM dbo.ULDs WITH (UPDLOCK,HOLDLOCK)
+        WHERE UldId=@LockedUldId AND FlightId=@LockedUldFlightId;`);
+    if (lockedUld.recordset.length !== 1) {
+      throw new FlightLifecycleConflict('ULD_FLIGHT_CHANGED', 'ULD flight ownership changed; refresh and review again');
+    }
 
     const update = await new sql.Request(transaction)
       .input('UldId', sql.BigInt, uldId)
@@ -111,15 +126,13 @@ module.exports = async function(context, req) {
     await transaction.rollback();
     transaction = null;
 
-    const existing = await pool.request().input('UldId2',sql.BigInt,uldId).query(`
-      SELECT UldId,UldNumber,MailScannedAtUtc,MailScannedByDisplayName,MailScannedByReference
-      FROM dbo.ULDs WHERE UldId=@UldId2;
-    `);
+    const existing = lockedUld;
     if (!existing.recordset.length) throw operationalEntityUnavailable();
     sendJson(context,200,{ok:true,alreadyScanned:!!existing.recordset[0].MailScannedAtUtc,uld:existing.recordset[0]});
   } catch (err) {
     if (transaction) { try { await transaction.rollback(); } catch {} }
     if (sendOperationalAuthorizationError(context, err, sendJson)) return;
+    if (err instanceof FlightLifecycleConflict) { sendJson(context,409,{ok:false,code:err.code,error:err.message}); return; }
     context.log.error('Mail scan API failed', err);
     sendJson(context,500,{ok:false,error:'Mail scan API failed'});
   } finally {

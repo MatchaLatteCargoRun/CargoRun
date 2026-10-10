@@ -1,4 +1,5 @@
 const sql = require('mssql');
+const { lockAuthoritativeFlight, requireActiveFlight, FlightLifecycleConflict } = require('../shared/flight');
 const { insertAuditEvent } = require('../shared/audit');
 const {
   authenticatedActor,
@@ -155,15 +156,28 @@ module.exports = async function (context, req) {
           f.Direction,
           f.OriginAirport,
           f.DestinationAirport,
-          f.FlightNumber
+          f.FlightNumber,
+          CONVERT(char(10),f.OperatingDate,23) AS OperatingDateIso
         FROM dbo.ULDs u
         INNER JOIN dbo.Flights f
           ON f.FlightId = u.FlightId
         WHERE u.UldId = @UldId;
       `);
 
-    const current = currentResult.recordset[0] || null;
-    await requireOperationalEntityCapability(transaction, sql, actor, current, 'MOVE_ULD');
+    const initial = currentResult.recordset[0] || null;
+    await requireOperationalEntityCapability(transaction, sql, actor, initial, 'MOVE_ULD');
+    const flight = await lockAuthoritativeFlight(transaction, sql, initial,
+      locked => requireOperationalEntityCapability(transaction, sql, actor, locked, 'MOVE_ULD'));
+    requireActiveFlight(flight);
+    const lockedUld = await new sql.Request(transaction)
+      .input('LockedUldId', sql.BigInt, uldId)
+      .input('LockedUldFlightId', sql.BigInt, flight.FlightId)
+      .query(`SELECT UldId,FlightId,UldNumber,CurrentStatus FROM dbo.ULDs WITH (UPDLOCK,HOLDLOCK)
+        WHERE UldId=@LockedUldId AND FlightId=@LockedUldFlightId;`);
+    if (lockedUld.recordset.length !== 1) {
+      throw new FlightLifecycleConflict('ULD_FLIGHT_CHANGED', 'ULD flight ownership changed; refresh and review again');
+    }
+    const current = { ...flight, ...lockedUld.recordset[0] };
     const direction = canonicalStatus(current.Direction);
     const currentStatus = canonicalStatus(current.CurrentStatus);
 
@@ -414,6 +428,7 @@ module.exports = async function (context, req) {
     }
 
     if (sendOperationalAuthorizationError(context, err, sendJson)) return;
+    if (err instanceof FlightLifecycleConflict) { sendJson(context, 409, { ok: false, code: err.code, error: err.message }); return; }
     context.log.error('ULD status API failed', err);
     sendJson(context, 500, {
       ok: false,

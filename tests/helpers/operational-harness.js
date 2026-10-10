@@ -68,12 +68,16 @@ function loadHandler(relativePath, sqlMock, operationalAuthorizationOverride = o
   return module.exports;
 }
 
-function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, completions = [], amendments = [], completionSchema = true, amendmentSchema = true, liveSchema = false, migrated = true, auditInsertTrigger = false } = {}) {
+function sqlHarness({ authorizationStations = null, uld, otherUlds = [], offload, flights, offloadUlds, completions = [], amendments = [], completionSchema = true, amendmentSchema = true, liveSchema = false, migrated = true, auditInsertTrigger = false } = {}) {
   const state = {
     uld: uld ? structuredClone(uld) : null,
     otherUlds: structuredClone(otherUlds),
     offload: offload ? structuredClone(offload) : null,
-    flights: structuredClone(flights || [{ FlightId: 1, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }]),
+    flights: structuredClone(flights || (uld ? [uld, ...otherUlds].map(row => ({
+      FlightId: row.FlightId, StationId: row.StationId || 1,
+      FlightNumber: row.FlightNumber || 'CX178', OperatingDate: '2026-09-17',
+      Direction: row.Direction || 'IMPORT', FlightStatus: 'ACTIVE'
+    })) : [{ FlightId: 1, FlightNumber: 'CX178', OperatingDate: '2026-09-17', FlightStatus: 'ACTIVE' }])),
     completions: structuredClone(completions),
     amendments: structuredClone(amendments),
     offloadUlds: offloadUlds || [{ UldId: '7', FlightId: '1', UldNumber: 'AKE12345CX' }, { UldId: '7', FlightId: '100', UldNumber: 'PMC48921R7' }], extraOffloads: [], now: '2026-09-17T00:00:00.000Z', movements: [], audits: [], commits: 0, rollbacks: 0, failAudit: false, failAmendment: false,
@@ -122,6 +126,25 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
       state.queries.push({ q, p: { ...p } });
       const result = (recordset = [], rowsAffected = []) => ({ recordset, recordsets: [recordset], rowsAffected });
 
+      if (authorizationStations) {
+        const caps = ['REQUEST_OFFLOAD', 'COLLECT_OFFLOAD', 'COMPLETE_OFFLOAD'];
+        if (q.includes('WITH AuthorizationScopes AS')) return result(authorizationStations.flatMap(s => caps.map(CapabilityCode => ({ ...s, CapabilityCode }))));
+        if (q.includes('WITH AssignmentDecisions AS')) return result(authorizationStations.some(s => s.StationCode === p.AuthorizationStationCode) ? caps.map(CapabilityCode => ({ CapabilityCode })) : []);
+        if (q.includes('FROM dbo.CargoRunStations WHERE StationId=@ResolvedStationId')) return result(authorizationStations.filter(s => String(s.StationId) === String(p.ResolvedStationId)));
+      }
+      if (q.includes('sys.sp_getapplock') && Object.hasOwn(p, 'FlightIdentityLockResource')) {
+        assert.ok(this.transaction?.active);
+        return result([{ LockResult: 0 }]);
+      }
+      if (Object.hasOwn(p, 'LockedFlightId')) {
+        return result(state.flights.filter(f => String(f.FlightId) === String(p.LockedFlightId))
+          .map(f => ({ ...f, StationId: f.StationId || 1, OperatingDateIso: f.OperatingDate })));
+      }
+      if (Object.hasOwn(p, 'LockedUldId')) {
+        return result([state.uld, ...state.otherUlds].filter(u => u &&
+          String(u.UldId) === String(p.LockedUldId) && String(u.FlightId) === String(p.LockedUldFlightId))
+          .map(u => ({ ...u })));
+      }
       if (q.includes('sys.sp_getapplock') && Object.hasOwn(p, 'OffloadFlightLockResource')) return result([{ LockResult: 0 }]);
 
       if (q.includes('FROM INFORMATION_SCHEMA.COLUMNS')) {
@@ -142,9 +165,10 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
       }
       if (q.includes('FROM dbo.ULDs u INNER JOIN dbo.Flights')) {
         if (p.AuditUldId) return result(state.uld ? [{ ...state.uld, FlightNumber: state.uld.FlightNumber || 'CX178' }] : []);
-        const selected = [state.uld, ...state.otherUlds].find(candidate => candidate && String(candidate.UldId) === String(p.UldId));
-        return result(selected
-          ? [{ ...selected, Direction: selected.Direction || 'IMPORT', FlightNumber: selected.FlightNumber || 'CX178' }]
+        const selected = [state.uld, ...state.otherUlds].find(candidate => candidate && String(candidate.UldId) === String(p.UldId ?? p.AuthorizationUldId));
+        const parent = state.flights.find(f => String(f.FlightId) === String(selected?.FlightId));
+        return result(selected && parent
+          ? [{ ...parent, StationId: parent.StationId || 1, OperatingDateIso: parent.OperatingDate, ...selected, Direction: selected.Direction || 'IMPORT', FlightNumber: selected.FlightNumber || 'CX178' }]
           : []);
       }
       if (q.includes('FROM dbo.ULDs u WITH') && Object.hasOwn(p, 'AuthorizationUldId')) {
@@ -205,7 +229,7 @@ function sqlHarness({ uld, otherUlds = [], offload, flights, offloadUlds, comple
           const previous=lockTail;lockTail=new Promise(resolve=>this.transaction.release=resolve);await previous;
           this.transaction.snapshot=structuredClone({uld:state.uld,otherUlds:state.otherUlds,offload:state.offload,extraOffloads:state.extraOffloads,movements:state.movements,audits:state.audits,amendments:state.amendments});
         }
-        return result(state.flights.filter(f=>String(f.FlightId)===String(p.AmendmentMutationFlightId)).map(f=>({FlightStatus:f.FlightStatus})));
+        return result(state.flights.filter(f=>String(f.FlightId)===String(p.AmendmentMutationFlightId)).map(f=>({...f,Direction:f.Direction||'EXPORT'})));
       }
       if(q.includes('FROM dbo.Flights WITH (UPDLOCK, HOLDLOCK)') && p.AmendmentFlightId) return result(state.flights.filter(f=>String(f.FlightId)===String(p.AmendmentFlightId)).map(f=>({...f,Direction:f.Direction||'EXPORT'})));
       if(q.includes('FROM dbo.ULDs WITH (UPDLOCK, HOLDLOCK)')) {

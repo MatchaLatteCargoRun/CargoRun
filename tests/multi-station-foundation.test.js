@@ -489,9 +489,17 @@ test('all creation and lifecycle paths use StationId and the shared v2 lock', ()
   assert.match(mach, /resolveStationById\(pool, sql, machine\.stationId\)/);
   assert.doesNotMatch(mach, /MACHINE_STATION_CODE|resolveStationByCode/);
   assert.match(mach, /m\.DocumentCorID COLLATE Latin1_General_100_BIN2[\s\S]*@DocumentCorID COLLATE Latin1_General_100_BIN2/);
-  for (const file of ['api/ulds/index.js', 'api/import-completions/index.js', 'api/export-completions/index.js', 'api/export-manifest-final/index.js']) {
+  for (const file of ['api/ulds/index.js', 'api/import-completions/index.js', 'api/export-manifest-final/index.js']) {
     assert.match(read(file), /acquireFlightIdentityLock\([\s\S]{0,180}StationId/i, file);
   }
+});
+
+test('H2 ordinary writes and export completion use the authoritative parent helper and shared v2 lock', () => {
+  for (const file of ['api/uld-status/index.js', 'api/mail-scan/index.js', 'api/export-completions/index.js']) {
+    assert.match(read(file), /await lockAuthoritativeFlight\(/, file);
+    assert.match(read(file), /requireActiveFlight\(flight\)/, file);
+  }
+  assert.match(read('api/shared/flight.js'), /acquireFlightIdentityLock\(transaction, sql,\s*initialFlight\.StationId, initialFlight\.OperatingDateIso, initialFlight\.FlightNumber\)/);
 });
 
 test('list and exact entity authorization inherit explicit flight ownership', () => {

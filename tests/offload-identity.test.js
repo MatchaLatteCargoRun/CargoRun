@@ -364,3 +364,24 @@ test('blocked legacy and exact offload evidence is explanatory and never selecta
  assert.match(h.elements.offBlockedUlds.innerHTML,/PMC22222CX/);assert.doesNotMatch(h.elements.offBlockedUlds.innerHTML,/type="checkbox"/);
  assert.equal(h.elements.offSubmit.disabled,true);
 });
+
+for (const station of [
+ { StationId: 1, StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId: 'Australia/Melbourne', IsEnabled: 1 },
+ { StationId: 2, StationCode: 'AKL', DisplayName: 'Auckland', TimeZoneId: 'Pacific/Auckland', IsEnabled: 1 }
+]) for (const status of ['CLOSED','FINALISED']) test('H2 preserves '+station.StationCode+' '+status+' authorized V2/V3/V4 offload amendments',async()=>{
+ const base=baseCompletion();
+ const h=setup({authorizationStations:[station],flights:[flight({StationId:station.StationId,OriginAirport:station.StationCode,DestinationAirport:'HKG',FlightStatus:status})],completions:[base]},require('../api/shared/operational-authorization'));
+ const before=structuredClone(h.state.completions);
+ const created=await call(h.handler,'POST',body);assert.equal(created.status,201);
+ const id=String(created.body.offload.offloadId);
+ assert.equal((await call(h.handler,'PATCH',{offloadId:id,expectedCurrentStatus:'REQUESTED',nextStatus:'TRANSIT'})).status,200);
+ assert.equal((await call(h.handler,'PATCH',{offloadId:id,expectedCurrentStatus:'TRANSIT',nextStatus:'COMPLETE',deliveredLocation:'Synthetic test bay'})).status,200);
+ assert.deepEqual(h.state.amendments.map(a=>a.VersionNumber),[2,3,4]);
+ assert.deepEqual(h.state.completions,before);assert.equal(h.state.flights[0].FlightStatus,status);
+ const {verifyCompletionEvidence}=require('../api/shared/completion-amendments');
+ assert.deepEqual(verifyCompletionEvidence(base,h.state.amendments,'1').versions.map(v=>v.versionNumber),[1,2,3,4]);
+ assert.equal(h.state.audits.length,3);
+ const evidence=structuredClone({amendments:h.state.amendments,audits:h.state.audits});
+ assert.equal((await call(h.handler,'PATCH',{offloadId:id,expectedCurrentStatus:'TRANSIT',nextStatus:'COMPLETE',deliveredLocation:'Synthetic test bay'})).body.code,'STALE_STATUS');
+ assert.deepEqual({amendments:h.state.amendments,audits:h.state.audits},evidence);
+});
