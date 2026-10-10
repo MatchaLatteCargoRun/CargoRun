@@ -356,39 +356,39 @@ function fow(document, serial = '12 345', awb = '11111111') {
 test('FOW reuses legacy ULD, preserves progress/first document and records new AWB linkage', async () => {
   const api = apiHarness([{ FlightId: 1, UldId: 7, UldNumber: 'AKE\t12345-CX', CurrentStatus: 'TRANSIT', IdentityVerified: 1, MachDocumentCorId: 'FIRST' }]);
   const xml = fow('DOC-1');
-  const result = await api.call('mach-fow', { xml });
+  const result = await api.call('mach-fow', { stationId: '1', xml });
   assert.equal(result.status, 201); assert.equal(result.body.existingUldCount, 1);
   assert.equal(result.body.ulds[0].currentStatus, 'TRANSIT');
-  const next = await api.call('mach-fow', { xml: fow('DOC-2', '12-345', '22222222') });
+  const next = await api.call('mach-fow', { stationId: '1', xml: fow('DOC-2', '12-345', '22222222') });
   assert.equal(next.status, 201); assert.equal(api.state.rows.length, 1);
   assert.equal(api.state.rows[0].IdentityVerified, 1); assert.equal(api.state.rows[0].MachDocumentCorId, 'FIRST');
   assert.equal(api.state.rows[0].UldNumber, 'AKE\t12345-CX');
   assert.deepEqual(api.state.links.map(x => x.MawbNumber), ['160-11111111', '160-22222222']);
   assert.equal(api.state.messages[0].RawXml, xml);
-  const duplicate = await api.call('mach-fow', { xml });
+  const duplicate = await api.call('mach-fow', { stationId: '1', xml });
   assert.equal(duplicate.status, 200); assert.equal(duplicate.body.duplicateType, 'DOCUMENT');
   assert.equal(api.state.links.length, 2);
 });
 
 test('FOW creates canonical ULD and refuses ambiguous legacy identity', async () => {
   const api = apiHarness();
-  const result = await api.call('mach-fow', { xml: fow('NEW', '00-123') });
+  const result = await api.call('mach-fow', { stationId: '1', xml: fow('NEW', '00-123') });
   assert.equal(result.status, 201); assert.equal(result.body.newUldCount, 1);
   assert.equal(api.state.rows[0].UldNumber, 'AKE00123CX');
   assert.equal(api.state.rows[0].CurrentStatus, 'WAREHOUSE'); assert.equal(api.state.rows[0].IdentityVerified, 0);
   const collision = apiHarness([{ FlightId: 1, UldId: 7, UldNumber: 'AKE12345CX' }, { FlightId: 1, UldId: 8, UldNumber: 'AKE-12345-CX' }]);
-  assert.equal((await collision.call('mach-fow', { xml: fow('COLLISION') })).status, 409);
+  assert.equal((await collision.call('mach-fow', { stationId: '1', xml: fow('COLLISION') })).status, 409);
   assert.equal(collision.state.messages.length, 0); assert.equal(collision.state.links.length, 0);
 });
 
 test('FOW collapses same-message formatting variants and rejects empty/overlength numbers', async () => {
   const api = apiHarness();
   const extra = '<FSUMessageULDList><ULDTyp>AKE</ULDTyp><ULDSrl>12-345</ULDSrl><ULDOwnr>CX</ULDOwnr></FSUMessageULDList>';
-  const response = await api.call('mach-fow', { xml: fow('REPEATED').replace('</FSUMessage>', extra + '</FSUMessage>') });
+  const response = await api.call('mach-fow', { stationId: '1', xml: fow('REPEATED').replace('</FSUMessage>', extra + '</FSUMessage>') });
   assert.equal(response.status, 201); assert.equal(response.body.newUldCount, 1);
   assert.equal(api.state.links.length, 1);
   const empty = fow('EMPTY').replace('<ULDTyp>ake</ULDTyp>', '<ULDTyp>-</ULDTyp>').replace('<ULDSrl>12 345</ULDSrl>', '<ULDSrl>-</ULDSrl>').replace('<ULDOwnr>cx</ULDOwnr>', '<ULDOwnr>-</ULDOwnr>');
-  assert.equal((await api.call('mach-fow', { xml: empty })).status, 422);
-  assert.equal((await api.call('mach-fow', { xml: fow('LONG', '0'.repeat(31)) })).status, 422);
+  assert.equal((await api.call('mach-fow', { stationId: '1', xml: empty })).status, 422);
+  assert.equal((await api.call('mach-fow', { stationId: '1', xml: fow('LONG', '0'.repeat(31)) })).status, 422);
   assert.equal(api.state.rows.length, 1);
 });

@@ -20,10 +20,11 @@ const {
 const {
   authenticatedActor,
   requireOperationalStations,
+  authorizeRequestedStation,
   requireOperationalCapability,
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
-const { resolveAuthorizedStation, routeMatchesStation } = require('../shared/station');
+const { resolveAuthorizedStation, resolveStationById, routeMatchesStation } = require('../shared/station');
 
 function sendJson(context, status, body) {
   context.res = {
@@ -185,7 +186,19 @@ module.exports = async function (context, req) {
       pool = await new sql.ConnectionPool(connectionString).connect();
 
       const access = await requireOperationalStations(pool, sql, actor, 'CONFIRM_EXPORT_FINAL');
-      const station = await resolveAuthorizedStation(pool, sql, access, parsed.station);
+      const selected = authorizeRequestedStation({
+        userAccess: access,
+        stationId: ['string', 'number'].includes(typeof body.stationId) ? body.stationId : null,
+        requiredCapability: 'CONFIRM_EXPORT_FINAL'
+      });
+      const station = await resolveStationById(pool, sql, selected.stationId);
+      if (parsed.station !== station.stationCode) {
+        throw new ExportUwsError(
+          'DOCUMENT_STATION_MISMATCH',
+          `The UWS document station ${parsed.station} does not match selected station ${station.stationCode}. No changes were made.`,
+          422
+        );
+      }
 
       if (action === 'PARSE_EXPORT_UWS') {
         const matchedFlight = await loadUwsFlight(pool.request(), pool, actor, station, parsed);

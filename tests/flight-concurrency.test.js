@@ -11,6 +11,12 @@ const { insertAuditEvent } = require('../api/shared/audit');
 const documentCorIdHelpers = require('../api/shared/document-cor-id');
 const machineStationBinding = require('../api/shared/machine-station-binding');
 const operationalAuthorization = require('./helpers/operational-authorization-stub');
+const realOperationalAuthorization = require('../api/shared/operational-authorization');
+const realStation = require('../api/shared/station');
+const h1Stations = [
+  { StationId: '1', StationCode: 'MEL', DisplayName: 'Melbourne', TimeZoneId: 'Australia/Melbourne', IsEnabled: 1 },
+  { StationId: '2', StationCode: 'AKL', DisplayName: 'Auckland', TimeZoneId: 'Pacific/Auckland', IsEnabled: 1 }
+];
 const stationLocalInput = require('../api/shared/station-local-input');
 
 const root = path.resolve(__dirname, '..');
@@ -124,6 +130,27 @@ function harness(initialFlights = [], harnessOptions = {}) {
       const p = this.values;
       state.calls.push({ q, p: { ...p }, inTransaction: Boolean(this.tx?.active) });
 
+      // H1 uses real authorization/station modules with synthetic effective SQL rows.
+      // This driver never opens a database connection or evaluates SQL permissions.
+      if (harnessOptions.realAuthorization) {
+        const allowed = harnessOptions.allowedStations || ['MEL', 'AKL'];
+        const capabilities = harnessOptions.capabilities || ['UPLOAD_FLIGHT_DATA', 'CONFIRM_EXPORT_FINAL'];
+        if (q.includes('WITH AuthorizationScopes AS')) {
+          assert.equal(p.OperationalAccessActorReference, 'test-user');
+          return result(h1Stations.filter(s => allowed.includes(s.StationCode))
+            .flatMap(s => capabilities.map(CapabilityCode => ({ ...s, CapabilityCode }))));
+        }
+        if (q.includes('WITH AssignmentDecisions AS')) {
+          assert.equal(p.AuthorizationActorReference, 'test-user');
+          return result(allowed.includes(p.AuthorizationStationCode) ? capabilities.map(CapabilityCode => ({ CapabilityCode })) : []);
+        }
+        if (q.includes('FROM dbo.CargoRunStations WHERE StationId=@ResolvedStationId')) {
+          return result(h1Stations.filter(s => s.StationId === String(p.ResolvedStationId)));
+        }
+        if (q.includes('FROM dbo.CargoRunStations WHERE StationCode=@ResolvedStationCode')) {
+          return result(h1Stations.filter(s => s.StationCode === p.ResolvedStationCode));
+        }
+      }
       if (q.includes('sys.sp_getapplock')) {
         assert.ok(this.tx?.active, 'flight identity lock must be transaction-owned');
         if (state.lockError) throw state.lockError;
@@ -399,9 +426,9 @@ function harness(initialFlights = [], harnessOptions = {}) {
               : name === '../shared/export-uws'
                 ? require('../api/shared/export-uws')
               : name === '../shared/operational-authorization'
-                ? operationalAuthorization
+                ? (harnessOptions.realAuthorization ? realOperationalAuthorization : operationalAuthorization)
               : name === '../shared/station'
-                ? require('./helpers/station-stub')
+                ? (harnessOptions.realAuthorization ? realStation : require('./helpers/station-stub'))
               : name === '../shared/station-local-input'
                 ? stationLocalInput
               : require(name)
@@ -486,6 +513,7 @@ function fow(document, serials = ['12345'], date = '17 SEP 2026', options = {}) 
   const segmentXml = segmentOrigin ? `<StsSegDep>${segmentOrigin}</StsSegDep>` : '';
   const timeXml = eventTime === null ? '' : `<StsTime>${eventTime}</StsTime>`;
   return {
+    stationId: options.stationId || '1',
     xml: `<FSUMessage><DocumentCorID>${document}</DocumentCorID><MessageType>FSU</MessageType><StatusCode>FOW</StatusCode><StsCar>CX</StsCar><StsCarNum>178</StsCarNum><StsDatt>${date}</StsDatt>${stationXml}${segmentXml}<StsSegArr>${destination}</StsSegArr>${timeXml}<DocPrfx>160</DocPrfx><DocNum>11111111</DocNum>${ulds}</FSUMessage>`
   };
 }
@@ -719,6 +747,7 @@ test('rolled-back DocumentCorID request cannot delete a different-station commit
   const rejected = api.call('mach-fow', fow('  global-document-rollback  '));
   await hold.acquired;
   const committed = api.call('mach-fow', fow('GLOBAL-DOCUMENT-ROLLBACK', ['23456'], '17 SEP 2026', {
+    stationId: '8',
     station: 'AKL',
     segmentOrigin: 'AKL',
     destination: 'SYD'
@@ -932,6 +961,7 @@ test('human MEL and AKL FOW fixtures remain independently station-authorized', a
   const api = harness();
   const mel = await api.call('mach-fow', fow('HUMAN-MEL-FIXTURE'));
   const akl = await api.call('mach-fow', fow('HUMAN-AKL-FIXTURE', ['22345'], '17 SEP 2026', {
+    stationId: '8',
     station: 'AKL', segmentOrigin: 'AKL', destination: 'SYD'
   }));
   assert.deepEqual([mel.status, akl.status], [201, 201]);
@@ -1348,6 +1378,7 @@ function exportUwsBody(action = 'PARSE_EXPORT_UWS') {
   };
   return {
     action,
+    stationId: '1',
     sourceFileName: 'renamed-document.xlsx',
     workbook: { sheets: [{ name: 'Sheet1', rows: [
       sparse(28, { 1: 'CX', 5: 'ULD/BULK LOAD WEIGHT STATEMENT' }),
@@ -1417,4 +1448,115 @@ test('UWS fails closed on duplicate exact flight identity, direction mismatch, a
   assert.equal(response.body.code, 'EXPORT_MANIFEST_ALREADY_FINAL');
   assert.equal(final.state.uploads.length, 0);
   assert.equal(final.state.audits.length, 0);
+});
+
+// H1: exercise the real HTTP, authorization, station and transaction code.
+// Only SQL result rows/storage are simulated; IDs deliberately match MEL=1/AKL=2.
+function h1Fow(documentStation, selectedStation) {
+  return { ...fow('H1-' + documentStation, ['12345'], '19 SEP 2026', {
+    station: documentStation, segmentOrigin: documentStation
+  }), stationId: selectedStation };
+}
+function h1Uws(documentStation, selectedStation, action) {
+  const body = exportUwsBody(action);
+  body.stationId = selectedStation;
+  body.workbook.sheets[0].rows[2][1] = documentStation;
+  return body;
+}
+function h1Api(options = {}) {
+  return harness(h1Stations.map(s => ({ FlightId: Number(s.StationId) + 80,
+    StationId: s.StationId, FlightNumber: 'CX134', OperatingDate: '2026-09-19',
+    Direction: 'EXPORT', FlightStatus: 'ACTIVE', OriginAirport: s.StationCode, DestinationAirport: 'HKG'
+  })), { realAuthorization: true, ...options });
+}
+function assertH1NoWrites(api, before) {
+  for (const name of ['flights', 'ulds', 'messages', 'links', 'uploads', 'finals', 'finalMembers', 'completions', 'audits', 'shcs']) {
+    assert.deepEqual(api.state[name], before[name], name + ' must remain unchanged');
+  }
+  assert.equal(api.state.calls.filter(({ q }) => /^(INSERT|UPDATE|DELETE|MERGE)\b/i.test(q)).length, 0);
+  assert.equal(api.state.commits, 0);
+}
+for (const [selected, id] of [['MEL', '1'], ['AKL', '2']]) {
+  for (const documentStation of ['MEL', 'AKL']) {
+    const matches = selected === documentStation;
+    test('H1 FOW selected ' + selected + ' document ' + documentStation + (matches ? ' accepted' : ' mismatch denied'), async () => {
+      const api = h1Api(), before = structuredClone(api.state);
+      const reply = await api.call('mach-fow', h1Fow(documentStation, id));
+      assert.equal(reply.status, matches ? 201 : 422, JSON.stringify({reply, writes: api.state.calls.filter(c => /^(INSERT|UPDATE)/.test(c.q)).length}));
+      if (!matches) { assert.equal(reply.body.code, 'DOCUMENT_STATION_MISMATCH'); assertH1NoWrites(api, before); }
+      else {
+        assert.equal(String(api.state.flights.at(-1).StationId), id);
+        assert.equal(String(api.state.messages[0].StationId), id);
+        assert.equal(api.state.commits, 1);
+        const snapshot = ['flights','ulds','messages','links'].map(n => structuredClone(api.state[n]));
+        const duplicate = await api.call('mach-fow', h1Fow(documentStation, id));
+        assert.equal(duplicate.body.duplicate, true);
+        assert.deepEqual(['flights','ulds','messages','links'].map(n => api.state[n]), snapshot);
+      }
+    });
+    for (const action of ['PARSE_EXPORT_UWS', 'REVIEW_EXPORT_UWS']) {
+      test('H1 ' + action + ' selected ' + selected + ' document ' + documentStation + (matches ? ' accepted' : ' mismatch denied'), async () => {
+        const api = h1Api(), before = structuredClone(api.state);
+        const reply = await api.call('manifest-upload', h1Uws(documentStation, id, action));
+        assert.equal(reply.status, matches ? 200 : 422, JSON.stringify({reply, uploads: api.state.uploads.length, audits: api.state.audits.length}));
+        if (!matches) { assert.equal(reply.body.code, 'DOCUMENT_STATION_MISMATCH'); assertH1NoWrites(api, before); }
+        else {
+          assert.equal(reply.body.exactMatch.flightId, String(Number(id) + 80));
+          if (action === 'PARSE_EXPORT_UWS') assertH1NoWrites(api, before);
+          else {
+            assert.equal(api.state.uploads.length, 1); assert.equal(api.state.audits.length, 1);
+            assert.equal(String(api.state.uploads[0].UwsUploadFlightId), reply.body.exactMatch.flightId);
+            assert.equal(String(api.state.audits[0].AuditFlightId), reply.body.exactMatch.flightId);
+            assert.deepEqual(api.state.flights, before.flights); assert.deepEqual(api.state.ulds, before.ulds);
+          }
+        }
+      });
+    }
+  }
+}
+for (const kind of ['FOW', 'PARSE_EXPORT_UWS', 'REVIEW_EXPORT_UWS']) {
+  test('H1 ' + kind + ' rejects missing/forged selection, missing capability and MEL-only AKL access before any write', async () => {
+    const cases = [undefined, null, '', '0', '999', 'AKL', ['1'], { stationId: '1' }].map(stationId => ({stationId}));
+    cases.push({ stationId: '2', allowedStations: ['MEL'] }, {stationId: '2', capabilities: ['VIEW_FLIGHTS']});
+    for (const options of cases) {
+      const api = h1Api(options), before = structuredClone(api.state);
+      const body = kind === 'FOW' ? h1Fow('AKL', options.stationId) : h1Uws('AKL', options.stationId, kind);
+      const reply = await api.call(kind === 'FOW' ? 'mach-fow' : 'manifest-upload', body);
+      assert.equal(reply.status, 403, JSON.stringify({options,reply}));
+      assertH1NoWrites(api, before);
+    }
+  });
+}
+test('H1 FOW missing or conflicting document handling station is denied without writes', async () => {
+  for (const evidence of [{station:null, segmentOrigin:null}, {station:'MEL',segmentOrigin:'AKL'}]) {
+    const api=h1Api(), before=structuredClone(api.state);
+    const reply=await api.call('mach-fow', {...fow('H1-INCONSISTENT',['12345'],'19 SEP 2026',evidence),stationId:'1'});
+    assert.equal(reply.status,422);assert.equal(reply.body.code,'DOCUMENT_STATION_MISMATCH');assertH1NoWrites(api,before);
+  }
+});
+test('H1 machine MEL binding ignores forged interactive selection and preserves duplicate handling', async () => {
+  const api=h1Api({machineBindings: JSON.stringify([{integrationId:'mel-test-feed',stationId:'1',credential:'test-machine-token',enabled:true}])});
+  const body=h1Fow('MEL','2');
+  const first=await api.call('mach-fow',body,{machine:true});
+  assert.equal(first.status,201);assert.equal(String(api.state.messages[0].StationId),'1');
+  assert.equal((await api.call('mach-fow',body,{machine:true})).body.duplicate,true);
+  const before=structuredClone(api.state), denied=await api.call('mach-fow',h1Fow('AKL','1'),{machine:true});
+  assert.equal(denied.status,422);assert.equal(denied.body.code,'MACHINE_STATION_MISMATCH');
+  for(const key of ['flights','ulds','messages','links','audits'])assert.deepEqual(api.state[key],before[key]);
+});
+
+test('H1 UWS cannot match a flight owned by AKL using a MEL route label', async () => {
+  for (const action of ['PARSE_EXPORT_UWS', 'REVIEW_EXPORT_UWS']) {
+    const api = harness([{ FlightId: 88, StationId: '2', FlightNumber: 'CX134',
+      OperatingDate: '2026-09-19', Direction: 'EXPORT', FlightStatus: 'ACTIVE',
+      OriginAirport: 'MEL', DestinationAirport: 'HKG' }], {realAuthorization: true});
+    const before = structuredClone(api.state);
+    const reply = await api.call('manifest-upload', h1Uws('MEL', '1', action));
+    assert.equal(reply.status, 404); assertH1NoWrites(api, before);
+  }
+});
+test('H1 UWS missing document station cannot write upload or audit evidence', async () => {
+  const api = h1Api(), before = structuredClone(api.state);
+  const reply = await api.call('manifest-upload', h1Uws('', '1', 'REVIEW_EXPORT_UWS'));
+  assert.equal(reply.status, 422); assertH1NoWrites(api, before);
 });

@@ -22,7 +22,6 @@ const {
   sendOperationalAuthorizationError
 } = require('../shared/operational-authorization');
 const {
-  resolveAuthorizedStation,
   resolveStationById
 } = require('../shared/station');
 
@@ -1129,10 +1128,18 @@ module.exports = async function(
       ? null
       : await requireOperationalStations(pool, sql, actor, 'UPLOAD_FLIGHT_DATA');
     if (!live) {
-      operationalStation = await resolveAuthorizedStation(pool, sql, access, station || origin);
+      // Human uploads bind to the explicit UI selection, never the XML's port.
+      // Machine requests continue to use their authenticated integration binding.
+      const selected = authorizeRequestedStation({
+        userAccess: access,
+        stationId: ['string', 'number'].includes(typeof req.body?.stationId) ? req.body.stationId : null,
+        requiredCapability: 'UPLOAD_FLIGHT_DATA'
+      });
+      operationalStation = await resolveStationById(pool, sql, selected.stationId);
     }
 
     if (
+      (!live && !station) ||
       (eventStation && eventStation !== operationalStation.stationCode) ||
       (segmentDeparture && segmentDeparture !== operationalStation.stationCode) ||
       (!eventStation && origin && origin !== operationalStation.stationCode)
@@ -1145,9 +1152,10 @@ module.exports = async function(
           }
         : {
             ok: false,
+            code: 'DOCUMENT_STATION_MISMATCH',
             error:
-              `The message station does not match the authorized handling station. ` +
-              `Message station is ${station || origin || 'unknown'}`
+              `The FOW document station does not match selected station ${operationalStation.stationCode}. ` +
+              `Document handling station is ${station || origin || 'unknown'}; segment departure is ${segmentDeparture || 'unspecified'}. No changes were made.`
           });
 
       return;

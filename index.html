@@ -2065,19 +2065,21 @@ function mobileBottomNav(){
 }
 
 function fowSampleXml(){
- const now=new Date(),months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],dd=String(now.getDate()).padStart(2,'0'),mon=months[now.getMonth()],yyyy=now.getFullYear(),hh=String(now.getHours()).padStart(2,'0'),mm=String(now.getMinutes()).padStart(2,'0'),serial=String(Math.floor(10000+Math.random()*89999)),doc=String(Date.now());
- return `<?xml version="1.0" encoding="UTF-8"?>\n<FSUMessage xmlns="http://eix.com/message-schemas/fsu" xmlns:cms="http://eix.com/core/message" xmlns:ns1="http://eix.com/core">\n  <cms:DocumentCorID>${doc}</cms:DocumentCorID>\n  <cms:FromMsgEnvelope IsEnvelopeParsed="false" ParsedTillPosition="0"><ns1:Recipients><ns1:Recipient><ns1:AddressType>PARTICIPANT</ns1:AddressType><ns1:AddressCode>CX</ns1:AddressCode></ns1:Recipient></ns1:Recipients></cms:FromMsgEnvelope>\n  <cms:MessageMetaData/>\n  <MessageType>FSU</MessageType><MessageVersion>P</MessageVersion>\n  <Consignment><DocTyp>MAWB</DocTyp><DocPrfx>160</DocPrfx><DocNum>00000001</DocNum><OrigApt>MEL</OrigApt><DestApt>HKG</DestApt><ConTPPcs>2</ConTPPcs></Consignment>\n  <Status><StatusCode>FOW</StatusCode><StsCar>CX</StsCar><StsCarNum>0178</StsCarNum><StsDatt>${dd}-${mon}-${yyyy}</StsDatt><StsDay>${dd}</StsDay><StsMonth>${mon.toUpperCase()}</StsMonth><StsYear>${yyyy}</StsYear><StsTime>${hh}${mm}</StsTime><StsSegDep>MEL</StsSegDep><StsSegArr>HKG</StsSegArr><StsApt>MEL</StsApt><StsPcs>2</StsPcs></Status>\n  <ULD><FSUMessageULDList><ULDTyp>AKE</ULDTyp><ULDSrl>${serial}</ULDSrl><ULDOwnr>CX</ULDOwnr></FSUMessageULDList></ULD>\n</FSUMessage>`;
+ const station=selectedStation(),now=Date.now(),local=stationLocalInputParts(now,station?.timeZoneId);
+ if(!station||!local)throw new Error('Select an authorized station with a valid timezone before loading a FOW sample.');
+ const port=station.stationCode,months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'],[yyyy,month,dd]=local.localDate.split('-'),mon=months[Number(month)-1],[hh,mm]=local.localTime.split(':'),serial=String(Math.floor(10000+Math.random()*89999)),doc=String(now);
+ return `<?xml version="1.0" encoding="UTF-8"?>\n<FSUMessage xmlns="http://eix.com/message-schemas/fsu" xmlns:cms="http://eix.com/core/message" xmlns:ns1="http://eix.com/core">\n  <cms:DocumentCorID>${doc}</cms:DocumentCorID>\n  <cms:FromMsgEnvelope IsEnvelopeParsed="false" ParsedTillPosition="0"><ns1:Recipients><ns1:Recipient><ns1:AddressType>PARTICIPANT</ns1:AddressType><ns1:AddressCode>CX</ns1:AddressCode></ns1:Recipient></ns1:Recipients></cms:FromMsgEnvelope>\n  <cms:MessageMetaData/>\n  <MessageType>FSU</MessageType><MessageVersion>P</MessageVersion>\n  <Consignment><DocTyp>MAWB</DocTyp><DocPrfx>160</DocPrfx><DocNum>00000001</DocNum><OrigApt>${port}</OrigApt><DestApt>HKG</DestApt><ConTPPcs>2</ConTPPcs></Consignment>\n  <Status><StatusCode>FOW</StatusCode><StsCar>CX</StsCar><StsCarNum>0178</StsCarNum><StsDatt>${dd}-${mon}-${yyyy}</StsDatt><StsDay>${dd}</StsDay><StsMonth>${mon.toUpperCase()}</StsMonth><StsYear>${yyyy}</StsYear><StsTime>${hh}${mm}</StsTime><StsSegDep>${port}</StsSegDep><StsSegArr>HKG</StsSegArr><StsApt>${port}</StsApt><StsPcs>2</StsPcs></Status>\n  <ULD><FSUMessageULDList><ULDTyp>AKE</ULDTyp><ULDSrl>${serial}</ULDSrl><ULDOwnr>CX</ULDOwnr></FSUMessageULDList></ULD>\n</FSUMessage>`;
 }
-function loadFowSample(){const el=document.getElementById('machFowXml');if(el)el.value=fowSampleXml()}
+function loadFowSample(){try{const el=document.getElementById('machFowXml');if(el)el.value=fowSampleXml()}catch(error){toast(error.message)}}
 async function loadMachFowRecent(silent=true){const generation=operationalSessionGeneration;if(machFowLoading||!operationalSessionIsCurrent(generation))return;machFowLoading=true;try{const res=await fetch(selectedStationApiUrl('/api/mach-fow'),{headers:{Accept:'application/json'},cache:'no-store'}),data=await res.json().catch(()=>({}));if(!operationalSessionIsCurrent(generation))return;if(!res.ok||data.ok===false)throw new Error(data.error||`MACH FOW API ${res.status}`);machFowRecent=Array.isArray(data.messages)?data.messages:[];machFowReceiver=data.receiver||null;machFowLoaded=true;if(route.screen==='machfow')render()}catch(err){if(!operationalSessionIsCurrent(generation))return;console.error(err);if(!silent)toast(err?.message||'Could not load FOW message log')}finally{if(operationalSessionIsCurrent(generation))machFowLoading=false}}
 async function processMachFow(){
   if(!canUseStationAction('uploadFlightData'))return false;
-  const generation=operationalSessionGeneration;
+  const generation=operationalSessionGeneration,stationId=selectedStation()?.stationId;
   const xml=(document.getElementById('machFowXml')?.value||'').trim();
   if(!xml||!operationalSessionIsCurrent(generation)){if(!xml)toast('Paste a FOW XML message first');return}
   showActionLoader('Processing MACH FOW…','Checking flight and unique ULDs');
   try{
-    const res=await fetch('/api/mach-fow',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({xml,source:'SIMULATOR'})});
+    const res=await fetch('/api/mach-fow',{method:'POST',headers:{'Content-Type':'application/json',Accept:'application/json'},body:JSON.stringify({xml,source:'SIMULATOR',stationId})});
     const data=await res.json().catch(()=>({}));
     if(!operationalSessionIsCurrent(generation))return;
     if(!res.ok||data.ok===false)throw new Error(data.error||data.detail||`MACH FOW API ${res.status}`);
@@ -3296,10 +3298,11 @@ function cargoRunUwsDraft(document, sourceFile) {
 
 async function parseExportUwsWorkbook(workbook, sourceFileName, generation) {
   if (!operationalSessionIsCurrent(generation)) return null;
+  const stationId = selectedStation()?.stationId;
   const response = await fetch('/api/manifest-upload', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-    body: JSON.stringify({ action: 'PARSE_EXPORT_UWS', sourceFileName, workbook })
+    body: JSON.stringify({ action: 'PARSE_EXPORT_UWS', sourceFileName, workbook, stationId })
   });
   const result = await response.json().catch(() => ({}));
   if (!operationalSessionIsCurrent(generation)) return null;
@@ -3309,6 +3312,7 @@ async function parseExportUwsWorkbook(workbook, sourceFileName, generation) {
   parsed.exactMatch = result.exactMatch || null;
   parsed.reconciliation = result.reconciliation || null;
   parsed._workbook = workbook;
+  parsed._stationId = stationId;
   if (!parsed.exactFlightId) throw new Error('Export UWS did not resolve an exact CargoRun FlightId.');
   return parsed;
 }
@@ -3626,9 +3630,10 @@ function cargoRunApiDate(value) {
 
 async function reviewExportUwsUpload(p) {
   const generation = operationalSessionGeneration;
+  const stationId = selectedStation()?.stationId;
   const btn = document.getElementById('createFlightBtn');
   if (!operationalSessionIsCurrent(generation)) return;
-  if (!p?._workbook || !p.exactFlightId) {
+  if (!p?._workbook || !p.exactFlightId || !stationId || p._stationId !== stationId) {
     toast('Select the Export UWS again.');
     return;
   }
@@ -3643,6 +3648,7 @@ async function reviewExportUwsUpload(p) {
       headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
       body: JSON.stringify({
         action: 'REVIEW_EXPORT_UWS',
+        stationId,
         sourceFileName: p.sourceFile || '',
         workbook: p._workbook
       })

@@ -102,6 +102,13 @@ function machHarness({ candidates = [], duplicate = null, allowedStations = ['ME
       stations: [...allowedStations],
       requiredCapability: 'UPLOAD_FLIGHT_DATA'
     }),
+    authorizeRequestedStation: ({ stationId, requiredCapability }) => {
+      assert.equal(requiredCapability, 'UPLOAD_FLIGHT_DATA');
+      const stationCode = stationId === '1' ? 'MEL' : '';
+      events.push(`authorize:${stationCode || 'UNKNOWN'}`);
+      if (!allowedStations.includes(stationCode)) throw authorizationError('STATION_ACCESS_DENIED');
+      return { stationId, stationCode, requiredCapability };
+    },
     bindStationParameters: () => { throw new Error('not used'); },
     flightStationPredicate: () => { throw new Error('not used'); },
     requireOperationalCapability: async (_executor, _sql, _actor, flight) => {
@@ -133,7 +140,10 @@ function machHarness({ candidates = [], duplicate = null, allowedStations = ['ME
       displayName: stationCode,
       timeZoneId: stationCode === 'AKL' ? 'Pacific/Auckland' : 'Australia/Melbourne'
     }),
-    resolveStationById: async () => { throw new Error('not used'); },
+    resolveStationById: async (_executor, _sql, stationId) => {
+      assert.equal(stationId, '1');
+      return { stationId, stationCode: 'MEL', displayName: 'Melbourne', timeZoneId: 'Australia/Melbourne' };
+    },
     resolveAuthorizedStation: async (_executor, _sql, _access, requestedStation) => {
       const stationCode = String(requestedStation || '').trim().toUpperCase();
       events.push(`authorize:${stationCode || 'UNKNOWN'}`);
@@ -168,7 +178,7 @@ function machHarness({ candidates = [], duplicate = null, allowedStations = ['ME
     const context = { log: Object.assign(() => {}, { error() {}, warn() {} }) };
     await module.exports(context, {
       method: 'POST',
-      body: { xml: machXml(documentCorId) },
+      body: { stationId: '1', xml: machXml(documentCorId) },
       query: {},
       headers: { 'x-ms-client-principal': principal }
     });
