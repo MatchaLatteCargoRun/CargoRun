@@ -1,15 +1,31 @@
 {
-  "schemaVersion": 5,
-  "status": "LINUX_VALIDATION_PENDING",
+  "schemaVersion": 7,
+  "status": "NEW_LINUX_AND_BUILD_REHEARSAL_PENDING",
   "baseCommit": "f3c757ae0a1cad89e2c652f735504592206e485a",
+  "previousValidatedCommit": "b24ee7488dc1075777605cf0e309807f12c741a3",
   "branch": "validation/sql-driver-upgrade-20261018",
-  "purpose": "Build-only Linux assessment; no deployment authorization",
-  "hashMeaning": "SHA-256 of exact staged Git blobs for changed candidate files. Historical H2 inventory retained separately. This manifest is excluded from its own hash; its blob identity is bound by the tested commit.",
+  "purpose": "Build-only workflow correction and testing-only fix-forward preparation; no deployment authorized",
+  "hashMeaning": "SHA-256 of exact staged Git blobs. Self excluded and bound by the containing commit. No local evidence paths.",
+  "correctionScope": [
+    ".github/workflows/deploy-cargorun.yml",
+    ".github/workflows/validate-cargorun-linux.yml",
+    "docs/akl-runtime-release-manifest.json",
+    "docs/release-remediation-plan.txt",
+    "scripts/prepare-offline-driver-fixture.js",
+    "scripts/validate-linux-release.js",
+    "scripts/verify-deployment-rehearsal.js",
+    "tests/offline-fixture.test.js"
+  ],
   "files": [
     {
+      "path": ".github/workflows/deploy-cargorun.yml",
+      "bytes": 1735,
+      "sha256": "14A5FC1EADFD91332F3CD4F0ADF2756454010DDE3921318EA8E0689D6D4A504B"
+    },
+    {
       "path": ".github/workflows/validate-cargorun-linux.yml",
-      "bytes": 833,
-      "sha256": "89F33333F79B1022DFD37B8776681569ABDD574EB730ED079C6ACEFD44AB3271"
+      "bytes": 2182,
+      "sha256": "B7890F7343CE1C84A8A82083A60A6D315F0A4F469672C4EF298B004904E183FE"
     },
     {
       "path": "api/package-lock.json",
@@ -37,6 +53,11 @@
       "sha256": "9C484536694E24AA02F6918D5CC7701BFC81B7A9AFEDF96785ABCAB197BBECE7"
     },
     {
+      "path": "docs/release-remediation-plan.txt",
+      "bytes": 5228,
+      "sha256": "5890351E15980B12EF88A85C3BAB56ECA58B1791DC36ED32626602C17FD20E39"
+    },
+    {
       "path": "docs/sql-driver-linux-validation.txt",
       "bytes": 2936,
       "sha256": "CBF635714CCB8FE317AE7BB5948E99748135F47EE0864499EF6E3A18EFB7C837"
@@ -47,9 +68,19 @@
       "sha256": "92B7548A98C5F099372DA68170DA468E60A44C8DDCEE4C97FA460AF0FC23EA17"
     },
     {
+      "path": "scripts/prepare-offline-driver-fixture.js",
+      "bytes": 4935,
+      "sha256": "D7256C7CD7B7602683F90E46F82288730B9A2DAC900B288588332F759F2F0C1D"
+    },
+    {
       "path": "scripts/validate-linux-release.js",
-      "bytes": 13619,
-      "sha256": "2E46A6C9F71587F71581DFA158C2F1639AFDBC0DFFC231ED66DFD81857BFE19C"
+      "bytes": 12552,
+      "sha256": "968BAD29B8EF8CDDAC640E63147E6C64C981CF2A81C22EE005326210089BB71C"
+    },
+    {
+      "path": "scripts/verify-deployment-rehearsal.js",
+      "bytes": 6833,
+      "sha256": "99E8F3C1EFE7DF9D54F9F5B6E7AAB5A136A5D0EAD6D5B5175BC434B0D7F39B1F"
     },
     {
       "path": "tests/dependency-security-gate.test.js",
@@ -67,17 +98,25 @@
       "sha256": "9B44B7097C7839636B066C60D282A9D70B0446A9B53DF613A19CE5A9157F11EA"
     },
     {
+      "path": "tests/offline-fixture.test.js",
+      "bytes": 5598,
+      "sha256": "A2E6C78EFBDDA31A2784E084816CB0B6158C04728FF11B4E38946F27E3D2C172"
+    },
+    {
       "path": "tools/sql-driver-assessment/offline.test.js",
       "bytes": 5485,
       "sha256": "1F750B42660C18AE4950B62E96E1A3E2A016EB5A651B3D07E50C6C76938B3A7D"
     }
   ],
-  "windowsEvidence": {
-    "realSqlPassed": 146,
-    "automatedPassed": 897,
-    "securityTestsIncluded": 43,
-    "offlineDriverComparisonsIncluded": 25,
-    "runtimeUnchanged": true
+  "expectedTests": 906,
+  "securityTests": 43,
+  "offlineComparisons": 25,
+  "priorSqlEvidence": {
+    "passed": 146,
+    "appliesToUnchangedH2Runtime": true,
+    "repeated": false
   },
-  "linuxEvidence": "Read CARGORUN_LINUX_EVIDENCE in the Actions logs for this exact commit. Pending at commit preparation."
+  "recoveryPolicy": "Testing-only fix-forward with accepted downtime; H1 is not an approved fallback",
+  "containment": "NOT QUALIFIED BY THIS WORKFLOW-ONLY CANDIDATE; separate investigation/prototype evidence required",
+  "authorizesDeployment": false
 }

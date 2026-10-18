@@ -1,0 +1,80 @@
+CARGORUN - WORKFLOW CORRECTION AND TESTING-ONLY FIX-FORWARD
+
+Prior validated candidate: b24ee7488dc1075777605cf0e309807f12c741a3.
+The containing NEW commit and its Actions results bind this correction. Commit
+and isolated validation-branch push are authorized. No deployment is authorized.
+
+SOURCE SCOPE
+H2 runtime, mssql 12.7.6/tedious 20.3.7, strict zero-advisory policy, station
+authorization and publication allowlist are unchanged. The 146 SQL and prior
+897 Windows/Linux results retain their runtime scope, not this new CI scope.
+Historical fixture preparation now precedes deployment tests and is shared with
+the Linux validator. Exact H2 Git package blobs, lock and installed tree are
+verified. The old graph remains outside application/package roots, gets no SQL
+or deployment secrets and is used only by 25 offline driver comparisons.
+
+The production job now requires refs/heads/main for push and manual dispatch.
+Token references, Azure upload paths and resource selection are unchanged.
+Checkout retains no credential. A branch push creates no PR or manual dispatch.
+
+NEW LINUX VALIDATION REQUIRED
+Both jobs are guarded to validation/sql-driver-upgrade-20261018 push, contents:read,
+Node 22.23.3/npm 11.11.0, no Azure action or secret inputs.
+1. Existing clean-copy job: 906 tests (897 + nine fixture tests), 43 security,
+   25 comparisons, both security contexts, fresh zero audit, two deterministic
+   installs, all 16 functions, publication allowlist and every package hash.
+2. Deployment-build rehearsal: same five build commands as the actual deployment
+   job; helper CLI/GITHUB_ENV in one step, full tests in a later process/step;
+   production gate, package, negative missing/tampered fixture children and
+   independent inventory checks. No upload exists. Explicit bash gives pipefail
+   while tee records tests. Static checks bind command order/guards and forbid
+   error bypasses before production upload.
+New CI results are pending at commit preparation; use the exact run/SHA evidence.
+
+SELECTED RECOVERY POLICY
+CargoRun is testing-only despite Azure's Production slot name. Temporary downtime
+and paused testing are accepted. H1 recovery is rejected as the default remedy;
+the H1 experiment/package is historical evidence, not an approved fallback.
+Never use cbb579c or the obsolete dependency exception.
+STOP UNSAFE OPERATIONS -> PRESERVE EVIDENCE -> DIAGNOSE -> FIX -> VALIDATE ->
+SEPARATELY AUTHORIZE FIX-FORWARD DEPLOYMENT -> VERIFY -> RESUME.
+No automatic rollback/retry, database restore, grant reset or TLS bypass.
+Disposable data loss still requires separate explicit approval.
+
+CONTAINMENT IS A SEPARATE RELEASE GATE
+Downtime acceptance does not prove writes can be stopped. Browser controls do not
+cover direct API and MACH/FOW clients. No containment prototype is part of this
+candidate. Separate route/method analysis and local synthetic prototype evidence
+cannot establish a deployed control. Release requires demonstrated coverage of
+new requests and in-flight transactions, controlled activation/deactivation,
+durable audit, observable active state and all browser/direct/machine/admin paths.
+If unavailable, classify VALIDATION PASSED - CONTAINMENT BLOCKED. A new runtime
+feature needs separate scope plus Windows/Linux/actual-SQL validation; do not push
+it under this workflow-only authorization. Azure-side qualification also needs
+separate authorization on an isolated disposable resource.
+
+INCIDENT AND FUTURE RELEASE PLAN
+Before-upload failure: verify no upload began and actual serving revision, then
+fix/revalidate CI. Ambiguous upload: inspect actual environment/worker/API state;
+only a proven transient fault may justify a separately approved identical-package
+retry. Driver/startup/auth failures: pause testing, capture sanitized diagnostics
+and identify runtime/config/network cause without downgrades or TLS bypass.
+Station/lifecycle/immutable-evidence/machine faults: use the QUALIFIED containment
+procedure, preserve originals, escalate, and fix with affected validation. Do not
+repair data or expand grants. Completed transactions are not retroactively rolled
+back. Read-only success does not prove live write safety.
+
+Before release, name deployment and MEL/AKL smoke operators and incident decision-
+maker; agree window/observation/downtime. Require containment evidence, new exact
+SHA/Linux run, main/ancestry/rules, no competing deployment and verified token-to-
+cargorun-dev/default destination without exposing the token. Confirm sanitized
+SQL auth/TLS and approved schema/grant evidence. Only separate explicit approval
+permits one non-force exact-SHA fast-forward to main. Merge/rebase changes identity.
+
+After separately approved upload: correlate SHA/run/package/default hostname;
+Functions startup, one sequential db-health read, authenticated session, MEL/AKL
+Board/History/Supervisor/ULD/mail reads using real station IDs, scoped wrong-station
+denial, ADMIN read views, V1 hashes/V2+ chains/prior audits/FINAL, MACH/FOW MEL-only
+binding without ingestion, and SQL/TLS/5xx monitoring. Any operational writes need
+separate approval. Stop on security/data/ownership/SQL/critical API failures and
+activate the agreed incident procedure before resuming testing.

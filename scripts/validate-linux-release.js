@@ -2,6 +2,7 @@
 // Build-only Linux validation. No Azure, GitHub, SQL or deployment command.
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
 const {spawnSync,execFileSync}=require('node:child_process');
+const {prepareFixture}=require('./prepare-offline-driver-fixture');
 const {validateDependencies,safeRelative}=require('./build-deployment-package');
 const {readDependencyState,dependencyFileSha256,parseAudit,PRODUCTION_TARGET,PRODUCTION_APPROVAL}=require('./dependency-security-gate');
 function requireLinux(platform=process.platform,node=process.version){
@@ -73,7 +74,6 @@ function runDependencyTests(root,{runner=spawnSync,diagnose=emitDependencyDiagno
 function validateLinux(){
   requireLinux();
   const source=path.resolve(__dirname,'..'),task=fs.mkdtempSync(path.join(os.tmpdir(),'cargorun-linux-release-'));
-  const sha=bytes=>crypto.createHash('sha256').update(bytes).digest('hex').toUpperCase();
   const git=args=>execFileSync('git',args,{cwd:source,encoding:'utf8'}).trim();
   const testedSha=git(['rev-parse','HEAD']);
   if(!/^[a-f0-9]{40}$/.test(testedSha)||testedSha!==process.env.GITHUB_SHA||
@@ -94,19 +94,9 @@ function validateLinux(){
   };
   const npmArgs=['--yes','npm@11.11.0'];
   run('npx',[...npmArgs,'ci','--prefix','api','--ignore-scripts','--omit=dev','--engine-strict','--no-audit','--no-fund']);
-  // The historical installation is an offline comparison fixture only. It is
-  // outside the candidate/package and never receives secrets or SQL access.
-  const reviewed=path.join(task,'reviewed');fs.mkdirSync(path.join(reviewed,'api'),{recursive:true});
-  const reviewedCommit='f3c757ae0a1cad89e2c652f735504592206e485a';
-  for(const name of ['package.json','package-lock.json']){
-    const bytes=execFileSync('git',['show',reviewedCommit+':api/'+name],{cwd:source});
-    if(name==='package-lock.json'&&sha(bytes)!=='2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6')throw Error('Historical comparison lock changed');
-    fs.writeFileSync(path.join(reviewed,'api',name),bytes);
-  }
-  run('npx',[...npmArgs,'ci','--prefix','api','--ignore-scripts','--omit=dev','--engine-strict','--no-audit','--no-fund'],reviewed);
-  process.env.CARGORUN_REVIEWED_DEPENDENCIES=path.join(reviewed,'api/node_modules');
-  if(JSON.parse(fs.readFileSync(path.join(reviewed,'api/node_modules/mssql/package.json'))).version!=='11.0.2'||
-      JSON.parse(fs.readFileSync(path.join(reviewed,'api/node_modules/tedious/package.json'))).version!=='18.6.2')throw Error('Historical comparison versions changed');
+  const fixture=prepareFixture({source,temp:task});
+  const reviewedCommit=fixture.commit;
+  process.env.CARGORUN_REVIEWED_DEPENDENCIES=fixture.directory;
   let testOutput='';
   runDependencyTests(clean,{runner:(program,args,options)=>{
     const result=spawnSync(program,args,{...options,stdio:'pipe',encoding:'utf8',timeout:1200000,maxBuffer:32*1024*1024});
@@ -114,7 +104,7 @@ function validateLinux(){
     fs.writeFileSync(path.join(task,'node-tests.tap'),testOutput);return result;
   }});
   const totals=Object.fromEntries(['tests','pass','fail','cancelled','skipped','todo'].map(key=>[key,Number(testOutput.match(new RegExp('^# '+key+' (\\d+)$','m'))?.[1]??NaN)]));
-  if(totals.tests!==897||totals.pass!==897||['fail','cancelled','skipped','todo'].some(k=>totals[k]!==0))throw Error('Unexpected Linux test totals');
+  if(totals.tests!==906||totals.pass!==906||['fail','cancelled','skipped','todo'].some(k=>totals[k]!==0))throw Error('Unexpected Linux test totals');
   const securityNames=[...fs.readFileSync(path.join(clean,'tests/dependency-security-gate.test.js'),'utf8').matchAll(/^test\('([^']+)'/gm)].map(m=>m[1]);
   securityNames.push(...['info','low','moderate','high','critical'].map(s=>'unrelated '+s+' advisory remains blocking after exception retirement'),
     ...['mssql','tedious','sprintf-js'].map(n=>'a new advisory on '+n+' cannot inherit the retired exception'));
