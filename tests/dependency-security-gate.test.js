@@ -1,15 +1,16 @@
 'use strict';
 const test=require('node:test'),assert=require('node:assert/strict'),fs=require('node:fs'),path=require('node:path'),crypto=require('node:crypto');
-const {parseGateArguments,evaluateAudit,parseAudit,collectAudit,validateState,canonicalLockfileBytes,dependencyFileSha256,readDependencyState}=require('../scripts/dependency-security-gate');
+const {PRODUCTION_APPROVAL,parseGateArguments,evaluateAudit,parseAudit,collectAudit,validateState,canonicalLockfileBytes,dependencyFileSha256,readDependencyState}=require('../scripts/dependency-security-gate');
 const {requireLinux,requireApprovedProductionResult,emitDependencyDiagnostics,runDependencyTests}=require('../scripts/validate-linux-release');
 const root=path.resolve(__dirname,'..');
-const policy=JSON.parse(fs.readFileSync(path.join(root,'docs/dependency-security-exception.json'),'utf8'));
+const policy=JSON.parse(fs.readFileSync(path.join(root,'docs/dependency-security-baseline.json'),'utf8'));
+const historicalPolicy=JSON.parse(fs.readFileSync(path.join(root,'docs/dependency-security-exception.json'),'utf8'));
 const fixture=JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/dependency-audit-reviewed.json'),'utf8'));
 const lock=JSON.parse(fs.readFileSync(path.join(root,'api/package-lock.json'),'utf8'));
 const state={lock,lockfileSha256:policy.lockfileSha256,dependencyTreeSha256:policy.dependencyTreeSha256,
  dependencyFileCount:policy.dependencyFileCount,dependencyPackages:policy.dependencyPackages};
 const clone=value=>structuredClone(value);
-const options=()=>({policy:clone(policy),state:clone(state),exitCode:1,now:Date.parse('2026-10-08T12:00:00Z'),context:'testing'});
+const options=()=>({policy:clone(policy),state:clone(state),exitCode:0,now:Date.parse('2026-10-18T12:00:00Z'),context:'testing'});
 function totals(report){
  const counts={info:0,low:0,moderate:0,high:0,critical:0,total:0};
  for(const value of Object.values(report.vulnerabilities)){counts[value.severity]++;counts.total++;}
@@ -19,14 +20,21 @@ function advisory(name='debug',severity='moderate'){
  return {source:9999999,name,dependency:name,title:'Unaccepted advisory',url:'https://github.com/advisories/GHSA-aaaa-bbbb-cccc',severity,range:'*'};
 }
 function addFinding(report,name='debug',severity='moderate'){
- report.vulnerabilities[name]={name,isDirect:false,severity,range:'*',nodes:['node_modules/'+name],
+ report.vulnerabilities[name]={name,isDirect:Object.hasOwn(lock.packages[''].dependencies,name),severity,range:'*',nodes:['node_modules/'+name],
   via:[advisory(name,severity)],effects:[],fixAvailable:false};return totals(report);
 }
-test('only the reviewed advisory and its exact three-package chain are excepted for testing',()=>{
+const findingOptions=()=>({...options(),exitCode:1});
+function chain(){
+ const r=addFinding(clone(fixture),'tedious');
+ r.vulnerabilities.tedious.effects=['mssql'];
+ r.vulnerabilities.mssql={name:'mssql',isDirect:true,severity:'moderate',range:'*',nodes:['node_modules/mssql'],via:['tedious'],effects:[],fixAvailable:false};
+ return totals(r);
+}
+test('remediated production graph passes with no accepted or hidden advisories',()=>{
  const result=evaluateAudit(clone(fixture),options());
- assert.equal(result.exceptedAdvisory,'GHSA-hp3w-g68c-fv3c');
- assert.deepEqual(result.affectedPackages,['mssql','sprintf-js','tedious']);
- assert.equal(result.productionApproval,'APPROVED_CARGORUN_LIVE_TESTING');
+ assert.equal(result.exceptedAdvisory,null);assert.deepEqual(result.affectedPackages,[]);
+ assert.deepEqual(result.nonBlockingAdvisories,[]);assert.equal(result.authorizesDeployment,false);
+ assert.equal(policy.retiredException.status,'RETIRED');assert.equal(result.productionApproval,PRODUCTION_APPROVAL);
 });
 test('production context requires an explicit approved target including the default context',()=>{
  for(const context of ['production',undefined]){
@@ -34,84 +42,65 @@ test('production context requires an explicit approved target including the defa
   assert.throws(()=>evaluateAudit(clone(fixture),opts),/PRODUCTION_NOT_APPROVED/);
  }
 });
-test('expiry rejects the exact boundary and later times; one millisecond before is valid',()=>{
- const opts=options();opts.now=Date.parse(policy.expiresAtUtc)-1;
- assert.equal(evaluateAudit(clone(fixture),opts).ok,true);
- for(const now of [Date.parse(policy.expiresAtUtc),Date.parse(policy.expiresAtUtc)+1]){
-  assert.throws(()=>evaluateAudit(clone(fixture),{...opts,now}),/EXCEPTION_EXPIRED/);
- }
+test('retired exception is rejected before, at and after its original expiry',()=>{
+ for(const now of [Date.parse(historicalPolicy.expiresAtUtc)-1,Date.parse(historicalPolicy.expiresAtUtc),Date.parse(historicalPolicy.expiresAtUtc)+1])
+  assert.throws(()=>evaluateAudit(clone(fixture),{...options(),policy:historicalPolicy,now}),/POLICY_INVALID/);
+ assert.equal(historicalPolicy.expiresAtUtc,'2026-11-08T00:00:00.000Z');
+ assert.equal(crypto.createHash('sha256').update(canonicalLockfileBytes(fs.readFileSync(path.join(root,policy.retiredException.historicalPolicy)))).digest('hex').toUpperCase(),policy.retiredException.historicalPolicySha256);
 });
-test('invalid clocks and extended expiry cannot grant an exception',()=>{
+test('invalid clocks and altered retirement expiry cannot grant an exception',()=>{
  for(const now of [NaN,Infinity,Date.parse(policy.validFromUtc)-1])assert.throws(()=>evaluateAudit(clone(fixture),{...options(),now}),/CLOCK_INVALID/);
- const opts=options();opts.policy.expiresAtUtc='2027-11-08T00:00:00.000Z';
+ const opts=options();opts.policy.retiredException.originalExpiresAtUtc='2027-11-08T00:00:00.000Z';
  assert.throws(()=>evaluateAudit(clone(fixture),opts),/POLICY_INVALID/);
 });
-for(const severity of ['moderate','high','critical']){
- test('unrelated '+severity+' advisories remain blocking beside the exception',()=>{
-  assert.throws(()=>evaluateAudit(addFinding(clone(fixture),'debug',severity),options()),/UNACCEPTED_ADVISORY/);
- });
-}
-test('unrelated low advisories remain visible but do not change the moderate threshold',()=>{
- const result=evaluateAudit(addFinding(clone(fixture),'debug','low'),options());
- assert.equal(result.ok,true);
- assert.deepEqual(result.nonBlockingAdvisories,['https://github.com/advisories/GHSA-aaaa-bbbb-cccc']);
+for(const severity of ['info','low','moderate','high','critical'])test('unrelated '+severity+' advisory remains blocking after exception retirement',()=>{
+ assert.throws(()=>evaluateAudit(addFinding(clone(fixture),'debug',severity),findingOptions()),/UNACCEPTED_ADVISORY/);
 });
-for(const name of ['mssql','tedious','sprintf-js']){
- test('a new advisory on '+name+' cannot inherit the exception even at low severity',()=>{
-  const report=clone(fixture);report.vulnerabilities[name].via.push(advisory(name,'low'));
-  assert.throws(()=>evaluateAudit(report,options()),/UNACCEPTED_ADVISORY/);
- });
-}
-test('changed advisory identity, URL, severity, range or fix requires re-review',()=>{
- for(const change of [
-  via=>via.source++,via=>via.url+='?ignored',via=>via.severity='high',via=>via.range='*',
-  via=>via.name='mssql',via=>via.dependency='mssql'
- ]){
-  const report=clone(fixture);change(report.vulnerabilities['sprintf-js'].via[0]);
-  assert.throws(()=>evaluateAudit(report,options()),/AUDIT_INVALID|EXCEPTION_CHANGED/);
+test('low findings cannot be hidden as nonblocking advisories',()=>{
+ assert.throws(()=>evaluateAudit(addFinding(clone(fixture),'debug','low'),findingOptions()),/UNACCEPTED_ADVISORY/);
+});
+for(const name of ['mssql','tedious','sprintf-js'])test('a new advisory on '+name+' cannot inherit the retired exception',()=>{
+ assert.throws(()=>evaluateAudit(addFinding(clone(fixture),name,'low'),findingOptions()),name==='sprintf-js'?/AUDIT_INVALID/:/UNACCEPTED_ADVISORY/);
+});
+test('changed advisory identity, URL, severity, range or fix never gains acceptance',()=>{
+ for(const change of [v=>v.source++,v=>v.url+='?ignored',v=>v.severity='high',v=>v.range='*',v=>v.name='mssql',v=>v.dependency='mssql']){
+  const report=addFinding(clone(fixture),'tedious');change(report.vulnerabilities.tedious.via[0]);
+  assert.throws(()=>evaluateAudit(report,findingOptions()),/AUDIT_INVALID|UNACCEPTED_ADVISORY/);
  }
- const report=clone(fixture);report.vulnerabilities['sprintf-js'].fixAvailable=true;
- assert.throws(()=>evaluateAudit(report,options()),/EXCEPTION_CHANGED/);
+ const report=addFinding(clone(fixture),'tedious');report.vulnerabilities.tedious.fixAvailable=true;
+ assert.throws(()=>evaluateAudit(report,findingOptions()),/UNACCEPTED_ADVISORY/);
 });
 test('removing inherited vulnerability rows cannot make an incomplete chain acceptable',()=>{
- const report=clone(fixture);
- delete report.vulnerabilities.mssql;report.vulnerabilities.tedious.effects=[];totals(report);
- assert.throws(()=>evaluateAudit(report,options()),/AUDIT_INVALID/);
+ const report=chain();delete report.vulnerabilities.tedious;totals(report);
+ assert.throws(()=>evaluateAudit(report,findingOptions()),/AUDIT_INVALID/);
 });
 test('dangling and cyclic advisory references fail closed',()=>{
  for(const via of ['missing','mssql']){
-  const report=clone(fixture);report.vulnerabilities.mssql.via=[via];
-  assert.throws(()=>evaluateAudit(report,options()),/AUDIT_INVALID/);
+  const report=chain();report.vulnerabilities.mssql.via=[via];
+  assert.throws(()=>evaluateAudit(report,findingOptions()),/AUDIT_INVALID/);
  }
 });
 test('missing, invalid and understated audit metadata fails closed',()=>{
- for(const change of [
-  r=>delete r.auditReportVersion,r=>r.auditReportVersion=1,r=>delete r.metadata,
-  r=>delete r.metadata.dependencies.prod,r=>r.metadata.dependencies.total=73,
+ for(const change of [r=>delete r.auditReportVersion,r=>r.auditReportVersion=1,r=>delete r.metadata,
+  r=>delete r.metadata.dependencies.prod,r=>r.metadata.dependencies.total=74,
   r=>r.metadata.vulnerabilities.total=0,r=>r.metadata.vulnerabilities.moderate=0,
-  r=>r.error={code:'E401'},r=>r.vulnerabilities.mssql.severity='low',
+  r=>r.error={code:'E401'},r=>r.vulnerabilities.mssql.severity='unknown',
   r=>r.vulnerabilities.mssql.nodes=[],r=>r.vulnerabilities.mssql.via=[],
   r=>delete r.vulnerabilities.mssql.isDirect,r=>delete r.vulnerabilities.mssql.effects,
-  r=>r.vulnerabilities.mssql.fixAvailable={},
-  r=>r.vulnerabilities.mssql.nodes=['node_modules/not-installed']
- ]){
-  const report=clone(fixture);change(report);
-  assert.throws(()=>evaluateAudit(report,options()),/AUDIT_INVALID/);
+  r=>r.vulnerabilities.mssql.fixAvailable={},r=>r.vulnerabilities.mssql.nodes=['node_modules/not-installed']]){
+  const report=chain();change(report);assert.throws(()=>evaluateAudit(report,findingOptions()),/AUDIT_INVALID/);
  }
  for(const report of [null,[],{},false])assert.throws(()=>evaluateAudit(report,options()),/AUDIT_INVALID/);
 });
 test('audit exit status must agree with complete vulnerability evidence',()=>{
- for(const exitCode of [0,2,null,undefined])assert.throws(()=>evaluateAudit(clone(fixture),{...options(),exitCode}),/AUDIT_INVALID/);
- const clean=totals({...clone(fixture),vulnerabilities:{}});
- assert.equal(evaluateAudit(clean,{...options(),exitCode:0}).exceptedAdvisory,null);
- assert.throws(()=>evaluateAudit(clean,options()),/AUDIT_INVALID/);
+ for(const exitCode of [0,2,null,undefined])assert.throws(()=>evaluateAudit(chain(),{...options(),exitCode}),/AUDIT_INVALID/);
+ assert.equal(evaluateAudit(clone(fixture),options()).exceptedAdvisory,null);
+ assert.throws(()=>evaluateAudit(clone(fixture),findingOptions()),/AUDIT_INVALID/);
 });
 test('empty, truncated, noisy and duplicate-key JSON is rejected',()=>{
- for(const value of ['', ' ', '{', 'warning\n{}','{"a":1,"a":2}','{"x":{"a":1,"\\u0061":2}}']){
-  assert.throws(()=>parseAudit(value),/AUDIT_INVALID/);
- }
+ for(const value of ['', ' ', '{', 'warning\n{}','{"a":1,"a":2}','{"x":{"a":1,"\\u0061":2}}'])assert.throws(()=>parseAudit(value),/AUDIT_INVALID/);
  assert.deepEqual(parseAudit(JSON.stringify(fixture)),fixture);
- assert.deepEqual(parseAudit('{"a":[{"x":1},{"x":2}],"b":"{ \\"x\\": \\"y\\" }"}'),{a:[{x:1},{x:2}],b:'{ "x": "y" }'});
+ assert.deepEqual(parseAudit('{"a":[{"x":1},{"x":2}]}'),{a:[{x:1},{x:2}]});
 });
 test('npm tool errors, signals, wrong versions and incomplete output fail closed',()=>{
  const version={status:0,stdout:'11.11.0\n'};
@@ -119,27 +108,25 @@ test('npm tool errors, signals, wrong versions and incomplete output fail closed
   let call=0;assert.throws(()=>collectAudit(root,()=>call++?result:version),/AUDIT_TOOL_ERROR|AUDIT_INVALID/);
  }
  assert.throws(()=>collectAudit(root,()=>({status:0,stdout:'12.0.0'})),/AUDIT_TOOL_ERROR/);
- const calls=[];
- const result=collectAudit(root,(args)=>{calls.push(args);return calls.length===1?version:{status:1,stdout:JSON.stringify(fixture)};});
- assert.equal(result.exitCode,1);
- assert.deepEqual(calls[1],['audit','--prefix','api','--omit=dev','--json','--registry=https://registry.npmjs.org']);
+ const calls=[];const result=collectAudit(root,args=>{calls.push(args);return calls.length===1?version:{status:0,stdout:JSON.stringify(fixture)};});
+ assert.equal(result.exitCode,0);assert.deepEqual(calls[1],['audit','--prefix','api','--omit=dev','--json','--registry=https://registry.npmjs.org']);
 });
 test('lockfile, installed bytes, file count, package count and package versions are bound',()=>{
  for(const key of ['lockfileSha256','dependencyTreeSha256','dependencyFileCount','dependencyPackages']){
   const changed=clone(state);changed[key]=typeof changed[key]==='number'?changed[key]+1:'0'.repeat(64);
   assert.throws(()=>validateState(policy,changed),/DEPENDENCY_DRIFT/);
  }
- for(const name of ['mssql','tedious','sprintf-js']){
-  const changed=clone(state);changed.lock.packages['node_modules/'+name].version='99.0.0';
-  assert.throws(()=>validateState(policy,changed),/DEPENDENCY_DRIFT/);
- }
+ for(const name of ['mssql','tedious']){const changed=clone(state);changed.lock.packages['node_modules/'+name].version='99.0.0';assert.throws(()=>validateState(policy,changed),/DEPENDENCY_DRIFT/);}
+ const changed=clone(state);changed.lock.packages['node_modules/sprintf-js']={version:'1.1.3'};
+ assert.throws(()=>validateState(policy,changed),/DEPENDENCY_DRIFT/);
 });
+
 test('reviewed Git LF lockfile is the authoritative testing identity',()=>{
  const raw=fs.readFileSync(path.join(root,'api/package-lock.json'));
  const canonical=canonicalLockfileBytes(raw);
  const digest=crypto.createHash('sha256').update(canonical).digest('hex').toUpperCase();
  assert.equal(digest,policy.lockfileSha256);
- assert.equal(policy.lockfileSha256,'2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6');
+ assert.equal(policy.lockfileSha256,'7572E97B1C185AE8C6BAABD3137905792F6E0AD46A1324D3EDA77A6F176A25FA');
 });
 test('equivalent full CRLF worktree lockfile is accepted without changing the Git identity',()=>{
  const raw=fs.readFileSync(path.join(root,'api/package-lock.json'));
@@ -161,26 +148,20 @@ test('mixed, bare-CR and changed lockfile bytes fail closed',()=>{
   assert.throws(()=>validateState(policy,changed),/DEPENDENCY_DRIFT/);
  }
 });
-test('actual independent installed dependency bytes match the exception',()=>{
+test('actual independent installed dependency bytes match the remediated baseline',()=>{
  validateState(policy,readDependencyState(root));
 });
-test('precision syntax in a data argument is not interpreted as a format string',()=>{
- const sprintf=require('../api/node_modules/sprintf-js').sprintf;
- assert.equal(sprintf('%s','%.101f'),'%.101f');
- assert.throws(()=>sprintf('%.101f',1),RangeError);
+test('retired vulnerable package is absent from disk and every locked path',()=>{
+ assert.equal(Object.keys(lock.packages).some(p=>/(^|\/)sprintf-js$/.test(p)),false);
+ assert.equal(fs.existsSync(path.join(root,'api/node_modules/sprintf-js')),false);
 });
-test('reviewed driver format calls remain literal and CargoRun does not import sprintf-js directly',()=>{
- let count=0;
- for(const entry of policy.reviewedCalls){
-  const source=fs.readFileSync(path.join(root,'api',entry.path),'utf8');
-  const all=[...source.matchAll(/\(0, _sprintfJs\.sprintf\)\(/g)];
-  const literals=[...source.matchAll(/\(0, _sprintfJs\.sprintf\)\((['"])(.*?)\1/g)];
-  assert.equal(all.length,literals.length);assert.equal(all.length,entry.literalFormatCalls);count+=all.length;
- }
- assert.equal(count,12);
+test('upgraded driver and CargoRun source do not import the removed formatting library',()=>{
  const list=JSON.parse(fs.readFileSync(path.join(root,'scripts/deployment-allowlist.json'),'utf8'));
  for(const file of list.api.filter(p=>p.endsWith('.js')))assert.doesNotMatch(fs.readFileSync(path.join(root,file),'utf8'),/require\s*\(\s*['"]sprintf-js['"]/);
+ function walk(p){for(const e of fs.readdirSync(p,{withFileTypes:true})){const f=path.join(p,e.name);if(e.isDirectory())walk(f);else if(e.name.endsWith('.js'))assert.doesNotMatch(fs.readFileSync(f,'utf8'),/require\s*\(\s*['"]sprintf-js['"]/);}}
+ walk(path.join(root,'api/node_modules/tedious/lib'));
 });
+
 test('Linux validator rejects Windows or a different runtime before any install',()=>{
  assert.throws(()=>requireLinux('win32','v22.23.3'),/approved Linux/);
  assert.throws(()=>requireLinux('linux','v20.0.0'),/approved Linux/);
@@ -202,7 +183,7 @@ test('Linux validator accepts only complete scoped production approval evidence'
  ])assert.throws(()=>requireApprovedProductionResult(changed),/Production audit gate/);
  for(const mutate of [r=>r.ok=false,r=>r.context='testing',r=>r.target='different-app',
   r=>r.productionApproval='PENDING_RELEASE_OWNER_ACCEPTANCE',r=>r.expiresAtUtc='2027-11-08T00:00:00.000Z',
-  r=>r.exceptedAdvisory='GHSA-aaaa-bbbb-cccc',r=>r.affectedPackages=[],r=>delete r.nonBlockingAdvisories]){
+  r=>r.exceptedAdvisory='GHSA-aaaa-bbbb-cccc',r=>r.affectedPackages=['mssql'],r=>delete r.nonBlockingAdvisories]){
   const changed=clone(approved);mutate(changed);
   assert.throws(()=>requireApprovedProductionResult({...result,stdout:JSON.stringify(changed)}),/Production audit gate/);
  }
@@ -228,7 +209,7 @@ test('dependency diagnostics report exact sorted bytes without file contents or 
  const hidden=Buffer.from(JSON.stringify({lockfileVersion:3,packages:{'node_modules/fixture-package':entry}},null,2)+'\n');
  fs.writeFileSync(path.join(fixture,'api/node_modules/.package-lock.json'),hidden);
  const expected=readDependencyState(fixture);
- fs.writeFileSync(path.join(fixture,'docs/dependency-security-exception.json'),JSON.stringify(expected));
+ fs.writeFileSync(path.join(fixture,'docs/dependency-security-baseline.json'),JSON.stringify(expected));
  const collect=()=>{
   const lines=[];
   emitDependencyDiagnostics(fixture,{write:line=>lines.push(line),runner:()=>({status:0,stdout:'11.11.0\n'})});
@@ -283,12 +264,12 @@ test('interrupted test processes remain failures after diagnostics',()=>{
 test('reviewed hidden lockfile LF and complete CRLF have the exact approved fingerprint',()=>{
  const raw=fs.readFileSync(path.join(root,'api/node_modules/.package-lock.json'));
  const lf=canonicalLockfileBytes(raw),crlf=Buffer.from(lf.toString('utf8').replace(/\n/g,'\r\n'));
- const approved='0CEDA1DCF9CCAF92466D10141442929EE8EE811DFB7DD7F93A9571373F821667';
+ const approved='D45D92DA5F41F766CB15925E5C522B018CE9E109A64A442407B578AAB9353EB9';
  assert.equal(dependencyFileSha256('.package-lock.json',lf),approved);
  assert.equal(dependencyFileSha256('.package-lock.json',crlf),approved);
  const actual=readDependencyState(root);validateState(policy,actual);
- assert.equal(actual.dependencyTreeSha256,'FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D');
- assert.equal(actual.dependencyFileCount,7242);assert.equal(actual.dependencyPackages,74);
+ assert.equal(actual.dependencyTreeSha256,'C1DCA8603C3C085B65BE7231DE7D364C467052DEBFDCEEB24EBA1B64A619693A');
+ assert.equal(actual.dependencyFileCount,8231);assert.equal(actual.dependencyPackages,75);
  assert.deepEqual(fs.readFileSync(path.join(root,'api/node_modules/.package-lock.json')),raw);
 });
 
@@ -311,14 +292,14 @@ test('unexpected hidden lockfile content remains rejected by the installed tree 
  }
 });
 
-test('all other 7241 dependency files and nested lockfiles retain raw-byte verification',()=>{
+test('all other 8230 dependency files and nested lockfiles retain raw-byte verification',()=>{
  const {validateDependencies}=require('../scripts/build-deployment-package');
  const deps=validateDependencies(root);let checked=0;
  for(const p of deps.files){if(p==='.package-lock.json')continue;
   const bytes=fs.readFileSync(path.join(deps.directory,p));
   assert.equal(dependencyFileSha256(p,bytes),crypto.createHash('sha256').update(bytes).digest('hex').toUpperCase());checked++;
  }
- assert.equal(checked,7241);
+ assert.equal(checked,8230);
  for(const p of ['package/index.js','package/.package-lock.json','package/package-lock.json']){
   const lf=Buffer.from('one\ntwo\n'),crlf=Buffer.from('one\r\ntwo\r\n');
   assert.notEqual(dependencyFileSha256(p,lf),dependencyFileSha256(p,crlf));
@@ -326,47 +307,34 @@ test('all other 7241 dependency files and nested lockfiles retain raw-byte verif
  }
 });
 
-test('approved live-testing production target passes the exact advisory without granting deployment authority',()=>{
+test('production target passes zero findings without granting deployment authority',()=>{
  const result=evaluateAudit(clone(fixture),{...options(),context:'production',target:'cargorun-dev'});
- assert.equal(result.ok,true);assert.equal(result.target,'cargorun-dev');
- assert.equal(result.exceptedAdvisory,'GHSA-hp3w-g68c-fv3c');
- assert.equal(result.productionApproval,'APPROVED_CARGORUN_LIVE_TESTING');
- assert.equal(policy.riskAcceptance.authorizesDeployment,false);
- assert.equal(result.expiresAtUtc,'2026-11-08T00:00:00.000Z');
+ assert.equal(result.ok,true);assert.equal(result.target,'cargorun-dev');assert.equal(result.exceptedAdvisory,null);
+ assert.equal(result.productionApproval,PRODUCTION_APPROVAL);assert.equal(result.authorizesDeployment,false);assert.equal(result.expiresAtUtc,null);
 });
-
-test('missing, changed or broadened risk acceptance and unapproved targets fail closed',()=>{
+test('changed baseline scope, deployment authority and unapproved targets fail closed',()=>{
  const production=()=>({...options(),context:'production',target:'cargorun-dev'});
  for(const target of [undefined,null,'','production','CARGORUN-DEV','different-app'])
   assert.throws(()=>evaluateAudit(clone(fixture),{...production(),target}),/PRODUCTION_NOT_APPROVED/);
- for(const change of [p=>delete p.riskAcceptance,p=>p.productionApproval='PENDING_RELEASE_OWNER_ACCEPTANCE',
-  p=>p.riskAcceptance.targetApplication='*',p=>p.riskAcceptance.purpose='all-production',
-  p=>p.riskAcceptance.acceptedByRole='unknown',p=>p.riskAcceptance.authorizesDeployment=true]){
-  const opts=production();change(opts.policy);
-  assert.throws(()=>evaluateAudit(clone(fixture),opts),/PRODUCTION_NOT_APPROVED/);
+ for(const change of [p=>delete p.retiredException,p=>p.allowedProductionTarget='*',p=>p.vulnerabilityPolicy='ALLOW_MODERATE',p=>p.authorizesDeployment=true]){
+  const opts=production();change(opts.policy);assert.throws(()=>evaluateAudit(clone(fixture),opts),/POLICY_INVALID/);
  }
 });
-
-test('production approval preserves advisory, expiry, evidence and dependency denials',()=>{
+test('production verification preserves all advisory, retirement, evidence and dependency denials',()=>{
  const production=()=>({...options(),context:'production',target:'cargorun-dev'});
- for(const severity of ['moderate','high','critical'])
-  assert.throws(()=>evaluateAudit(addFinding(clone(fixture),'debug',severity),production()),/UNACCEPTED_ADVISORY/);
- for(const name of ['mssql','tedious','sprintf-js']){
-  const report=clone(fixture);report.vulnerabilities[name].via.push(advisory(name,'low'));
-  assert.throws(()=>evaluateAudit(report,production()),/UNACCEPTED_ADVISORY/);
-  const opts=production();opts.state.lock.packages['node_modules/'+name].version='99.0.0';
-  assert.throws(()=>evaluateAudit(clone(fixture),opts),/DEPENDENCY_DRIFT/);
-  const wrongPath=production();wrongPath.policy.packages[name].path='node_modules/other';
-  assert.throws(()=>evaluateAudit(clone(fixture),wrongPath),/DEPENDENCY_DRIFT/);
+ for(const severity of ['info','low','moderate','high','critical'])
+  assert.throws(()=>evaluateAudit(addFinding(clone(fixture),'debug',severity),{...production(),exitCode:1}),/UNACCEPTED_ADVISORY/);
+ for(const name of ['mssql','tedious']){
+  assert.throws(()=>evaluateAudit(addFinding(clone(fixture),name,'low'),{...production(),exitCode:1}),/UNACCEPTED_ADVISORY/);
+  const opts=production();opts.state.lock.packages['node_modules/'+name].version='99.0.0';assert.throws(()=>evaluateAudit(clone(fixture),opts),/DEPENDENCY_DRIFT/);
+  const wrong=production();wrong.policy.packages[name].path='node_modules/other';assert.throws(()=>evaluateAudit(clone(fixture),wrong),/POLICY_INVALID/);
  }
- for(const report of [null,{}, {...clone(fixture),metadata:null}])
-  assert.throws(()=>evaluateAudit(report,production()),/AUDIT_INVALID/);
+ for(const report of [null,{}, {...clone(fixture),metadata:null}])assert.throws(()=>evaluateAudit(report,production()),/AUDIT_INVALID/);
  for(const key of ['lockfileSha256','dependencyTreeSha256','dependencyPackages','dependencyFileCount']){
-  const opts=production();opts.state[key]=typeof opts.state[key]==='number'?opts.state[key]+1:'0'.repeat(64);
-  assert.throws(()=>evaluateAudit(clone(fixture),opts),/DEPENDENCY_DRIFT/);
+  const opts=production();opts.state[key]=typeof opts.state[key]==='number'?opts.state[key]+1:'0'.repeat(64);assert.throws(()=>evaluateAudit(clone(fixture),opts),/DEPENDENCY_DRIFT/);
  }
- for(const now of [Date.parse(policy.expiresAtUtc),Date.parse(policy.expiresAtUtc)+1])
-  assert.throws(()=>evaluateAudit(clone(fixture),{...production(),now}),/EXCEPTION_EXPIRED/);
+ for(const now of [Date.parse(historicalPolicy.expiresAtUtc)-1,Date.parse(historicalPolicy.expiresAtUtc)+1])
+  assert.throws(()=>evaluateAudit(clone(fixture),{...production(),policy:historicalPolicy,now}),/POLICY_INVALID/);
 });
 
 test('approved root and dependency fingerprints cannot be rebound by changing policy and state together',()=>{

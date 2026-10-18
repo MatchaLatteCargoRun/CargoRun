@@ -1,0 +1,46 @@
+CARGORUN SQL DRIVER - ISOLATED LINUX VALIDATION CANDIDATE
+
+Base: f3c757ae0a1cad89e2c652f735504592206e485a (H2)
+Branch: validation/sql-driver-upgrade-20261018
+Scope: build/test only; no deployment or production SQL authorization.
+Linux status at source preparation: PENDING. Use the CI result for this exact SHA.
+
+Preserved Windows evidence (completed before this branch):
+146/146 actual SQL scenarios; 897/897 automated tests including 43 security tests
+and 25 offline driver comparisons; 15/15 additional isolation regressions.
+Two independent installations matched; audit had zero findings; 16 API functions
+packaged. Original instance preserved; disposable test database/user removed;
+Windows-only authentication restored. These are prior Windows results, not Linux
+results. Detailed local SQL reports and certificates are excluded from this branch.
+
+Validated candidate versions: Node 22.23.3, npm 11.11.0, mssql 12.7.6,
+tedious 20.3.7. No production sprintf-js package. No active advisory exception.
+Canonical lock SHA-256:
+7572E97B1C185AE8C6BAABD3137905792F6E0AD46A1324D3EDA77A6F176A25FA
+Windows dependency tree SHA-256:
+C1DCA8603C3C085B65BE7231DE7D364C467052DEBFDCEEB24EBA1B64A619693A
+Windows package inventory SHA-256:
+DB5E1E13ECF2BFC1A5D9A1B5E1C5C1C37DD1ECCFEB4DF6AA13B6FDD6B5EF48F4
+
+Linux-only preparation differences:
+- Workflow trigger/job guard restricted to this exact validation branch.
+- Full read-only checkout history supplies the exact H2 comparison lockfile.
+- Validator installs the historical reviewed driver into a separate temporary
+  directory solely for the same 25 offline comparisons. No SQL connections occur.
+  This older dependency fixture is never packaged or treated as a production graph.
+- Validator records exact SHA, fails on missing/failed/skipped tests, verifies all
+  16 function entries and every package hash, compares a second clean installation,
+  and emits fresh audit/gate/package evidence into GitHub Actions logs.
+- Local reports and development/SQL harness files excluded. Public historical
+  security records retained. Release manifest describes Git-normalized candidate
+  files; self-hash is reported separately in external evidence.
+
+Security boundary:
+Read-only GitHub token; GitHub-hosted Ubuntu; no Azure credentials or actions,
+no id-token permission, no artifact publication, no commit/push/PR from the runner.
+The deployment workflow remains unchanged and automatically triggers only on main.
+No runtime behavior changed. Windows SQL results therefore remain applicable to
+the unchanged runtime; Linux CI must independently pass its required checks.
+
+CI writes CARGORUN_LINUX_EVIDENCE with the exact tested SHA and measured results.
+No successful result in this document authorizes production or preview deployment.

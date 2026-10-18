@@ -1,11 +1,11 @@
 {
-  "name": "cargorun-flight-status-api",
-  "version": "1.0.0",
-  "private": true,
-  "engines": {
-    "node": "22.x"
-  },
-  "dependencies": {
-    "mssql": "^11.0.1"
-  }
+    "name":  "cargorun-flight-status-api",
+    "version":  "1.0.0",
+    "private":  true,
+    "engines":  {
+                    "node":  "22.x"
+                },
+    "dependencies":  {
+                         "mssql":  "12.7.6"
+                     }
 }

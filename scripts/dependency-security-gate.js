@@ -5,14 +5,11 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 const { validateDependencies } = require('./build-deployment-package');
 const ROOT = path.resolve(__dirname, '..');
-const ADVISORY = 'GHSA-hp3w-g68c-fv3c';
-const URL = 'https://github.com/advisories/' + ADVISORY;
-const EXPIRES = '2026-11-08T00:00:00.000Z';
 const PRODUCTION_TARGET = 'cargorun-dev';
-const PRODUCTION_APPROVAL = 'APPROVED_CARGORUN_LIVE_TESTING';
-const RISK_ACCEPTANCE = {"acceptedByRole":"release-owner","targetApplication":"cargorun-dev","purpose":"live-testing","acceptedOnUtcDate":"2026-10-08","expiresAtUtc":"2026-11-08T00:00:00.000Z","authorizesDeployment":false};
+const PRODUCTION_APPROVAL = 'LOCAL_CANDIDATE_REQUIRES_SEPARATE_RELEASE_APPROVAL';
+const BASELINE_SHA256 = "03B5D460E8F5DD258CFFC6E30126811116656046CA7BD2651FDFDC9262A15C9C";
 const LEVELS = ['info','low','moderate','high','critical'];
-const SCOPED = ['mssql','sprintf-js','tedious'];
+const SCOPED = ['mssql','tedious'];
 const sha = data => crypto.createHash('sha256').update(data).digest('hex').toUpperCase();
 const fail = (code, message) => { throw new Error(code + ': ' + message); };
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -44,23 +41,13 @@ function dependencyFileSha256(relative, bytes) {
   return sha(relative === '.package-lock.json' ? canonicalLockfileBytes(bytes) : bytes);
 }
 function validatePolicy(policy, now, context, target) {
-  if (!object(policy) || policy.schemaVersion !== 1 || policy.advisory !== ADVISORY ||
-      policy.advisoryUrl !== URL || policy.cve !== 'CVE-2026-97058' ||
-      policy.npmAdvisorySource !== 1241202 || policy.severity !== 'moderate' ||
-      policy.affectedRange !== '<=1.1.3' || policy.scope !== 'cargorun-live-testing' ||
-      policy.expiresAtUtc !== EXPIRES || policy.validFromUtc !== '2026-10-08T00:00:00.000Z') fail('POLICY_INVALID','exception scope or validity changed');
+  if (!object(policy) || policy.schemaVersion !== 2 || sha(JSON.stringify(policy)) !== BASELINE_SHA256)
+    fail('POLICY_INVALID','reviewed remediation baseline changed or retired exception supplied');
   if (!['testing','production'].includes(context)) fail('CONTEXT_INVALID','explicit testing or production context required');
-  if (policy.productionApproval !== PRODUCTION_APPROVAL || !equal(policy.riskAcceptance,RISK_ACCEPTANCE))
-    fail('PRODUCTION_NOT_APPROVED','CargoRun live-testing risk acceptance missing or changed');
   if (context === 'production' && target !== PRODUCTION_TARGET)
-    fail('PRODUCTION_NOT_APPROVED','explicit target cargorun-dev required');
+    fail('PRODUCTION_NOT_APPROVED','explicit target cargorun-dev required; gate success does not authorize deployment');
   if (context === 'testing' && target !== undefined) fail('CONTEXT_INVALID','target applies only to production context');
-  if (!Number.isFinite(now) || now < Date.parse(policy.validFromUtc)) fail('CLOCK_INVALID','outside exception validity');
-  if (now >= Date.parse(EXPIRES)) fail('EXCEPTION_EXPIRED','expired at ' + EXPIRES);
-  if (policy.lockfileSha256 !== '2EF5A6BC5F9D74714B9F4FDEDD427840075E825441FEE6DC9F337CD9549E0EE6' ||
-      policy.dependencyTreeSha256 !== 'FA20832CD500FD267124618A8D6EA8F2155B6AD461BA01ADEA1D4194DFED4A0D' ||
-      policy.dependencyPackages !== 74 || policy.dependencyFileCount !== 7242 ||
-      !object(policy.packages) || !equal(Object.keys(policy.packages).sort(),SCOPED)) fail('POLICY_INVALID','dependency binding incomplete');
+  if (!Number.isFinite(now) || now < Date.parse(policy.validFromUtc)) fail('CLOCK_INVALID','before reviewed baseline');
 }
 function readDependencyState(root) {
   const dependencies = validateDependencies(root); // Rejects junctions, package additions, version/URL/integrity drift.
@@ -76,14 +63,14 @@ function validateState(policy,state) {
       state.dependencyPackages !== policy.dependencyPackages ||
       state.dependencyFileCount !== policy.dependencyFileCount) fail('DEPENDENCY_DRIFT','reviewed dependency bytes changed');
   if (!object(state.lock?.packages) || !object(state.lock.packages['']?.dependencies)) fail('DEPENDENCY_DRIFT','missing dependency graph');
-  const expectedVersions = {mssql:'11.0.2',tedious:'18.6.2','sprintf-js':'1.1.3'};
+  const expectedVersions = {mssql:'12.7.6',tedious:'20.3.7'};
   for (const name of SCOPED) {
     const binding=policy.packages[name], entry=state.lock.packages['node_modules/'+name];
     if (!entry || !binding || binding.path !== 'node_modules/'+name ||
         binding.version !== expectedVersions[name] || entry.version !== binding.version || entry.integrity !== binding.integrity) fail('DEPENDENCY_DRIFT','reviewed package changed');
   }
   if (!state.lock.packages['node_modules/mssql'].dependencies?.tedious ||
-      !state.lock.packages['node_modules/tedious'].dependencies?.['sprintf-js']) fail('DEPENDENCY_DRIFT','reviewed dependency path changed');
+      Object.keys(state.lock.packages).some(p=>/(^|\/)sprintf-js$/.test(p))) fail('DEPENDENCY_DRIFT','reviewed dependency path changed');
 }
 function evaluateAudit(report,{policy,state,exitCode,now=Date.now(),context='production',target}) {
   validatePolicy(policy,now,context,target);
@@ -93,7 +80,7 @@ function evaluateAudit(report,{policy,state,exitCode,now=Date.now(),context='pro
       !object(report.metadata?.dependencies)) fail('AUDIT_INVALID','missing audit v2 evidence');
   const entries=Object.entries(report.vulnerabilities);
   const counts=Object.fromEntries(LEVELS.map(s=>[s,0]));
-  const dependencyCounts={prod:75,dev:0,optional:0,peer:0,peerOptional:0,total:74};
+  const dependencyCounts=policy.auditDependencyCounts;
   for (const [key,value] of Object.entries(dependencyCounts)) if (report.metadata.dependencies[key] !== value) fail('AUDIT_INVALID','incomplete dependency coverage');
   if (![0,1].includes(exitCode) || exitCode !== (entries.length ? 1 : 0)) fail('AUDIT_INVALID','audit process status inconsistent');
   for (const [name,item] of entries) {
@@ -128,29 +115,13 @@ function evaluateAudit(report,{policy,state,exitCode,now=Date.now(),context='pro
     const next=new Set([...visited,name]);
     return report.vulnerabilities[name].via.flatMap(v=>typeof v === 'string' ? leaves(v,next) : [v]);
   }
-  const accepted=new Set(), blocked=new Set(), nonBlocking=new Set();
-  for (const [name,item] of entries) {
-    const direct=leaves(name);
-    for (const advisory of direct) {
-      const severity=Math.max(LEVELS.indexOf(item.severity),LEVELS.indexOf(advisory.severity));
-      if (LEVELS.indexOf(item.severity) < LEVELS.indexOf(advisory.severity)) fail('AUDIT_INVALID','inherited severity understated');
-      if (advisory.url === URL) {
-        if (!SCOPED.includes(name) || advisory.source !== policy.npmAdvisorySource ||
-            advisory.name !== 'sprintf-js' || advisory.dependency !== 'sprintf-js' ||
-            advisory.range !== policy.affectedRange || item.severity !== 'moderate' ||
-            advisory.severity !== 'moderate' ||
-            !equal(item.nodes,[policy.packages[name].path]) ||
-            !equal(item.fixAvailable,{name:'mssql',version:'4.2.0',isSemVerMajor:true})) fail('EXCEPTION_CHANGED','advisory exposure or fix changed; re-review required');
-        accepted.add(name);
-      } else if (severity >= 2 || SCOPED.includes(name)) blocked.add(advisory.url);
-      else nonBlocking.add(advisory.url);
-    }
-  }
-  if (blocked.size) fail('UNACCEPTED_ADVISORY','other or new advisory: '+[...blocked].sort().join(', '));
-  if (accepted.size && !equal([...accepted].sort(),SCOPED)) fail('AUDIT_INVALID','exception dependency chain incomplete');
-  return {ok:true,context,target:context === 'production' ? target : null,exceptedAdvisory:accepted.size ? ADVISORY : null,affectedPackages:[...accepted].sort(),
-    nonBlockingAdvisories:[...nonBlocking].sort(),expiresAtUtc:EXPIRES,productionApproval:policy.productionApproval};
+  for (const [name] of entries) leaves(name); // Retain advisory graph consistency checks.
+  if (entries.length) fail('UNACCEPTED_ADVISORY','no active vulnerability exception; all findings require review');
+  return {ok:true,context,target:context === 'production' ? target : null,baselineId:policy.baselineId,
+    exceptedAdvisory:null,affectedPackages:[],nonBlockingAdvisories:[],expiresAtUtc:null,
+    productionApproval:PRODUCTION_APPROVAL,authorizesDeployment:false};
 }
+
 function parseAudit(stdout) {
   if (typeof stdout !== 'string' || !stdout.trim()) fail('AUDIT_INVALID','empty audit output');
   let result;
@@ -185,7 +156,7 @@ function collectAudit(root,runner=runNpm) {
   return {report:parseAudit(result.stdout),exitCode:result.status};
 }
 function runGate({root=ROOT,context='production',target}={}) {
-  const policy=readJson(path.join(root,'docs/dependency-security-exception.json'));
+  const policy=readJson(path.join(root,'docs/dependency-security-baseline.json'));
   validatePolicy(policy,Date.now(),context,target);
   const state=readDependencyState(root);
   validateState(policy,state);

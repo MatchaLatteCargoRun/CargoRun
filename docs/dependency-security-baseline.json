@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 2,
+  "baselineId": "cargorun-driver-12.7.6-20261018",
+  "purpose": "Local driver-validated dependency baseline; separate release authorization required",
+  "validFromUtc": "2026-10-18T00:00:00.000Z",
+  "authorizesDeployment": false,
+  "allowedProductionTarget": "cargorun-dev",
+  "vulnerabilityPolicy": "REJECT_ALL_FINDINGS",
+  "lockfileSha256": "7572E97B1C185AE8C6BAABD3137905792F6E0AD46A1324D3EDA77A6F176A25FA",
+  "dependencyPackages": 75,
+  "dependencyFileCount": 8231,
+  "dependencyTreeSha256": "C1DCA8603C3C085B65BE7231DE7D364C467052DEBFDCEEB24EBA1B64A619693A",
+  "packages": {
+    "mssql": {
+      "path": "node_modules/mssql",
+      "version": "12.7.6",
+      "integrity": "sha512-AKpxLHqDsSIslL00tUWjZ8tVpoHhciBQr8TSNCaKkBxvAQD7pnZxRQr/9lAIoAAdtydHFrikGG0yjwq+yW56Ew=="
+    },
+    "tedious": {
+      "path": "node_modules/tedious",
+      "version": "20.3.7",
+      "integrity": "sha512-s+43djAcQGFiFHZPWtZPaDSZE/ukJnultjeJHXvKbM//OcZSSusSzXuqAIyOKpraNTWgtobhuWOvxrZK+a1yvA=="
+    }
+  },
+  "auditDependencyCounts": {
+    "prod": 76,
+    "dev": 0,
+    "optional": 0,
+    "peer": 0,
+    "peerOptional": 0,
+    "total": 75
+  },
+  "retiredException": {
+    "advisory": "GHSA-hp3w-g68c-fv3c",
+    "status": "RETIRED",
+    "reason": "sprintf-js absent from the complete production lock graph; no vulnerability exception is accepted",
+    "originalExpiresAtUtc": "2026-11-08T00:00:00.000Z",
+    "historicalPolicy": "docs/dependency-security-exception.json",
+    "historicalPolicySha256": "9DE76383BC77810209E8B7303636FF31E859BAD0EB35009D758474D209071A90",
+    "historicalPolicyHashMeaning": "Canonical LF bytes; full CRLF equivalent accepted, mixed endings rejected"
+  }
+}
