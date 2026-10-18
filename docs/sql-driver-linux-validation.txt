@@ -24,6 +24,8 @@ DB5E1E13ECF2BFC1A5D9A1B5E1C5C1C37DD1ECCFEB4DF6AA13B6FDD6B5EF48F4
 
 Linux-only preparation differences:
 - Workflow trigger/job guard restricted to this exact validation branch.
+- Existing workflow guard test requires the new exact branch and rejects reusable
+  and repository-dispatch triggers in addition to its prior forbidden triggers.
 - Full read-only checkout history supplies the exact H2 comparison lockfile.
 - Validator installs the historical reviewed driver into a separate temporary
   directory solely for the same 25 offline comparisons. No SQL connections occur.

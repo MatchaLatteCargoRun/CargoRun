@@ -6,11 +6,11 @@ const validation=fs.readFileSync(path.join(root,'.github/workflows/validate-carg
 const deployment=fs.readFileSync(path.join(root,'.github/workflows/deploy-cargorun.yml'),'utf8');
 
 test('Linux validation workflow targets only the dedicated push branch',()=>{
- assert.match(validation,/^on:\r?\n  push:\r?\n    branches:\r?\n      - validation\/akl-runtime-linux\r?\n/m);
- assert.match(validation,/if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/validation\/akl-runtime-linux'/);
- assert.doesNotMatch(validation,/^\s*(?:pull_request|pull_request_target|schedule|release|workflow_dispatch|workflow_run):/m);
+ assert.match(validation,/^on:\r?\n  push:\r?\n    branches:\r?\n      - validation\/sql-driver-upgrade-20261018\r?\n/m);
+ assert.match(validation,/if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/validation\/sql-driver-upgrade-20261018'/);
+ assert.doesNotMatch(validation,/^\s*(?:pull_request|pull_request_target|schedule|release|workflow_dispatch|workflow_run|workflow_call|repository_dispatch):/m);
  assert.match(deployment,/^on:\r?\n  push:\r?\n    branches:\r?\n      - main\r?\n/m);
- assert.doesNotMatch(deployment,/validation\/akl-runtime-linux/);
+ assert.doesNotMatch(deployment,/validation\/sql-driver-upgrade-20261018/);
 });
 
 test('Linux validation workflow uses read-only checkout and runs only local validation',()=>{

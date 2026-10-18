@@ -38,8 +38,8 @@
     },
     {
       "path": "docs/sql-driver-linux-validation.txt",
-      "bytes": 2774,
-      "sha256": "C589628805F925AABBFE5EA080A7F5E1A93A153211CE6B0C6C498F501BCE9CC4"
+      "bytes": 2936,
+      "sha256": "CBF635714CCB8FE317AE7BB5948E99748135F47EE0864499EF6E3A18EFB7C837"
     },
     {
       "path": "scripts/dependency-security-gate.js",
@@ -60,6 +60,11 @@
       "path": "tests/fixtures/dependency-audit-reviewed.json",
       "bytes": 360,
       "sha256": "580A738EAC1606F035005365B3528A728AA62DDC38EDCEC88ED0B73E67375099"
+    },
+    {
+      "path": "tests/linux-validation-workflow.test.js",
+      "bytes": 2504,
+      "sha256": "9B44B7097C7839636B066C60D282A9D70B0446A9B53DF613A19CE5A9157F11EA"
     },
     {
       "path": "tools/sql-driver-assessment/offline.test.js",
